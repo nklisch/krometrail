@@ -142,15 +142,21 @@ reshaping the walk.
     read: ~3.5 µs alone, ~7 µs with one live peer, ~30 µs with eight — against an
     append that already does a segment write and a SQLite transaction. Not worth
     a cache.
-  - *Counting fails closed.* Enumeration can fail transiently. A failed count
-    reuses the highest count this census has already **proved** (`proved_live`,
-    an `AtomicU64` that only rises) instead of assuming `1`. Assuming `1` was an
-    optimistic grant issued because coordination broke — the exact defect class
-    the ledger was deleted for — and two instances that both stumbled would each
-    have been handed `total`. The fallback never widens a share, never blocks
-    (there is always a number, at worst this instance's own `1` before any
-    successful census), and self-corrects on the next successful read. See
-    "Fifth round outcome" below.
+  - *Counting fails closed*, in three layers. First, the instances directory is
+    read through a descriptor opened once at construction, so a permission change
+    or path swap after startup does not blind the count at all — the ordinary
+    causes of failure are removed rather than absorbed. Second, if a read still
+    fails, the count reuses the highest count this census has already **proved**
+    (`proved_live`, an `AtomicU64` that only rises). Third, a census whose *first*
+    read fails has no evidence about peers and assumes
+    `ASSUMED_LIVE_INSTANCES_WITHOUT_EVIDENCE = 4` rather than assuming solitude.
+    Assuming `1` in any of these was an optimistic grant issued because
+    coordination broke — the exact defect class the ledger was deleted for — and
+    two instances that both stumbled would each have been handed `total`. No
+    layer widens a share, none blocks capture (every branch yields at least `1`,
+    and the assumed case still leaves a usable quarter of the total), and all
+    self-correct on the next successful read. See "Fifth round outcome" and
+    "Sixth round outcome" below.
   - *A lone instance gets the whole total* (`total / 1`), so a single-process
     install is unaffected. An undecidable sibling counts as live, which tightens
     this instance rather than letting the total overshoot. Where ownership cannot
@@ -561,3 +567,75 @@ claimed the next start removes it, which is stronger than the code: repeated rac
 could skip it repeatedly. Corrected the wording rather than adding a retry — this
 is disk, not correctness, and nothing live references the bytes. The spec now says
 a *later* start removes it and that removal is best effort per start.
+
+## Sixth round outcome: the census made a real lower bound
+
+### `proved_live` was not a lower bound on live instances (blocking)
+
+The fifth-round fallback was monotonic and correctly ordered, but it only ever
+recalled counts *this process had already proved*. Two holes followed:
+
+- If two instances' **first** census both fail, each falls back to `1` and each
+  takes the full budget — `2T` combined.
+- If a census proves `1`, a peer joins, and the next enumeration fails, the
+  fallback still says `1` — `2T` again.
+
+No fallback derived purely from remembered state can close the second hole. A peer
+that joined during a blackout is invisible by construction to a process that
+cannot read the instances directory. The fix therefore had to attack *why*
+enumeration fails, not what happens after it does.
+
+### Fix, part one: enumerate through a retained descriptor
+
+`fs::read_dir` by path re-resolves and re-checks permissions on every call, which
+is exactly why a later `chmod` blinded the census. A descriptor opened once had
+its access check done at open time and keeps working regardless. `InstanceCensus`
+now opens `instances/` at construction and enumerates through that handle
+(`dup` → `fdopendir` → `rewinddir` → `readdir`), falling back to the path only if
+the handle is absent or fails. This closes the tested fault and the realistic
+causes — permission change, path replacement — outright, so the fallback is
+reached far less often. Mechanism detail lives in
+`feature-multi-instance-store-isolation`, "Sixth round".
+
+### Fix, part two: no evidence means assume peers, not solitude
+
+A census whose very first read fails has never seen the directory and has nothing
+to fall back *to*. `ASSUMED_LIVE_INSTANCES_WITHOUT_EVIDENCE = 4` is the fail-closed
+answer: an instance that cannot see its siblings must not conclude it has none.
+Four is a guess, not a measurement — chosen above the common concurrent-instance
+count while still leaving a quarter of the total, which is a usable non-zero share
+so capture never stalls on it. It is consulted only while the directory is
+unreadable; the first successful enumeration replaces it with the real count.
+
+### Residual, stated rather than glossed
+
+Overshoot is still reachable in two narrow cases, both now recorded in
+`docs/SPEC.md`:
+
+1. Enumeration fails *through the retained descriptor* — an I/O-level failure,
+   since permission and path changes no longer defeat it — **and** a peer joined
+   since this process's last successful count. The fallback then reports the older,
+   smaller count. This is the irreducible case: an invisible peer cannot be
+   counted.
+2. More than four instances all start while unable to read the directory, making
+   the assumed count too low.
+
+Neither is reachable by changing the directory's permissions or replacing its
+path, which is what the fifth-round fallback was absorbing.
+
+### Regressions
+
+- `a_census_that_never_enumerated_does_not_grant_the_whole_total` — builds a
+  census after the directory is `0o111`, so nothing was ever read, and asserts it
+  reports more than one live instance. Fails against the previous HEAD with
+  "a census with no evidence about its peers reported 1 live instances, which
+  grants this instance the whole 4000000-byte total".
+- `a_retained_directory_handle_enumerates_after_permissions_change` — proves the
+  handle still lists the directory after `chmod 0o111` by dropping a peer during
+  the blackout and requiring the count to fall to 1. Fails against the previous
+  HEAD with `left: 2, right: 1`.
+- `a_failed_census_does_not_widen_a_share` kept unchanged. It still passes and
+  still guards the monotonic floor; the gap it closes is simply narrower now.
+
+Both new tests skip under root, which reads a `0o111` directory by path and so
+cannot have the fault injected at all.

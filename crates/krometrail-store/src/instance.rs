@@ -12,10 +12,14 @@
 //! guarded.
 
 use std::{
+    ffi::OsString,
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use uuid::Uuid;
@@ -281,42 +285,210 @@ pub fn sibling_instance_roots(
     data_directory: &Path,
     owned: &Path,
 ) -> krometrail_core::Result<Vec<InstanceRootCandidate>> {
+    instance_root_candidates(data_directory, owned, None)
+}
+
+/// `sibling_instance_roots`, optionally reading through a descriptor opened
+/// earlier rather than resolving the instances path again.
+///
+/// The census supplies a handle; reclamation does not need one, because a
+/// reclaim pass that cannot enumerate simply reclaims nothing.
+fn instance_root_candidates(
+    data_directory: &Path,
+    owned: &Path,
+    handle: Option<&InstancesDirectoryHandle>,
+) -> krometrail_core::Result<Vec<InstanceRootCandidate>> {
     if !OWNERSHIP_IS_ENFORCED {
         return Ok(Vec::new());
     }
     let instances = data_directory.join(INSTANCES_DIRECTORY);
-    let entries = match fs::read_dir(&instances) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err(persistence_error("could not enumerate instance roots")),
-    };
+    let names = instance_directory_names(&instances, handle)?;
     let mut roots = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|_| persistence_error("could not inspect an instance root"))?;
-        // Not following symlinks keeps reclamation from escaping the data root.
-        let file_type = entry
-            .file_type()
-            .map_err(|_| persistence_error("could not classify an instance root"))?;
-        if !file_type.is_dir() {
+    for name in names {
+        if Uuid::parse_str(&name.to_string_lossy()).is_err() {
             continue;
         }
-        let path = entry.path();
+        let path = instances.join(&name);
         if path == owned {
             continue;
         }
-        if Uuid::parse_str(&entry.file_name().to_string_lossy()).is_err() {
-            continue;
-        }
-        // Pin the directory that was just classified. A candidate that cannot be
-        // pinned is carried forward unpinned rather than dropped: dropping it
-        // would hide a root from the census and widen every instance's share.
-        // `claim` refuses an unpinned root, which makes it unreclaimable and
-        // live at once.
+        // Pin the directory that was just enumerated. This doubles as the
+        // is-it-a-directory test, and it does not follow a final symlink, which
+        // keeps reclamation from escaping the data root.
+        //
+        // A candidate that cannot be pinned is carried forward unpinned rather
+        // than dropped: dropping it would hide a root from the census and widen
+        // every instance's share. `claim` refuses an unpinned root, which makes
+        // it unreclaimable and live at once. That is also why a stat failure is
+        // not promoted to a census failure — an entry we cannot classify is
+        // strictly safer counted than it is used to void the whole count.
         let identity = directory_identity(&path);
         roots.push(InstanceRootCandidate { path, identity });
     }
     roots.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(roots)
+}
+
+/// Lists the entry names of the instances directory.
+///
+/// A retained handle is tried first and the path is the fallback, so a handle
+/// that was never opened — or that fails at read time — degrades to exactly the
+/// behaviour there was before handles existed.
+fn instance_directory_names(
+    instances: &Path,
+    handle: Option<&InstancesDirectoryHandle>,
+) -> krometrail_core::Result<Vec<OsString>> {
+    if let Some(names) = handle.and_then(InstancesDirectoryHandle::entry_names) {
+        return Ok(names);
+    }
+    let entries = match fs::read_dir(instances) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(persistence_error("could not enumerate instance roots")),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|_| persistence_error("could not inspect an instance root"))?;
+        names.push(entry.file_name());
+    }
+    Ok(names)
+}
+
+/// The instances directory, held open for the lifetime of the census.
+///
+/// `read_dir` on a path re-resolves the path and re-checks permissions on every
+/// call, so anything that changes the directory's mode — or replaces what the
+/// path names — blinds every later census. A descriptor opened once does not
+/// re-check: the access decision was made at open time and the kernel keeps
+/// honouring it. Enumerating through the retained descriptor therefore keeps
+/// working across exactly the faults that used to force the fallback.
+///
+/// The handle is deliberately *not* a cache of the answer. Every census still
+/// walks the whole directory and re-tests every sibling's lock; only the way the
+/// directory is reached changed.
+#[derive(Debug)]
+struct InstancesDirectoryHandle {
+    /// Behind a `Mutex` because `dup` shares the open file description, and with
+    /// it the directory cursor. Two concurrent enumerations of one description
+    /// would each read part of the directory and neither would see all of it —
+    /// an undercount, which is the one error direction this module cannot
+    /// tolerate.
+    directory: Mutex<File>,
+}
+
+impl InstancesDirectoryHandle {
+    /// Opens `instances` for enumeration, or `None` if it cannot be opened.
+    ///
+    /// Only Linux and macOS are wired up. Enumerating a descriptor needs
+    /// `fdopendir`, and distinguishing end-of-directory from a read error needs
+    /// the platform's `errno` slot; both are spelled per-platform. Any other
+    /// Unix simply gets no handle and falls back to the path, which is correct,
+    /// just less resilient.
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    fn open(instances: &Path) -> Option<Self> {
+        let directory = File::open(instances).ok()?;
+        if !directory.metadata().ok()?.is_dir() {
+            return None;
+        }
+        Some(Self {
+            directory: Mutex::new(directory),
+        })
+    }
+
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+    fn open(_instances: &Path) -> Option<Self> {
+        None
+    }
+
+    /// Reads every entry name through the retained descriptor.
+    ///
+    /// `None` means "this handle produced no trustworthy listing" and sends the
+    /// caller to the path fallback. A partial listing is never returned: a read
+    /// error mid-directory discards what was collected, because a short list
+    /// would undercount the live set.
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    fn entry_names(&self) -> Option<Vec<OsString>> {
+        use std::{
+            ffi::CStr,
+            os::unix::{ffi::OsStrExt, io::AsRawFd},
+        };
+
+        // A poisoned lock only means some other thread panicked mid-enumeration.
+        // The descriptor is still valid and the stream is rewound below, so the
+        // listing is unaffected.
+        let directory = self
+            .directory
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        // `fdopendir` takes ownership of the descriptor it is given and
+        // `closedir` closes it, so it gets a duplicate rather than the retained
+        // one.
+        // SAFETY: the retained `File` keeps its descriptor valid for this call.
+        let duplicate = unsafe { libc::dup(directory.as_raw_fd()) };
+        if duplicate < 0 {
+            return None;
+        }
+        // SAFETY: `duplicate` is a valid directory descriptor this call owns.
+        let stream = unsafe { libc::fdopendir(duplicate) };
+        if stream.is_null() {
+            // SAFETY: `fdopendir` failed, so ownership was not transferred.
+            unsafe { libc::close(duplicate) };
+            return None;
+        }
+        // The duplicate shares the retained description's cursor, which a
+        // previous enumeration left at end-of-directory.
+        // SAFETY: `stream` is a live directory stream owned by this call.
+        unsafe { libc::rewinddir(stream) };
+
+        let mut names = Vec::new();
+        let failed = loop {
+            // `readdir` returns null for both end-of-directory and failure, and
+            // only `errno` tells them apart. It is left untouched on success, so
+            // it has to be cleared before each call.
+            // SAFETY: the platform errno slot is valid for the current thread.
+            unsafe { *errno_slot() = 0 };
+            // SAFETY: `stream` is a live directory stream owned by this call.
+            let entry = unsafe { libc::readdir(stream) };
+            if entry.is_null() {
+                // SAFETY: the platform errno slot is valid for the current thread.
+                break unsafe { *errno_slot() } != 0;
+            }
+            // SAFETY: `readdir` returned a non-null entry that stays valid until
+            // the next call on this stream, and `d_name` is NUL-terminated.
+            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+            let name = name.to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            names.push(std::ffi::OsStr::from_bytes(name).to_os_string());
+        };
+        // SAFETY: `stream` is a live directory stream owned by this call and is
+        // not used afterwards; this also closes `duplicate`.
+        unsafe { libc::closedir(stream) };
+        drop(directory);
+
+        (!failed).then_some(names)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+    fn entry_names(&self) -> Option<Vec<OsString>> {
+        None
+    }
+}
+
+/// The current thread's `errno` storage.
+#[cfg(target_os = "linux")]
+unsafe fn errno_slot() -> *mut i32 {
+    // SAFETY: glibc's accessor is always safe to call and returns a pointer
+    // valid for the calling thread.
+    unsafe { libc::__errno_location() }
+}
+
+#[cfg(target_vendor = "apple")]
+unsafe fn errno_slot() -> *mut i32 {
+    // SAFETY: as above, for the Darwin spelling of the same accessor.
+    unsafe { libc::__error() }
 }
 
 /// How many instances are currently sharing one data directory.
@@ -331,6 +503,12 @@ pub fn sibling_instance_roots(
 pub struct InstanceCensus {
     data_directory: PathBuf,
     owned_root: PathBuf,
+    /// The instances directory, opened once at construction.
+    ///
+    /// `None` means the directory could not be opened then — which is the one
+    /// state in which this census has no way to learn about peers at all, and
+    /// the reason `proved_live` may start above one.
+    handle: Option<InstancesDirectoryHandle>,
     /// The highest live count this census has ever *proved*.
     ///
     /// Not a cache of the answer — the answer is always recomputed. This is the
@@ -340,14 +518,55 @@ pub struct InstanceCensus {
     proved_live: AtomicU64,
 }
 
+/// Peers assumed live by a census that has never once read the instances
+/// directory.
+///
+/// The monotonic floor closes every case *after* one successful count, and the
+/// retained descriptor closes the ordinary causes of losing that ability. What
+/// neither closes is a census whose very first enumeration fails: it has no
+/// evidence at all, and the honest floor of "this instance itself" would hand it
+/// `total / 1`. Two instances that both start that way jointly claim twice the
+/// total, which is exactly the optimistic grant this design exists to remove.
+///
+/// So an instance that cannot see its siblings assumes it has some. Four is
+/// chosen to be larger than the common concurrent-instance count while still
+/// leaving a quarter of the total — a usable, non-zero share, so capture never
+/// stalls on this. It is a fail-closed guess, not a measurement, and it is only
+/// ever consulted while the directory is unreadable: the first successful
+/// enumeration replaces it with the real count.
+const ASSUMED_LIVE_INSTANCES_WITHOUT_EVIDENCE: u64 = 4;
+
 impl InstanceCensus {
     pub fn new(data_directory: &Path, owned_root: &Path) -> Self {
-        Self {
+        let census = Self {
+            handle: InstancesDirectoryHandle::open(&data_directory.join(INSTANCES_DIRECTORY)),
             data_directory: data_directory.to_path_buf(),
             owned_root: owned_root.to_path_buf(),
             // This instance itself, which is the one peer no census can miss.
             proved_live: AtomicU64::new(1),
+        };
+        // Establish the floor from the first count rather than assuming one.
+        // Only a census that cannot enumerate *at construction* fails closed;
+        // every other census starts from a number it actually proved.
+        if census.count_live().is_none() {
+            census
+                .proved_live
+                .store(ASSUMED_LIVE_INSTANCES_WITHOUT_EVIDENCE, Ordering::Relaxed);
         }
+        census
+    }
+
+    /// Counts live instances, or `None` when the directory could not be read.
+    fn count_live(&self) -> Option<u64> {
+        let siblings =
+            instance_root_candidates(&self.data_directory, &self.owned_root, self.handle.as_ref())
+                .ok()?;
+        Some(siblings.iter().fold(1_u64, |live, candidate| {
+            // `Ok(Some(_))` means the root was claimable, so nothing owns it. The
+            // claim is released immediately; reclamation re-acquires it later.
+            let dead = matches!(candidate.claim(), Ok(Some(_)));
+            if dead { live } else { live.saturating_add(1) }
+        }))
     }
 
     /// Instances holding a root right now, including this one. Never zero.
@@ -363,26 +582,32 @@ impl InstanceCensus {
     /// is precisely the defect class this design removes. The read is one
     /// directory scan plus a non-blocking lock attempt per sibling — measured at
     /// roughly 3.5 µs alone and 7 µs with one peer, against an append that
-    /// already performs a segment write and a SQLite transaction.
+    /// already performs a segment write and a SQLite transaction. Those figures
+    /// predate the retained descriptor, which trades the scan's `open` of the
+    /// path for a `dup` of a descriptor already held and leaves the syscall
+    /// shape otherwise unchanged.
     ///
-    /// Enumeration can still fail — a transient `read_dir` error, an entry that
-    /// cannot be classified. That failure must not widen a share. Granting the
-    /// full total whenever counting broke is the same optimistic-grant defect the
-    /// usage ledger was deleted for: two instances that both stumble would each
-    /// be handed `total`. So a failed count reuses the highest count already
-    /// proved instead. That is monotonically safe, never blocks capture (there is
-    /// always a number, at worst this instance's own `1`), and self-corrects the
-    /// moment enumeration works again.
+    /// Enumeration can still fail, and that failure must not widen a share.
+    /// Granting the full total whenever counting broke is the same
+    /// optimistic-grant defect the usage ledger was deleted for: two instances
+    /// that both stumble would each be handed `total`. Three things keep that
+    /// shut, in order of preference:
+    ///
+    /// 1. The directory is read through a descriptor opened at construction, so
+    ///    a permission change or a path swap after startup does not blind the
+    ///    census at all. This is the ordinary case and it stays exact.
+    /// 2. If a read still fails, the count falls back to the highest count this
+    ///    census has already proved. Monotonic, so it only ever narrows.
+    /// 3. If the census never enumerated *even once*, it has no evidence about
+    ///    peers and assumes `ASSUMED_LIVE_INSTANCES_WITHOUT_EVIDENCE` of them
+    ///    rather than assuming solitude.
+    ///
+    /// None of the three can block capture: every branch yields a number of at
+    /// least one, and each self-corrects the moment enumeration works.
     pub fn live_instances(&self) -> u64 {
-        let Ok(siblings) = sibling_instance_roots(&self.data_directory, &self.owned_root) else {
+        let Some(live) = self.count_live() else {
             return self.proved_live.load(Ordering::Relaxed).max(1);
         };
-        let live = siblings.iter().fold(1_u64, |live, candidate| {
-            // `Ok(Some(_))` means the root was claimable, so nothing owns it. The
-            // claim is released immediately; reclamation re-acquires it later.
-            let dead = matches!(candidate.claim(), Ok(Some(_)));
-            if dead { live } else { live.saturating_add(1) }
-        });
         self.proved_live.fetch_max(live, Ordering::Relaxed);
         live
     }

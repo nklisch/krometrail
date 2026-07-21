@@ -478,6 +478,106 @@ async fn a_failed_census_does_not_widen_a_share() {
     drop(second);
 }
 
+/// The census enumerates through a descriptor opened once, so a later permission
+/// change on the instances directory cannot blind it.
+///
+/// The discriminator is deliberate: the peer exits *while* a path-based
+/// `read_dir` would fail. A census that had fallen back to its proved floor would
+/// answer `2`, the count it last proved. Only a census that actually enumerated
+/// can see the departure and answer `1`. Passing this is therefore proof the
+/// retained handle read the directory, not proof that the fallback is safe.
+///
+/// Skipped under root: a root process reads a `0o111` directory by path anyway,
+/// so the fault cannot be injected and the assertion would prove nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_retained_directory_handle_enumerates_after_permissions_change() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let data = TempDir::new().unwrap();
+    let total = 4_000_000_u64;
+
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+
+    // Constructed while the directory is still readable, which is when the
+    // descriptor is opened and the access check happens.
+    let census = InstanceCensus::new(data.path(), first._ownership.root());
+    assert_eq!(census.live_instances(), 2);
+
+    let instances = data.path().join("instances");
+    let restore = fs::metadata(&instances).unwrap().permissions();
+    fs::set_permissions(&instances, fs::Permissions::from_mode(0o111)).unwrap();
+    if fs::read_dir(&instances).is_ok() {
+        fs::set_permissions(&instances, restore).unwrap();
+        return;
+    }
+
+    // Execute-only still permits traversal into each root, so releasing the
+    // peer's lock is observable to anything that can list the directory.
+    drop(second);
+
+    let live = census.live_instances();
+    fs::set_permissions(&instances, restore).unwrap();
+    assert_eq!(
+        live, 1,
+        "the retained descriptor must keep enumerating after the directory is made \
+         unreadable by path; a census reporting 2 fell back to its proved floor instead"
+    );
+}
+
+/// An instance that has *never* seen the instances directory knows nothing about
+/// its peers, and must not conclude it is alone.
+///
+/// This is the hole a monotonic floor cannot cover. The floor starts at this
+/// instance's own `1`, so a census whose very first enumeration fails would hand
+/// out `total / 1` — the whole budget — to every instance that started that way.
+/// Two such instances would jointly hold twice the total. Fail closed instead: no
+/// evidence means a conservative assumed peer count, which still leaves a usable
+/// non-zero share.
+///
+/// Skipped under root: a root process opens and reads a `0o111` directory, so the
+/// fault cannot be injected.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_census_that_never_enumerated_does_not_grant_the_whole_total() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let data = TempDir::new().unwrap();
+    let total = 4_000_000_u64;
+
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+
+    let instances = data.path().join("instances");
+    let restore = fs::metadata(&instances).unwrap().permissions();
+    fs::set_permissions(&instances, fs::Permissions::from_mode(0o111)).unwrap();
+    if fs::read_dir(&instances).is_ok() {
+        fs::set_permissions(&instances, restore).unwrap();
+        return;
+    }
+
+    // Constructed only now: there is no descriptor to retain and no successful
+    // enumeration anywhere in this census's history.
+    let census = InstanceCensus::new(data.path(), first._ownership.root());
+    let live = census.live_instances();
+    fs::set_permissions(&instances, restore).unwrap();
+
+    assert!(
+        live > 1,
+        "a census with no evidence about its peers reported {live} live instances, \
+         which grants this instance the whole {total}-byte total"
+    );
+
+    drop(second);
+}
+
 /// A root whose process exited is not live, so it must not divide the budget. The
 /// survivor regains the whole total on its next operation.
 #[tokio::test]

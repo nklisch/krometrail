@@ -294,8 +294,54 @@ an unpinnable root is carried forward unpinned rather than dropped. `claim()`
 refuses an unpinned root with `Ok(None)` — the same refusal it already returns for
 "a live process holds it" and "the path changed identity under us". One fact now
 drives both consumers from the same place: an undecidable root is unreclaimable
-*and* live. Symlinks are still excluded earlier, by the non-following
-`file_type()` check, so this does not widen what reclamation can reach.
+*and* live. Symlinks are still excluded by a non-following check, so this does not
+widen what reclamation can reach.
 
 See `feature-retention-lifecycle-and-trimming`, "Fifth round outcome", for the
 companion fix that made the census itself fail closed on enumeration failure.
+
+## Sixth round: enumeration moved onto a retained descriptor
+
+`sibling_instance_roots` used to be one `fs::read_dir` by path per call. A path
+lookup re-resolves and re-checks permissions every time, so anything that changed
+the instances directory after startup — a `chmod`, a rename, the path replaced by
+something else — blinded every subsequent enumeration. That is the failure the
+census's fallback existed to absorb, and absorbing it was always second best to
+not having it.
+
+**Fix.** `InstanceCensus` opens the instances directory once at construction and
+keeps the descriptor for the process lifetime. Enumeration `dup`s that descriptor,
+wraps it with `fdopendir`, rewinds, and reads through it. The kernel made the
+access decision at open time and does not revisit it, so a later permission change
+cannot take the listing away. Wired as:
+
+- `InstancesDirectoryHandle` (`crates/krometrail-store/src/instance.rs`) — the
+  retained descriptor, behind a `Mutex` because `dup` shares the open file
+  description's directory cursor and two concurrent readers would each see part of
+  the directory. An undercount is the one error direction this module cannot
+  tolerate, so the cursor is serialised rather than raced.
+- `instance_directory_names` — tries the handle, falls back to `fs::read_dir` by
+  path. A handle that was never opened, or that fails at read time, degrades to
+  exactly the previous behaviour.
+- `instance_root_candidates` — the shared classifier. `sibling_instance_roots` is
+  now this with no handle, which is right for reclamation: a reclaim pass that
+  cannot enumerate simply reclaims nothing.
+
+Two consequences worth recording. `readdir` reports end-of-directory and failure
+identically (a null return), so `errno` is cleared before each call and checked
+after; a mid-directory read error discards the whole listing rather than returning
+a short one. And per-entry classification no longer uses `DirEntry::file_type` —
+`directory_identity`'s existing `symlink_metadata` does the same non-following
+directory test, so a stat failure now yields an unpinned candidate (live,
+unreclaimable) instead of voiding the entire count. Both changes push the same
+direction: never return a listing that is quietly shorter than the truth.
+
+Only Linux and macOS are wired up; `fdopendir` and the `errno` slot are spelled
+per-platform, and any other Unix gets no handle and uses the path fallback. That
+is correct, just less resilient.
+
+Regression: `a_retained_directory_handle_enumerates_after_permissions_change` in
+`crates/krometrail-store/tests/shared_budget.rs`. Its discriminator is a peer that
+*exits* while the directory is `0o111` — a fallback would report the proved floor
+of 2, only a real enumeration sees the departure and reports 1. Skipped under
+root, which reads a `0o111` directory by path anyway.
