@@ -437,3 +437,60 @@ fn wait_for_instance_root(instances: &std::path::Path) -> std::path::PathBuf {
 fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
+
+/// A second process must not disturb a running one's capture.
+///
+/// This is `docs/SPEC.md`'s isolation guarantee stated as a test. The lock test
+/// above proves the mechanism; this proves the consequence, which is the thing
+/// that actually broke: three throwaway starts against a live instance's data
+/// directory used to delete that instance's index and segments, leaving it
+/// writing to deleted inodes while reporting healthy.
+#[test]
+fn a_second_process_leaves_a_running_instance_store_intact() {
+    if !krometrail_store::OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let data = std::env::temp_dir().join(format!(
+        "krometrail-instance-isolation-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut victim = Command::new(env!("CARGO_BIN_EXE_krometrail"))
+        .arg("mcp")
+        .env("KROMETRAIL_DATA_DIR", &data)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("MCP binary should spawn");
+    let root = wait_for_instance_root(&data.join("instances"));
+    let index = root.join("index.sqlite3");
+    assert!(index.is_file(), "startup should create an index");
+
+    // Exactly what destroyed the store before: other processes running their
+    // ordinary startup, including abandoned-root reclamation.
+    for _ in 0..3 {
+        let output = Command::new(env!("CARGO_BIN_EXE_krometrail"))
+            .arg("mcp")
+            .env("KROMETRAIL_DATA_DIR", &data)
+            .output()
+            .expect("a second MCP process should run and exit");
+        assert!(output.status.success(), "stderr: {}", text(&output.stderr));
+    }
+
+    assert!(
+        index.is_file(),
+        "a running instance's index was deleted by another process: {index:?}"
+    );
+    assert!(
+        root.join("segments").is_dir(),
+        "a running instance's segments were deleted by another process"
+    );
+
+    drop(victim.stdin.take());
+    assert!(victim.wait().unwrap().success());
+    let _ = std::fs::remove_dir_all(data);
+}
