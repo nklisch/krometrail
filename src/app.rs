@@ -416,22 +416,16 @@ fn open_storage_with_budget(
         directory: segments_directory,
         rotation: RotationConfig::suggested(),
     })?);
-    // The shared ledger keeps concurrent instances inside one total budget.
-    // Its absence is not an error: the instance then enforces the configured
-    // budget alone rather than refusing to start.
-    let budget_registry =
-        krometrail_store::BudgetRegistry::open(data_directory, &instance_root).map(Arc::new);
-    if budget_registry.is_none() {
-        tracing::warn!(
-            event = "retention.shared_budget_unavailable",
-            "shared budget accounting is unavailable; enforcing the configured budget alone"
-        );
-    }
+    // The live-instance count divides the configured total across concurrent
+    // instances: each one enforces `total / live`. The count comes from the
+    // instance locks already held, so there is nothing to publish and nothing to
+    // go stale.
+    let census = krometrail_store::InstanceCensus::new(data_directory, &instance_root);
     let store = Arc::new(RecordingStore::with_retention(
         segments,
         Arc::clone(&index),
         configured_retention(budget)?,
-        budget_registry,
+        Some(census),
     )?);
     Ok(StorageDependencies {
         store: Arc::clone(&store),

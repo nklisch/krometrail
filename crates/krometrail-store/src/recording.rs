@@ -49,30 +49,6 @@ use crate::{
 };
 
 const RECORD_ENVELOPE_ALLOWANCE: u64 = 4096;
-/// How long a shared-budget share is reused before the registry is consulted
-/// again. Keeps the lock-protected accounting transaction off the append path.
-const BUDGET_SHARE_REFRESH: std::time::Duration = std::time::Duration::from_secs(2);
-/// Fraction of the configured total an instance may grow by before it must
-/// republish and recompute its share.
-///
-/// Elapsed time alone is the wrong invalidation signal for a shared budget. A
-/// capture pipeline can write hundreds of megabytes inside a two-second window,
-/// and every one of those bytes is spent against a grant that was computed when
-/// the ledger still said this instance was empty — so peers size their own
-/// shares against a figure that is already stale by the whole amount written.
-/// That is how two instances that start together can each grow to the *full*
-/// total. Invalidating on bytes written instead ties staleness to the quantity
-/// the bound is expressed in: no instance can drift more than
-/// `total / BUDGET_SHARE_REFRESH_DIVISOR` past what its peers have been told.
-const BUDGET_SHARE_REFRESH_DIVISOR: u64 = 32;
-
-/// The share this instance last obtained, and the usage it was obtained for.
-#[derive(Clone, Copy, Debug)]
-struct BudgetShareCache {
-    at: std::time::Instant,
-    effective: u64,
-    published_usage: u64,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EvidenceReadKind {
@@ -130,13 +106,10 @@ pub struct RecordingStore {
     /// Set when a trim walk found nothing to reclaim; cleared by any later
     /// reclamation so trimming resumes once the store can make progress again.
     trim_exhausted: StdMutex<bool>,
-    /// Shared ledger keeping concurrent instances inside one total budget.
-    /// Absent when this store is not part of a multi-instance data directory, in
-    /// which case the configured budget is enforced directly.
-    budget_registry: Option<Arc<crate::BudgetRegistry>>,
-    /// Last computed share, refreshed on a short interval so the accounting
-    /// transaction stays off the per-frame path.
-    budget_share: StdMutex<Option<BudgetShareCache>>,
+    /// Live-instance count that divides one total budget across concurrent
+    /// instances. Absent when this store is not part of a multi-instance data
+    /// directory, in which case the configured budget is enforced directly.
+    census: Option<crate::InstanceCensus>,
     availability: watch::Sender<u64>,
     #[cfg(test)]
     evidence_read_pause: StdMutex<Option<Arc<EvidenceReadPause>>>,
@@ -168,13 +141,13 @@ impl RecordingStore {
     /// Callers must have completed `recover()` against this index first; the
     /// constructor verifies that invariant rather than trusting it.
     ///
-    /// `budget_registry` shares one total budget across concurrent instances.
-    /// Without it the configured budget is enforced by this instance alone.
+    /// `census` divides one total budget across concurrent instances. Without it
+    /// the configured budget is enforced by this instance alone.
     pub fn with_retention(
         segments: Arc<SegmentWriter>,
         index: Arc<SqliteIndex>,
         retention: RetentionLifecycle,
-        budget_registry: Option<Arc<crate::BudgetRegistry>>,
+        census: Option<crate::InstanceCensus>,
     ) -> krometrail_core::Result<Self> {
         let data_directory = index
             .database_path()
@@ -204,8 +177,7 @@ impl RecordingStore {
             retention,
             budget_state: StdMutex::new(RecordingBudgetState::Available),
             trim_exhausted: StdMutex::new(false),
-            budget_registry,
-            budget_share: StdMutex::new(None),
+            census,
             availability,
             #[cfg(test)]
             evidence_read_pause: StdMutex::new(None),
@@ -592,12 +564,11 @@ impl RecordingStore {
             .ok_or_else(|| persistence_error("frame storage estimate overflow"))?;
         let snapshot = self.refresh_usage()?;
         let total = snapshot.usage.total_bytes()?;
-        // One decision basis for the whole append: the share is judged against
-        // the usage this append actually observed *plus* the bytes it is about
-        // to write. A frame carries no size limit of its own, so judging only
-        // what is already on disk would let a single frame larger than the drift
-        // allowance be admitted against a grant that never accounted for it.
-        let effective = self.effective_budget_for_append(total, required);
+        // One decision basis for the whole append. The share is an equal division
+        // of the total, so the bytes about to be written need no separate
+        // accounting: `total + required <= effective` already refuses a frame of
+        // any size that would carry this instance past its share.
+        let effective = self.effective_budget();
         if total
             .checked_add(required)
             .is_some_and(|needed| needed <= effective)
@@ -689,9 +660,6 @@ impl RecordingStore {
     }
 
     async fn enforce_locked(&self) -> krometrail_core::Result<RetentionStatus> {
-        // Republish before deciding: peers must see this instance's real usage,
-        // and this instance must enforce against theirs.
-        self.republish_budget_share();
         let mut snapshot = self.refresh_usage()?;
         if self.usage_is_within_budget(&snapshot)? {
             self.set_budget_state(RecordingBudgetState::Available);
@@ -714,7 +682,7 @@ impl RecordingStore {
         snapshot: &crate::index::retention::UsageSnapshot,
     ) -> krometrail_core::Result<bool> {
         let total = snapshot.usage.total_bytes()?;
-        let effective = self.effective_budget_at(total);
+        let effective = self.effective_budget();
         if total <= effective {
             return Ok(true);
         }
@@ -741,125 +709,32 @@ impl RecordingStore {
             .map(|_| ())
     }
 
-    /// This instance's current byte allowance.
+    /// This instance's byte allowance: an equal share of one total budget.
     ///
-    /// With a shared registry this is the configured total minus what other live
-    /// instances hold (never below an equal share), so N concurrent instances fit
-    /// inside one total budget rather than consuming N budgets. Without a
-    /// registry — or whenever shared accounting is unavailable — it is the
-    /// configured budget, which is what a lone instance should get anyway.
+    /// The configured budget is a total across every live instance, so with `N`
+    /// instances sharing a data directory each may hold `total / N`. Every write
+    /// is judged against a count read at that moment, which makes the guarantee
+    /// directly provable: no instance ever exceeds `total / N`, so once each
+    /// instance has performed one operation since the newest one joined, the
+    /// combined footprint is at most the total.
     ///
-    /// The registry transaction is throttled off the per-frame path: it takes a
-    /// file lock, and putting that on every append would be both slow and a
-    /// contention point. The throttle is bounded in *three* dimensions that can
-    /// invalidate a share — elapsed time, this instance's own growth since it
-    /// published, and the size of the write being judged right now — so neither a
-    /// fast writer nor a single large write can spend a budget against a stale
-    /// grant.
+    /// This deliberately does not ask what peers are *using*. A policy shaped
+    /// like `total - other_live_usage` would let a busy instance claim what idle
+    /// peers are not holding, but it can only be honoured with each peer's exact
+    /// byte count at the instant of a write — a figure that is stale the moment
+    /// it is read, because instances write independently. Four review rounds
+    /// found four defects in the machinery that tried, all of them the same
+    /// shape. The accepted cost of the simpler policy is that two live instances
+    /// each get `total / 2` even when one is idle. Predictability is the trade.
     ///
-    /// Callers that already hold a usage total must use `effective_budget_at`;
-    /// this variant has to re-read usage to know whether the share is still
-    /// valid, so it exists only for paths where no total is at hand.
+    /// Without a census — a single-instance store, or a host that cannot prove
+    /// ownership — this is the configured budget, which is what a lone instance
+    /// gets anyway.
     fn effective_budget(&self) -> u64 {
-        self.budget_share(false, None, 0)
-    }
-
-    /// This instance's byte allowance, judged against a usage total the caller
-    /// already computed.
-    fn effective_budget_at(&self, observed_usage: u64) -> u64 {
-        self.budget_share(false, Some(observed_usage), 0)
-    }
-
-    /// This instance's byte allowance for a write of `pending_bytes`.
-    ///
-    /// The pending bytes enter the decision twice, and both matter:
-    ///
-    /// - they count toward staleness, so a write larger than the drift allowance
-    ///   forces a fresh accounting transaction instead of being admitted against
-    ///   a grant computed without it;
-    /// - they are *reserved* in the ledger, so peers deciding concurrently see
-    ///   the bytes this instance has committed to rather than only what it held
-    ///   before the write. Without the reservation, two instances starting
-    ///   together each measure themselves against a peer the ledger reports as
-    ///   empty and both admit a write the total cannot hold.
-    ///
-    /// A reservation for a write that is then refused leaves the ledger briefly
-    /// overstating this instance. That direction is safe — it tightens this
-    /// instance's own grant and its peers' — and the next transaction corrects it.
-    fn effective_budget_for_append(&self, observed_usage: u64, pending_bytes: u64) -> u64 {
-        self.budget_share(false, Some(observed_usage), pending_bytes)
-    }
-
-    /// Publishes usage and recomputes the share, ignoring the throttle.
-    ///
-    /// Called at durability boundaries. Without an eager publish, an instance
-    /// that fills quickly would still advertise the usage it had when it started,
-    /// and its peers would size their own shares against a stale, far too small
-    /// figure — letting the combined footprint drift well past the total.
-    /// Publishing on flush ties the ledger to the cadence the store already uses
-    /// to make evidence durable.
-    fn republish_budget_share(&self) -> u64 {
-        self.budget_share(true, None, 0)
-    }
-
-    fn budget_share(&self, force: bool, observed_usage: Option<u64>, pending_bytes: u64) -> u64 {
         let configured = self.retention.budget().get();
-        let Some(registry) = self.budget_registry.as_ref() else {
-            return configured;
-        };
-        let drift_allowance = (configured / BUDGET_SHARE_REFRESH_DIVISOR).max(1);
-        let now = std::time::Instant::now();
-        let mut my_usage = observed_usage;
-        if !force {
-            let cached = *self
-                .budget_share
-                .lock()
-                .expect("budget share lock poisoned");
-            if let Some(cached) = cached
-                && now.duration_since(cached.at) < BUDGET_SHARE_REFRESH
-            {
-                // A share stays valid only while this instance still resembles
-                // the instance its peers were told about. The figure compared is
-                // what this instance will hold once the pending write lands, so
-                // growth past the drift allowance — whether it accumulated across
-                // many small appends or arrives as one large one — means the
-                // ledger now understates this instance, and both its own grant
-                // and every peer's are being computed from a figure this store
-                // knows to be wrong.
-                let usage = my_usage.unwrap_or_else(|| self.observed_usage());
-                my_usage = Some(usage);
-                let projected = usage.saturating_add(pending_bytes);
-                if projected.abs_diff(cached.published_usage) < drift_allowance {
-                    return cached.effective;
-                }
-            }
-        }
-        // Publishing needs this instance's own usage; the accounting rows are
-        // already maintained, so this is a read rather than a checkpoint.
-        let my_usage = my_usage.unwrap_or_else(|| self.observed_usage());
-        let published_usage = my_usage.saturating_add(pending_bytes);
-        let effective = registry
-            .publish(published_usage, configured)
-            .map_or(configured, |share| share.effective_budget);
-        *self
-            .budget_share
-            .lock()
-            .expect("budget share lock poisoned") = Some(BudgetShareCache {
-            at: now,
-            effective,
-            published_usage,
-        });
-        effective
-    }
-
-    /// This instance's total retained bytes as the accounting rows currently see
-    /// them. Unavailable accounting reads as zero so it can never block capture.
-    fn observed_usage(&self) -> u64 {
-        self.index
-            .usage_snapshot()
-            .ok()
-            .and_then(|snapshot| snapshot.usage.total_bytes().ok())
-            .unwrap_or(0)
+        self.census.as_ref().map_or(configured, |census| {
+            configured / census.live_instances().max(1)
+        })
     }
 
     /// Age cutoff for the configured policy, read from the index's own clock.

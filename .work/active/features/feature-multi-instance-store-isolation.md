@@ -8,7 +8,7 @@ depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-20
-updated: 2026-07-20
+updated: 2026-07-21
 ---
 
 # Multi-instance store isolation and non-destructive recovery
@@ -209,9 +209,13 @@ caller that bypasses the lock.
    `index/{schema,segments,frames,reconcile,retention}.rs`, `recovery.rs`.
 4. `src/app.rs` — instance acquisition, legacy clear, dead-root reclaim,
    recovery-before-writer ordering.
-5. `crates/krometrail-store/src/budget_registry.rs` — shared total-budget ledger
-   built on the same ownership primitive (see
-   `feature-retention-lifecycle-and-trimming` for the allocation policy).
+5. `InstanceCensus` in `crates/krometrail-store/src/instance.rs` — the live
+   instance count that divides one total budget, built on the same ownership
+   primitive (see `feature-retention-lifecycle-and-trimming` for the policy).
+   This replaced a separate `budget_registry.rs` usage ledger, which was deleted
+   outright; the allocation policy needs only the *count* of live instances, and
+   that count is a direct read of the lock files this feature already
+   established.
 
 ## Testing
 
@@ -235,8 +239,10 @@ caller that bypasses the lock.
 - **Accepted data loss on first run after upgrade.** The 9.6 GB flat store is
   cleared. User-confirmed.
 - **Instance roots accumulate if reclamation fails.** Reclaim is best effort and
-  never blocks startup, so repeated failures leak roots. Bounded by the shared
-  budget once the registry lands.
+  never blocks startup, so repeated failures leak roots. A leaked root is *not*
+  bounded by the shared budget: the budget is divided by the count of roots held
+  under lock, and an abandoned root holds no lock, so it neither takes a share
+  nor is charged against one. Reclaim is what removes it.
 - **`flock` semantics on network filesystems** are unreliable. A data directory
   on NFS/SMB would weaken isolation to layout-only. Not currently detected.
 

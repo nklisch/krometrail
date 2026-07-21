@@ -1,7 +1,6 @@
 //! Recording persistence adapters.
 
 pub(crate) mod artifacts;
-pub mod budget_registry;
 pub mod index;
 pub mod instance;
 mod permissions;
@@ -11,11 +10,10 @@ pub mod segments;
 mod recording;
 mod retention;
 
-pub use budget_registry::{BudgetRegistry, BudgetShare};
 pub use index::{IndexStoreConfig, SqliteIndex};
 pub use instance::{
-    InstanceOwnership, InstanceRootCandidate, OWNERSHIP_IS_ENFORCED, clear_legacy_flat_store,
-    has_legacy_flat_store, reclaim_instance_root, sibling_instance_roots,
+    InstanceCensus, InstanceOwnership, InstanceRootCandidate, OWNERSHIP_IS_ENFORCED,
+    clear_legacy_flat_store, has_legacy_flat_store, reclaim_instance_root, sibling_instance_roots,
 };
 pub use recording::RecordingStore;
 pub use recovery::{RecoveryReport, recover};

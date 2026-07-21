@@ -124,57 +124,33 @@ reshaping the walk.
   bounded by an expired segment's `retention_sequence`; with no such segment,
   age-out skips events entirely. Unbounded event eviction remains correct only
   under real pressure.
-- **Shared budget registry: the budget is a total, not a per-instance
-  allowance.** `budget_registry.rs` is a small JSON ledger under
-  `instances/.budget-registry.json`, guarded by its own `flock` file. Each
-  instance publishes its usage and reads its peers'; every budget decision goes
-  through `RecordingStore::effective_budget()` rather than the configured value.
-  - *Allocation policy:* `max(equal_share, total - other_live_usage)`. The first
-    term lets a busy instance use everything idle peers are not using; the floor
-    stops a busy instance being starved by peers that grew first. The floor is
-    also what permits the sum to exceed the total, because isolation forbids one
-    instance from reclaiming another's data. An instance already over its share
-    trims back to it on its own next append, so the combined footprint *settles*
-    at the total.
-  - *Liveness reuses `acquire_existing`* — the same primitive that decides
-    reclaimability — so "who counts toward the total" and "whose root may be
-    reclaimed" can never disagree. A dead instance's bytes stop counting exactly
-    when tier-0 reclaim becomes able to free them.
-  - *The lock is held only for the accounting transaction* (read, prune dead
-    entries, write, unlock), never across data I/O, so instances never serialize
-    on each other's capture writes. Acquisition is non-blocking: contention
-    degrades this pass rather than putting a lock wait on the capture path.
-  - *Never blocks capture.* Corrupt ledger, contended lock, failed write, or a
-    peer that died mid-transaction all degrade to per-instance enforcement.
-    Writes are temp-file-plus-rename, so a death mid-write leaves the previous
-    ledger intact. An undecidable liveness probe counts the peer as live, which
-    tightens this instance rather than letting the total silently overshoot.
-  - *Publish cadence:* invalidated on **both** elapsed time and bytes written —
-    `BUDGET_SHARE_REFRESH` (2 s) or growth past `total / 32` since the last
-    publish, whichever comes first. Also forced at every `enforce_locked` (flush).
-  - **Real overshoot bound, and why the documented one was wrong.** *Revised
-    after cross-model review.* The claimed `(live - 1) * total / live` bound
-    assumed instances republish often enough for peers to see them. Time alone
-    does not guarantee that: `flush` runs at session *stop*, so a live session's
-    only budget check is the append path, and a capture pipeline can write far
-    more than a share inside a two-second window. Measured on the pre-fix build,
-    two instances growing without an intervening flush reached **3 394 431 bytes
-    against a 2 000 000 total** — 1.7x, past the documented bound. Making the
-    share expire on bytes as well as on time ties staleness to the quantity the
-    bound is expressed in: the same scenario now settles at 2 041 968 bytes, an
-    overshoot of 41 968 against a 62 500 drift allowance. **The bound as stated
-    now:** the combined footprint settles at the total, and may instantaneously
-    exceed it by at most `total / 32` per live instance before the next
-    accounting transaction pulls it back. Recorded in `docs/SPEC.md`.
-  - *Test shape.* `concurrent_instances_share_one_total_budget` filled instances
-    one after another, so the first saw an empty ledger exactly once and every
-    later one saw a settled ledger — it could not observe concurrency at all. It
-    now interleaves round-robin (and passes before and after, which is itself the
-    finding: interleaving *with* a flush per frame converges either way). The test
-    that actually discriminates is
-    `instances_that_never_flush_still_share_one_total_budget`, which reproduces
-    the real capture shape — growth with no durability boundary — and fails on the
-    pre-fix build with the numbers above.
+- **Shared budget: the budget is a total, divided equally across live
+  instances.** Every budget decision goes through
+  `RecordingStore::effective_budget()` rather than the configured value, and that
+  value is `total / live_instances`. The live count comes from `InstanceCensus`
+  (`crates/krometrail-store/src/instance.rs`), which enumerates sibling roots and
+  probes each with `acquire_existing` — the same primitive that decides
+  reclaimability, so "who counts toward the total" and "whose root may be
+  reclaimed" can never disagree.
+  - *The policy needs a count, not usage.* This is the whole point of the shape.
+    A count is exact at the moment it is read, so there is nothing to publish,
+    nothing to cache, no staleness window, and no failure path that could hand
+    out a grant no peer can see. See "Fourth round outcome" below for the four
+    defects that lived in the usage-sharing machinery this replaced.
+  - *Sampling cadence: every budget decision, no cache.* A cached count is a
+    stale count, which is the defect class being deleted. Measured cost of one
+    read: ~3.5 µs alone, ~7 µs with one live peer, ~30 µs with eight — against an
+    append that already does a segment write and a SQLite transaction. Not worth
+    a cache.
+  - *A lone instance gets the whole total* (`total / 1`), so a single-process
+    install is unaffected. An undecidable sibling counts as live, which tightens
+    this instance rather than letting the total overshoot. Where ownership cannot
+    be proved (non-Unix), sibling enumeration returns nothing, so `N = 1` and each
+    instance enforces the full configured budget — the cost already documented for
+    that platform.
+  - *Accepted cost:* two live instances each get `total / 2` even if one is idle,
+    and a single write larger than a share is refused however much disk is free.
+    Predictability is the deliberate trade.
 - **`status()` left the mutation gate.** It is a read, and serialising it behind
   the gate made it wait out whatever eviction was running — the opposite of what
   an agent checking a store under pressure needs. It uses
@@ -229,8 +205,8 @@ reshaping the walk.
 4. `recording.rs` — `reclaim`/`reclaim_once` tiered walk, `trim_locked`,
    `ReclaimOutcome` observability, gate-free `status()`,
    `verify_recovery_completed`.
-5. `budget_registry.rs` (new) — shared lock-protected ledger, liveness pruning,
-   allocation policy.
+5. `instance.rs` — `InstanceCensus`, the live-instance count that divides one
+   total budget. (Superseded a `budget_registry.rs` usage ledger, now deleted.)
 6. `src/app.rs` — retention configuration and the dead-instance reclaim tier.
 
 ## Tunables
@@ -270,12 +246,15 @@ test still passes and the new one fails. The new test applies exactly enough
 pressure that losing the artifact suffices, then asserts the source frames
 survive.
 
-`tests/shared_budget.rs`: three concurrent instances sharing one total budget use
-strictly less than three unshared instances and stay inside the total; a dead instance's bytes stop counting and the survivor regains
-the whole budget; a corrupt ledger degrades without blocking capture and is
-repaired by the next transaction; registry bookkeeping files are never mistaken
-for instance roots. Unit tests in `budget_registry.rs` cover the allocation
-policy directly, including that balanced instances sum exactly to the total.
+`tests/shared_budget.rs` covers the properties the equal-division policy actually
+has: a lone instance gets the whole total; two live instances each enforce
+`total / 2` and neither exceeds it regardless of the other's usage, whether they
+grow one after another or concurrently; a frame larger than a share is refused
+while one that fits is admitted; a dead root does not count toward `N` and the
+survivor regains the whole budget; and an instance that grew while alone stays put
+while idle but trims toward its smaller share on its first operation after a peer
+joins. Verified to discriminate: forcing `live_instances()` to return 1 fails five
+of the six.
 
 ## Risks
 
@@ -287,14 +266,19 @@ policy directly, including that balanced instances sum exactly to the total.
   and a step forwards expires evidence early.
 - **Artifact grace is best effort**, not a guarantee; under sustained pressure a
   fresh artifact link can still die. The override is logged.
-- **Shared-budget overshoot is real, transient, and has no useful closed form.**
-  An instance that grew while the live set was smaller keeps its bytes until it
-  trims, ages out, or exits. Sequential joins accumulate to `total x H_N`
-  (harmonic), which is why the earlier `(live - 1) * total / live` claim was
-  withdrawn — see the third review round.
-- **Registry liveness probing acquires peer locks.** Cheap and non-blocking, but
-  it means an accounting pass briefly claims and releases each dead peer's lock.
-  Harmless — reclaim re-acquires — but it is a side effect of a read-shaped call.
+- **An instance that grew while the live count was lower stays above its current
+  share until its next operation.** Reclaim is operation-driven; there is no
+  background scheduler. Usage does not grow while idle, and the very next
+  operation is judged against the current share, but nothing reclaims the excess
+  in the meantime. Stated as such in `docs/SPEC.md` — not softened into a
+  convergence claim.
+- **Census liveness probing acquires peer locks.** Cheap and non-blocking, but a
+  census briefly claims and releases each *dead* peer's lock. Harmless — reclaim
+  re-acquires — but it is a side effect of a read-shaped call, and it now happens
+  on every budget decision rather than on a throttled accounting pass.
+- **Live instances each hold a share even when idle.** Two instances means
+  `total / 2` each, so an idle peer does hold capacity it is not using. Accepted:
+  the alternative requires exact peer usage at write time, which is not knowable.
 
 ## Acceptance
 
@@ -309,6 +293,10 @@ policy directly, including that balanced instances sum exactly to the total.
 - `open_segment_count` accounting reflects reality.
 
 ## Second cross-model review round: shared-budget bound
+
+**Historical.** Everything below describes the usage ledger, which was deleted in
+the fourth round. Kept as the record of how the defect was found; none of it
+describes current code.
 
 The shared-budget overshoot bound was stated but not enforced. The share cache
 was invalidated by bytes already written, and the check ran *before* the append,
@@ -345,6 +333,10 @@ floor and the combined footprint stays inside the bound.
 arbitrary join order; see the third review round.
 
 ## Third cross-model review round: unrecorded reservations and an unsound bound
+
+**Historical**, for the same reason as the second round: the ledger it analyses no
+longer exists. The `11T/6` construction is still worth keeping, because it is why
+the equal-share floor could never be reconciled with a hard total bound.
 
 ### A ledger write failure still granted a share
 
@@ -445,18 +437,50 @@ for age-out generally.
 Not restated in softer words: the text says outright that Krometrail does not
 claim the combined footprint converges on its own.
 
-### Deferred: lock contention grants the full budget
+### Deferred defect: lock contention granted the full budget — now moot
 
-`recording.rs:841-843` maps a `None` from `BudgetRegistry::publish` — which
-includes lock contention, not just a failed write — to the full configured
-budget. Two instances can both hit contention, both receive unrecorded full
-grants, and each append nearly the whole total. Confirmed with a probe test:
-two contended instances were jointly granted 2_000_000 against a 1_000_000
-total.
+The ledger mapped a `None` from `BudgetRegistry::publish` — which included lock
+contention, not just a failed write — to the full configured budget. Two
+instances could both hit contention, both receive unrecorded full grants, and
+each append nearly the whole total. Confirmed with a probe test: two contended
+instances were jointly granted 2_000_000 against a 1_000_000 total.
 
-Not fixed here. The usage ledger is being deleted outright in a follow-up pass:
-allocation becomes `total / live_count`, which needs only the live-instance count
-already available from the instance lock files, and therefore has no publish
-path, no staleness cache, and no unrecorded-reservation fallback for contention
-to fall through. The defect is real but its whole mechanism is being removed, so
-a fix here would be throwaway.
+**Resolved by deletion, not by a fix.** There is no ledger and therefore no ledger
+lock, so there is nothing to contend on and no degraded-grant branch to fall
+through. The mechanism is gone.
+
+## Fourth round outcome: the usage ledger deleted
+
+Four consecutive review rounds found four defects, and all four were the same
+shape: stale peer usage granting `N x total`; a large append landing after the
+staleness check; a failed ledger write still granting; lock contention still
+granting the full budget. Every one lived in the usage-sharing machinery, and
+each fix added another guard to it.
+
+The root cause is not any of the four. `max(equal_share, total - other_live_usage)`
+can only be honoured with every peer's *current* byte usage exactly at the moment
+of a write, and instances write independently and publish periodically, so that
+number is stale the instant it is read. Separately, the equal-share floor
+guarantees each instance `total/N` regardless of what peers hold, so three
+sequential joins reach `11T/6` by design. The spec was simultaneously promising a
+hard total bound, "a busy instance may use everything idle peers aren't", and "no
+instance is starved" — mutually incompatible without a central allocator every
+instance must synchronously ask.
+
+**The change: grant `total / live_count`; delete the ledger.** The policy now
+needs only the *count* of live instances, which the instance lock files already
+give exactly and for free. Nothing is published, nothing goes stale, and there are
+no failure paths to get wrong.
+
+Deleted: `crates/krometrail-store/src/budget_registry.rs` (318 lines, including
+6 unit tests), its module declaration and `BudgetRegistry`/`BudgetShare` exports,
+`BUDGET_SHARE_REFRESH` / `BUDGET_SHARE_REFRESH_DIVISOR` / `BudgetShareCache` and
+the `budget_share` cache field, `effective_budget_at`, `effective_budget_for_append`,
+`republish_budget_share`, `observed_usage`, and the pending-bytes reservation
+threading through `ensure_append_capacity`. `effective_budget()` is now nine
+lines. Net: about 480 lines removed, about 45 added.
+
+Documented in `docs/SPEC.md`: each instance enforces `<= total/N` at every write,
+so once every instance has performed one operation since the last join, combined
+usage is `<= total`. The operation-driven carve-out is kept and stated plainly, as
+is the accepted cost — two live instances each get `total/2` even if one is idle.

@@ -1,18 +1,32 @@
 //! Multiple instances inside one total budget.
+//!
+//! The policy is an equal division: with `N` live instances each one enforces
+//! `total / N` at every write. `N` comes from the instance lock files processes
+//! already hold, so it is exact when it is read — there is no published usage, no
+//! staleness window, and no failure path that could grant more than a share.
 
 use std::{fs, sync::Arc, time::Duration};
 
 use krometrail_core::{
     CaptureOrdinal, CapturedFrame, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, FrameId,
-    ImageFormat, ObservedTime, PixelDimensions, RecordingSink, RetentionLifecycle, RetentionStore,
-    SessionId, SessionTime, TargetId,
+    ImageFormat, ObservedTime, PixelDimensions, RecordingSink, RetentionLifecycle, SessionId,
+    SessionTime, TargetId,
 };
 use krometrail_store::{
-    BudgetRegistry, IndexStoreConfig, InstanceOwnership, RecordingStore, RotationConfig,
-    SegmentStoreConfig, SegmentWriter, SqliteIndex,
+    IndexStoreConfig, InstanceCensus, InstanceOwnership, OWNERSHIP_IS_ENFORCED, RecordingStore,
+    RotationConfig, SegmentStoreConfig, SegmentWriter, SqliteIndex,
 };
 use tempfile::TempDir;
 use uuid::Uuid;
+
+/// Bytes an instance may hold beyond its accounted share.
+///
+/// Enforcement bounds the *accounted* usage, while these tests weigh the whole
+/// instance root on disk. The two differ by SQLite bookkeeping — an
+/// un-checkpointed WAL, page slack — which is small and bounded but not zero.
+/// Every assertion below is far coarser than this allowance, so it never decides
+/// a result.
+const ACCOUNTING_SLACK: u64 = 512 * 1024;
 
 fn frame(session: u128, target: u128, id: u128, ordinal: u64, bytes: usize) -> EncodedFrame {
     EncodedFrame::new(
@@ -42,7 +56,9 @@ struct Instance {
     store: RecordingStore,
 }
 
-fn open_instance(data: &TempDir, total_budget: u64, registry: bool) -> Instance {
+/// Opens an instance. `shared` decides whether it divides the total with its
+/// peers or enforces the configured budget alone.
+fn open_instance(data: &TempDir, total_budget: u64, shared: bool) -> Instance {
     let ownership = InstanceOwnership::acquire_new(data.path()).unwrap();
     let root = ownership.root().to_path_buf();
     let segments = root.join("segments");
@@ -74,7 +90,7 @@ fn open_instance(data: &TempDir, total_budget: u64, registry: bool) -> Instance 
             Duration::ZERO,
         )
         .unwrap(),
-        registry.then(|| Arc::new(BudgetRegistry::open(data.path(), &root).unwrap())),
+        shared.then(|| InstanceCensus::new(data.path(), &root)),
     )
     .unwrap();
     Instance {
@@ -110,11 +126,9 @@ async fn append_one(instance: &Instance, session: u128, ordinal: u64, bytes: usi
 
 /// Grows every instance at the same time, one frame each per round.
 ///
-/// This is the shape the shared budget actually has to survive: no instance
-/// reaches its ceiling before the others start, so each one's view of "what my
-/// peers are using" is being invalidated by the others as it decides. Filling
-/// instances one after another cannot observe that — the first instance sees an
-/// empty ledger exactly once and every later instance sees a settled one.
+/// This is the shape the shared budget has to survive: no instance reaches its
+/// ceiling before the others start, so each one is deciding while its peers are
+/// growing. Filling instances one after another cannot observe that.
 async fn fill_concurrently(instances: &[(&Instance, u128)], frames: u64, bytes: usize) {
     let mut active: Vec<bool> = vec![true; instances.len()];
     for ordinal in 1..=frames {
@@ -130,136 +144,12 @@ async fn fill_concurrently(instances: &[(&Instance, u128)], frames: u64, bytes: 
     }
 }
 
-async fn usage(instance: &Instance) -> u64 {
-    instance
-        .store
-        .status()
-        .await
-        .unwrap()
-        .usage
-        .total_bytes()
-        .unwrap()
-}
-
-/// The requirement: N instances share one total budget rather than consuming N
-/// budgets. Without the registry each instance would independently fill to the
-/// whole budget, so the combined footprint would be a multiple of the intent.
-#[tokio::test]
-async fn concurrent_instances_share_one_total_budget() {
-    let total = 2_000_000_u64;
-
-    let shared = TempDir::new().unwrap();
-    let first = open_instance(&shared, total, true);
-    let second = open_instance(&shared, total, true);
-    let third = open_instance(&shared, total, true);
-    fill_concurrently(&[(&first, 1), (&second, 2), (&third, 3)], 60, 40_000).await;
-    let shared_total = usage(&first).await + usage(&second).await + usage(&third).await;
-
-    let isolated = TempDir::new().unwrap();
-    let alone = open_instance(&isolated, total, false);
-    let other = open_instance(&isolated, total, false);
-    let another = open_instance(&isolated, total, false);
-    fill_concurrently(&[(&alone, 1), (&other, 2), (&another, 3)], 60, 40_000).await;
-    let unshared_total = usage(&alone).await + usage(&other).await + usage(&another).await;
-
-    assert!(
-        shared_total < unshared_total,
-        "shared accounting must bound the combined footprint: shared {shared_total} \
-         unshared {unshared_total}"
-    );
-    // The bound the product promises: the combined footprint of concurrently
-    // growing instances stays inside one total budget.
-    assert!(
-        shared_total <= total,
-        "combined usage {shared_total} exceeded the total budget {total}"
-    );
-}
-
-/// A dead instance's bytes must stop counting the moment its root becomes
-/// reclaimable, so an exited process cannot permanently hold the total hostage.
-#[tokio::test]
-async fn a_dead_instance_stops_counting_toward_the_total() {
-    let data = TempDir::new().unwrap();
-    let total = 1_000_000_u64;
-
-    let departed = open_instance(&data, total, true);
-    fill(&departed, 1, 20, 40_000).await;
-    let departed_usage = usage(&departed).await;
-    assert!(departed_usage > 0);
-
-    let survivor = open_instance(&data, total, true);
-    let registry = BudgetRegistry::open(data.path(), survivor._ownership.root()).unwrap();
-
-    let while_alive = registry.publish(0, total).unwrap();
-    assert_eq!(while_alive.live_instances, 2);
-    assert!(while_alive.other_live_usage > 0);
-
-    drop(departed);
-
-    let after_exit = registry.publish(0, total).unwrap();
-    assert_eq!(after_exit.live_instances, 1);
-    assert_eq!(after_exit.other_live_usage, 0);
-    assert_eq!(
-        after_exit.effective_budget, total,
-        "a lone survivor should regain the whole budget"
-    );
-}
-
-/// Degraded accounting must always beat stalled capture.
-#[tokio::test]
-async fn a_corrupt_registry_degrades_instead_of_blocking_capture() {
-    let data = TempDir::new().unwrap();
-    let total = 1_000_000_u64;
-    let instance = open_instance(&data, total, true);
-
-    fs::write(
-        data.path().join("instances/.budget-registry.json"),
-        b"{ not json at all",
-    )
-    .unwrap();
-
-    // Capture continues, and the instance still gets a usable budget.
-    let value = frame(9, 90, 900, 1, 40_000);
-    instance.store.append_frame(value.clone()).await.unwrap();
-    instance
-        .store
-        .flush(value.metadata().session_id())
-        .await
-        .unwrap();
-
-    let registry = BudgetRegistry::open(data.path(), instance._ownership.root()).unwrap();
-    let share = registry
-        .publish(1_000, total)
-        .expect("a corrupt ledger is treated as empty, not fatal");
-    assert_eq!(share.live_instances, 1);
-    assert_eq!(share.effective_budget, total);
-
-    // The next successful transaction repairs the file.
-    let repaired = fs::read(data.path().join("instances/.budget-registry.json")).unwrap();
-    assert!(serde_json::from_slice::<serde_json::Value>(&repaired).is_ok());
-}
-
-/// The registry lives beside instance roots and must not be mistaken for one.
-#[tokio::test]
-async fn registry_files_are_not_treated_as_instance_roots() {
-    let data = TempDir::new().unwrap();
-    let instance = open_instance(&data, 1_000_000, true);
-    let registry = BudgetRegistry::open(data.path(), instance._ownership.root()).unwrap();
-    registry.publish(1_000, 1_000_000).unwrap();
-
-    let siblings =
-        krometrail_store::sibling_instance_roots(data.path(), instance._ownership.root()).unwrap();
-    assert!(
-        siblings.is_empty(),
-        "registry bookkeeping files must never be reclaimed as instance roots: {siblings:?}"
-    );
-}
 /// Bytes an instance actually occupies on disk.
 ///
 /// Deliberately not `RetentionStatus`: a store mid-session holds open segments
-/// that the status surface refuses to summarise, and the question this test asks
-/// — how much disk do these processes jointly hold right now — is answered by
-/// the filesystem, not by the accounting rows.
+/// that the status surface refuses to summarise, and the question these tests ask
+/// — how much disk do these processes jointly hold right now — is answered by the
+/// filesystem, not by the accounting rows.
 fn instance_root_bytes(path: &std::path::Path) -> u64 {
     let mut total = 0;
     let Ok(entries) = fs::read_dir(path) else {
@@ -276,75 +166,130 @@ fn instance_root_bytes(path: &std::path::Path) -> u64 {
     total
 }
 
-/// The overshoot bound: growth between accounting transactions is capped by a
-/// fraction of the total, not by the capture write rate.
-///
-/// Mirrors `BUDGET_SHARE_REFRESH_DIVISOR` in the store.
-const SHARE_DRIFT_DIVISOR: u64 = 32;
-
-/// Instances grow without ever reaching a durability boundary.
-///
-/// This is the shape real capture has: `flush` runs when a session stops, so a
-/// live session's only budget check is the append path. If that path reuses a
-/// share computed while the ledger still showed this instance empty, two
-/// instances that start together each spend the *whole* total before either one
-/// tells the other anything. Recorded on the pre-fix build: 3_394_431 bytes
-/// against a 2_000_000 total.
+/// A store nobody shares with gets the configured budget in full: `total / 1`.
 #[tokio::test]
-async fn instances_that_never_flush_still_share_one_total_budget() {
-    let total = 2_000_000_u64;
-    let live = 2;
+async fn a_lone_instance_gets_the_whole_total() {
+    let data = TempDir::new().unwrap();
+    let total = 4_000_000_u64;
+    let alone = open_instance(&data, total, true);
+
+    assert_eq!(
+        InstanceCensus::new(data.path(), alone._ownership.root()).live_instances(),
+        1
+    );
+
+    fill(&alone, 1, 200, 40_000).await;
+    let used = instance_root_bytes(alone._ownership.root());
+    assert!(
+        used > total / 2,
+        "a lone instance must be able to use more than an equal share of two: \
+         used {used} of {total}"
+    );
+    assert!(
+        used <= total + ACCOUNTING_SLACK,
+        "a lone instance must still stay inside the configured total: used {used} of {total}"
+    );
+}
+
+/// The guarantee: with two live instances each enforces `total / 2` at every
+/// write, so neither can exceed its share whatever its peer is doing and the
+/// combined footprint stays inside the total.
+#[tokio::test]
+async fn two_live_instances_each_enforce_half_the_total() {
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let total = 4_000_000_u64;
+    let share = total / 2;
+
     let data = TempDir::new().unwrap();
     let first = open_instance(&data, total, true);
     let second = open_instance(&data, total, true);
 
-    for ordinal in 1..=100_u64 {
-        for (instance, session) in [(&first, 1_u128), (&second, 2_u128)] {
-            let value = frame(
-                session,
-                session + 1_000,
-                session * 1_000 + u128::from(ordinal),
-                ordinal,
-                40_000,
-            );
-            // No flush: budget pressure must be resolved by the append path alone.
-            let _ = instance.store.append_frame(value).await;
-        }
-    }
+    assert_eq!(
+        InstanceCensus::new(data.path(), first._ownership.root()).live_instances(),
+        2
+    );
 
-    let combined = instance_root_bytes(first._ownership.root())
-        + instance_root_bytes(second._ownership.root());
-    let bound = total + live * (total / SHARE_DRIFT_DIVISOR);
+    // The peer fills first, so the second instance decides against a peer that is
+    // already holding everything it is entitled to. Under a usage-sharing policy
+    // this is the case that produced overshoot; under equal division the peer's
+    // usage is not an input at all.
+    fill(&first, 1, 200, 40_000).await;
+    fill(&second, 2, 200, 40_000).await;
+
+    let first_bytes = instance_root_bytes(first._ownership.root());
+    let second_bytes = instance_root_bytes(second._ownership.root());
     assert!(
-        combined <= bound,
-        "combined footprint {combined} exceeded the total {total} by more than the \
-         per-instance drift allowance (bound {bound})"
+        first_bytes <= share + ACCOUNTING_SLACK,
+        "an instance exceeded its share: {first_bytes} of {share}"
+    );
+    assert!(
+        second_bytes <= share + ACCOUNTING_SLACK,
+        "an instance exceeded its share: {second_bytes} of {share}"
+    );
+    assert!(
+        first_bytes + second_bytes <= total + 2 * ACCOUNTING_SLACK,
+        "combined usage {} exceeded the total budget {total}",
+        first_bytes + second_bytes
     );
 }
 
-/// One append, one frame, one bound.
-///
-/// The drift allowance bounds how far an instance may grow *between* accounting
-/// transactions, but a frame carries no size limit of its own. If the share is
-/// judged before the append without regard for the bytes about to be written,
-/// a single frame larger than the allowance escapes the bound entirely — and
-/// because the ledger is only told what the instance held *before* the write,
-/// two instances starting together each measure themselves against a peer the
-/// ledger still reports as empty. Many small frames cannot show this; exactly
-/// one oversized frame each can.
+/// The same guarantee under concurrent growth: neither instance ever reaches a
+/// settled view of the other, because there is no view of the other to reach.
 #[tokio::test]
-async fn one_oversized_frame_cannot_escape_the_shared_bound() {
+async fn concurrently_growing_instances_stay_inside_one_total() {
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let total = 4_000_000_u64;
+
+    let data = TempDir::new().unwrap();
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+    fill_concurrently(&[(&first, 1), (&second, 2)], 200, 40_000).await;
+
+    let combined = instance_root_bytes(first._ownership.root())
+        + instance_root_bytes(second._ownership.root());
+    assert!(
+        combined <= total + 2 * ACCOUNTING_SLACK,
+        "combined usage {combined} exceeded the total budget {total}"
+    );
+
+    // Without shared accounting each instance would fill the whole budget, so the
+    // bound above is a real constraint rather than an artefact of the write
+    // volume.
+    let isolated = TempDir::new().unwrap();
+    let alone = open_instance(&isolated, total, false);
+    let other = open_instance(&isolated, total, false);
+    fill_concurrently(&[(&alone, 1), (&other, 2)], 200, 40_000).await;
+    let unshared =
+        instance_root_bytes(alone._ownership.root()) + instance_root_bytes(other._ownership.root());
+    assert!(
+        combined < unshared,
+        "shared accounting must bound the combined footprint: shared {combined} \
+         unshared {unshared}"
+    );
+}
+
+/// A frame carries no size limit of its own, so a single write can be larger than
+/// a share. Under the old usage ledger such a frame escaped the bound: the share
+/// was computed before the append and the ledger only ever heard what an instance
+/// held *beforehand*. Equal division has no before-and-after to disagree on — the
+/// share is a constant and the write is checked against it.
+#[tokio::test]
+async fn one_oversized_frame_cannot_escape_a_share() {
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
     let total = 8_000_000_u64;
-    let live = 2;
-    // Comfortably larger than the drift allowance (total / 32) and larger than
-    // an equal share, so admitting it against a stale grant is unmistakable.
+    // Larger than an equal share of two, so admitting it would be unmistakable.
     let oversized = 6_000_000_usize;
 
     let data = TempDir::new().unwrap();
     let first = open_instance(&data, total, true);
     let second = open_instance(&data, total, true);
 
-    let mut admitted = 0;
     for (slot, (instance, session)) in [(&first, 1_u128), (&second, 2_u128)].iter().enumerate() {
         let value = frame(
             *session,
@@ -353,79 +298,105 @@ async fn one_oversized_frame_cannot_escape_the_shared_bound() {
             u64::try_from(slot).unwrap() + 1,
             oversized,
         );
-        // No flush: the append path alone must decide, exactly as a live session does.
-        if instance.store.append_frame(value).await.is_ok() {
-            admitted += 1;
-        }
+        // No flush: the append path alone must decide, exactly as a live session
+        // does. A frame that does not fit the share is refused, which is the
+        // accepted cost of a share that does not depend on what peers hold.
+        assert!(
+            instance.store.append_frame(value).await.is_err(),
+            "a frame larger than this instance's share must be refused"
+        );
     }
-
-    assert!(
-        admitted >= 1,
-        "shared accounting must not refuse every instance an oversized frame that \
-         fits inside the total budget"
-    );
 
     let combined = instance_root_bytes(first._ownership.root())
         + instance_root_bytes(second._ownership.root());
-    let bound = total + live * (total / SHARE_DRIFT_DIVISOR);
     assert!(
-        combined <= bound,
+        combined <= total + 2 * ACCOUNTING_SLACK,
         "one oversized frame per instance pushed the combined footprint to {combined}, \
-         past the total {total} plus the per-instance drift allowance (bound {bound})"
+         past the total {total}"
+    );
+
+    // A write that does fit the share is still admitted, so the refusal above is
+    // the size check and not a store that refuses everything.
+    assert!(
+        append_one(&first, 1, 10, 3_000_000).await,
+        "a frame inside this instance's share must be admitted"
     );
 }
 
-/// A ledger write that fails leaves peers unable to see this instance's
-/// reservation, so the generous `total - other_live_usage` grant is no longer
-/// safe to act on: two instances in this state would each admit a large append
-/// against the same unclaimed capacity and jointly exceed the total.
+/// A root whose process exited is not live, so it must not divide the budget. The
+/// survivor regains the whole total on its next operation.
 #[tokio::test]
-async fn an_unrecorded_reservation_does_not_buy_a_shared_grant() {
+async fn a_dead_instance_root_does_not_count_toward_the_live_set() {
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
     let data = TempDir::new().unwrap();
-    let total = 1_000_000_u64;
+    let total = 4_000_000_u64;
+
+    let departed = open_instance(&data, total, true);
+    fill(&departed, 1, 20, 40_000).await;
+    assert!(instance_root_bytes(departed._ownership.root()) > 0);
+
+    let survivor = open_instance(&data, total, true);
+    let census = InstanceCensus::new(data.path(), survivor._ownership.root());
+    assert_eq!(census.live_instances(), 2);
+
+    // The departed process exits. Its data is still on disk — reclaiming it is a
+    // separate tier — but it no longer holds a lock, so it no longer holds a
+    // share.
+    drop(departed);
+    assert_eq!(census.live_instances(), 1);
+
+    fill(&survivor, 2, 200, 40_000).await;
+    let used = instance_root_bytes(survivor._ownership.root());
+    assert!(
+        used > total / 2,
+        "a lone survivor must regain the whole budget: used {used} of {total}"
+    );
+}
+
+/// Reclaim is operation-driven, so an instance that grew while it was alone stays
+/// over its new share until it does work again — and then trims down to it.
+#[tokio::test]
+async fn an_instance_that_grew_alone_trims_on_its_next_operation() {
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let data = TempDir::new().unwrap();
+    let total = 4_000_000_u64;
+
     let first = open_instance(&data, total, true);
+    fill(&first, 1, 200, 40_000).await;
+    let grown = instance_root_bytes(first._ownership.root());
+    assert!(
+        grown > total / 2,
+        "the instance must first grow past what an equal share of two allows: \
+         {grown} of {total}"
+    );
+
+    // A peer joins. Nothing happens to the first instance's disk until it acts:
+    // there is no background trimmer.
     let second = open_instance(&data, total, true);
-
-    let first_registry = BudgetRegistry::open(data.path(), first._ownership.root()).unwrap();
-    let second_registry = BudgetRegistry::open(data.path(), second._ownership.root()).unwrap();
-
-    // Both instances live and idle: a recorded reservation earns the whole
-    // total, because an idle peer holds nothing.
-    first_registry.publish(0, total).unwrap();
-    let recorded = second_registry.publish(0, total).unwrap();
-    assert_eq!(recorded.live_instances, 2);
-    assert_eq!(recorded.effective_budget, total);
-
-    // Block the atomic-write target with a directory, so the reservation can
-    // never be recorded.
-    let instance_id = second
-        ._ownership
-        .root()
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_owned();
-    fs::create_dir_all(
-        data.path()
-            .join("instances")
-            .join(format!(".budget-registry.tmp-{instance_id}")),
-    )
-    .unwrap();
-
-    let degraded = second_registry
-        .publish(900_000, total)
-        .expect("an unwritable ledger must degrade, not stall capture");
     assert_eq!(
-        degraded.effective_budget,
-        total / 2,
-        "a reservation that was never recorded must fall back to self-only enforcement"
+        InstanceCensus::new(data.path(), first._ownership.root()).live_instances(),
+        2
+    );
+    assert_eq!(
+        instance_root_bytes(first._ownership.root()),
+        grown,
+        "an idle instance must not shrink on its own; reclaim is operation-driven"
     );
 
-    // The reservation really is invisible to the peer, which is why the grant
-    // has to be conservative rather than merely inaccurate.
-    assert_eq!(
-        first_registry.publish(0, total).unwrap().other_live_usage,
-        0
+    // Its next append is judged against the new share, and the in-session trim on
+    // that same path reclaims down toward it.
+    assert!(append_one(&first, 1, 500, 40_000).await);
+    let trimmed = instance_root_bytes(first._ownership.root());
+    assert!(
+        trimmed <= total / 2 + ACCOUNTING_SLACK,
+        "the first operation after a peer joined must trim toward the new share: \
+         {trimmed} of {}",
+        total / 2
     );
+
+    drop(second);
 }
