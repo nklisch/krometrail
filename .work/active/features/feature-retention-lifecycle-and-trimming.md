@@ -1,7 +1,7 @@
 ---
 id: feature-retention-lifecycle-and-trimming
 kind: feature
-stage: drafting
+stage: review
 tags: [storage, agent-ux, bug]
 parent: null
 depends_on: []
@@ -30,7 +30,7 @@ shakedown is *not* part of this feature and was not caused by budget pressure.
 Root-cause investigation proved it was a cross-instance defect — a second
 `krometrail` process running startup `recover()` against the live data directory
 — triggered by the investigator's own diagnostic probe. That defect is scoped
-separately as `feature-single-instance-store-ownership`. Eviction was
+separately as `feature-multi-instance-store-isolation`. Eviction was
 exonerated: `append_frame` (`recording.rs:1713`) holds `self.mutations` across
 `ensure_append_capacity` -> `flush_all` -> `cleanup_to` -> `append_indexable`,
 so eviction and sealing are fully serialized within one process, and budget

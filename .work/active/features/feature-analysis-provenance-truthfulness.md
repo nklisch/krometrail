@@ -1,7 +1,7 @@
 ---
 id: feature-analysis-provenance-truthfulness
 kind: feature
-stage: implementing
+stage: review
 tags: [visual, agent-ux, bug]
 parent: null
 depends_on: []

@@ -1,7 +1,7 @@
 ---
-id: feature-single-instance-store-ownership
+id: feature-multi-instance-store-isolation
 kind: feature
-stage: drafting
+stage: review
 tags: [storage, bug, security, infra]
 parent: null
 depends_on: []
@@ -11,7 +11,7 @@ created: 2026-07-20
 updated: 2026-07-20
 ---
 
-# Exclusive store ownership and non-destructive recovery
+# Multi-instance store isolation and non-destructive recovery
 
 ## Brief
 
