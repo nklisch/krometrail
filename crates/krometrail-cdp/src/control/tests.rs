@@ -745,16 +745,9 @@ mod interactions {
             target: PageSelection::Target(target()),
             action: DialogAction::Dismiss,
         };
-        let error = dialog::handle_dialog(
-            &transport,
-            &bound,
-            &dialog_request,
-            krometrail_core::OpenDialogState::Unknown,
-            &cancel,
-            0,
-        )
-        .await
-        .unwrap_err();
+        let error = dialog::handle_dialog(&transport, &bound, &dialog_request, &cancel, 0)
+            .await
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound);
         assert!(!error.message.as_str().contains("private"));
     }
@@ -772,43 +765,34 @@ mod interactions {
             target: PageSelection::Target(target()),
             action: DialogAction::Dismiss,
         };
-        let error = dialog::handle_dialog(
-            &transport,
-            &bound,
-            &request,
-            krometrail_core::OpenDialogState::Unknown,
-            &cancel,
-            0,
-        )
-        .await
-        .unwrap_err();
+        let error = dialog::handle_dialog(&transport, &bound, &request, &cancel, 0)
+            .await
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::NotFound);
         assert!(error.message.as_str().contains("dialog_not_open"));
     }
 
-    /// Reported open-dialog state is the authority when it is known: `handle_dialog` reports the
-    /// no-dialog boundary without dispatching a user-visible dialog action.
+    /// Reported open-dialog state must never gate the dialog action.
+    ///
+    /// That state is maintained by the event pump, so it lags Chrome by however long the opening
+    /// event takes to process — and that lag coincides exactly with the case that matters, since
+    /// a dialog that just opened is one blocking the renderer right now. Refusing to dispatch on
+    /// a stale `None` would deny the recovery action precisely when it is needed. Chrome is the
+    /// authority, and it answers.
     #[tokio::test]
-    async fn known_absent_dialog_state_short_circuits_handle_dialog() {
+    async fn stale_absent_dialog_state_still_dispatches_the_dialog_action() {
         let transport = RecordingTransport::default();
         let bound = bound();
         let cancel = OperationCancellation::default();
+        transport.push("Page.handleJavaScriptDialog", Ok(serde_json::Value::Null));
         let request = HandleDialogRequest {
             target: PageSelection::Target(target()),
             action: DialogAction::Dismiss,
         };
-        let error = dialog::handle_dialog(
-            &transport,
-            &bound,
-            &request,
-            krometrail_core::OpenDialogState::None,
-            &cancel,
-            0,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.code, ErrorCode::NotFound);
-        assert!(transport.calls("Page.handleJavaScriptDialog").is_empty());
+        dialog::handle_dialog(&transport, &bound, &request, &cancel, 0)
+            .await
+            .expect("a dialog open in Chrome must be handled even when reported state lags");
+        assert_eq!(transport.calls("Page.handleJavaScriptDialog").len(), 1);
     }
 
     #[tokio::test]

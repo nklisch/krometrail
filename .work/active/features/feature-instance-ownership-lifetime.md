@@ -1,7 +1,7 @@
 ---
 id: feature-instance-ownership-lifetime
 kind: feature
-stage: implementing
+stage: review
 tags: [storage, security]
 parent: null
 depends_on: []
@@ -198,6 +198,26 @@ while alive, released on exit.
   paths to acquire ownership explicitly.
 - Unit 2 deletes a directory. The identity re-verification described above is what makes
   that safe; it must not be relaxed to make the removal more convenient.
+
+## Review (cross-model, GPT-5.6)
+
+Lock lifetime confirmed fixed in both the normal runtime and the doctor path: ownership moves
+into `InstanceCensus`, `RecordingStore` owns it, and the store survives through its `Arc`
+service clones. `try_lock_exclusive` confirmed correct — the EWOULDBLOCK/EAGAIN guard is
+portable and fail-closed exhaustion of the EINTR retries is the right call. The shared-budget
+tests were confirmed **not** weakened: the observer *is* the census under test and the two
+other roots are real peers.
+
+`RecordingStore::live_instances()` was called minor test-driven API bloat, but not a
+correctness issue, since it observes the real census and prevents lookalike tests. Kept.
+
+One finding **parked rather than fixed**: reclamation still resolves its destructive
+operations by path, so the `(device, inode)` re-check narrows the TOCTOU window without
+closing it against a same-UID process that renames the root and substitutes a symlink. Parked
+as `idea-dirfd-anchored-root-reclamation` with the adjudication: it is pre-existing rather
+than a regression, its precondition is an attacker who could already delete the store
+outright, a partial fix would read as safety it does not provide, and blocking a
+today-loses-evidence hotfix on an unsafe-libc rewrite is the wrong trade.
 
 ---
 

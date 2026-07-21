@@ -1,4 +1,4 @@
-use krometrail_core::{DialogAction, ErrorCode, HandleDialogRequest, OpenDialogState, Result};
+use krometrail_core::{DialogAction, ErrorCode, HandleDialogRequest, Result};
 use serde_json::{Map, Value};
 
 use super::{
@@ -13,20 +13,22 @@ use crate::transport::{CdpTransport, CommandScope, TransportError};
 /// yielding, or retrying: a rejected command is either the stable "not open" boundary or a real
 /// transport/protocol failure, and retries could repeat a user-visible dialog action.
 ///
-/// `dialog_state` is the same reported open-dialog state that page status and the
-/// blocked-observation boundary read. Only a positive `None` short-circuits; `Unknown` still
-/// dispatches so a page without installed dialog sources keeps working.
+/// Reported open-dialog state is deliberately *not* consulted here. That state is maintained by
+/// the event pump, so it lags Chrome by however long the opening event takes to be processed —
+/// and the moment it lags is exactly the moment this matters, because a dialog that just opened
+/// is a dialog blocking the renderer right now. Gating dispatch on it would refuse the recovery
+/// action with `dialog_not_open` while a dialog is genuinely open.
+///
+/// Reported state is for *reporting*: page status and the blocked-observation boundary read it,
+/// where lag costs a less precise message. An action is never gated on it. Chrome is the
+/// authority on whether a dialog is open, and it answers below.
 pub(super) async fn handle_dialog(
     transport: &dyn CdpTransport,
     bound: &BoundTarget,
     request: &HandleDialogRequest,
-    dialog_state: OpenDialogState,
     cancel: &OperationCancellation,
     generation: u64,
 ) -> Result<()> {
-    if dialog_state.is_known_absent() {
-        return Err(dialog_not_open(bound.target_id));
-    }
     let response = cancel
         .race(
             generation,

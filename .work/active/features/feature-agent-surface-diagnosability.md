@@ -1,7 +1,7 @@
 ---
 id: feature-agent-surface-diagnosability
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -103,6 +103,32 @@ disabled. That encoded the old behaviour. Dialog state must be truthful whether 
 event persistence is on, so both dialog sources are now installed as operation signals —
 they persist nothing and enable no optional domain — and the test asserts that instead. No
 test was weakened or deleted.
+
+## Review (cross-model, GPT-5.6)
+
+One material finding, fixed: **`handle_dialog` had a stale-`None` race.** The known-absent
+short-circuit read pump-maintained state, which lags Chrome by however long the opening event
+takes to process — and that lag coincides exactly with the case that matters, since a dialog
+that just opened is one blocking the renderer right now. It would have denied the recovery
+action with `dialog_not_open` while a dialog was genuinely open.
+
+The short-circuit is deleted rather than made race-free, and the `dialog_state` parameter it
+required is gone from `handle_dialog` and `dispatch_action` with it. The principle now stated
+in the code: **reported state is for reporting, never for gating an action.** Page status and
+the blocked-observation boundary read it, where lag costs a less precise message. Chrome is
+the authority on whether a dialog is open, and the protocol-error classification below already
+answers correctly — which is what made the short-circuit pure cost.
+
+The test that encoded the old behaviour
+(`known_absent_dialog_state_short_circuits_handle_dialog`) is replaced by
+`stale_absent_dialog_state_still_dispatches_the_dialog_action`, asserting the same scenario
+with the correct expectation.
+
+Reviewer confirmed sound: always-installed dialog signals persist nothing and enable no
+optional domain; frame paths cannot leak cross-origin via `about:blank`/`srcdoc`, opaque
+origins, redirects, or frame navigation, and `SanitizedUrl` is untouched; relaxed matching is
+bounded at 100 with an honest `saturated` flag; batch summaries derive correctly from
+projection errors and the `wait_timed_out` exclusion is required by `batch.rs:141`.
 
 ---
 
