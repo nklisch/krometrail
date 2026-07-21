@@ -320,6 +320,31 @@ Krometrail records lightweight browser evidence available through CDP:
 
 Sensitive request headers, cookies, authentication values, and request or response bodies are not persisted by default.
 
+### Text redaction is best-effort
+
+Console text, exception messages, and stack function names pass through a
+bounded sanitizer that replaces recognizable secrets, absolute filesystem paths,
+and URLs with fixed placeholders, and truncates to a byte limit.
+
+**This is best-effort defence in depth, not a guarantee, and it is not a
+security boundary.** The sanitizer is a heuristic over arbitrary page-authored
+text. It recognizes common shapes — sensitive key names, quoted values, URLs,
+POSIX and Windows paths — and will miss unusual encodings, unfamiliar key names,
+and secrets that do not look like secrets. Krometrail does not claim, and callers
+must not assume, that recorded browser-event text is free of sensitive material.
+
+What Krometrail does guarantee is narrower and structural: the categories listed
+above (headers, cookies, authentication values, request and response bodies) are
+not persisted at all, and event text is bounded in size. Those are properties of
+what is collected, not of what a sanitizer managed to detect.
+
+Callers who require that no page-authored text is retained should disable
+browser-event recording rather than rely on redaction.
+
+A missed redaction is a bug worth fixing when observed, and the corpus in
+`crates/krometrail-core/src/browser/privacy.rs` is the contract — extend it when
+a new shape appears. It is not a release gate.
+
 Browser-event recording is independent of whether event-inspection MCP tools are exposed. This allows capability experiments without changing the recorded session format.
 
 ## Capabilities
@@ -365,7 +390,7 @@ Reclaiming an abandoned root deletes data, so it runs only where exclusive owner
 
 The disk budget is a *total* across concurrent instances, not a per-process allowance. Live instances publish their usage to a small shared, lock-protected ledger and each enforces against the combined figure. An instance may occupy whatever its peers are not using, but never less than an equal share, so an idle instance cannot hold capacity it is not using and a busy instance cannot be starved.
 
-The bound: the combined footprint of live instances settles at the configured total, and an instance already over its share trims on its own next append. It is not an instantaneous guarantee, and the excess has two distinct sources.
+The bound: the combined footprint of live instances returns to the configured total as those instances do work, and an instance already over its share trims on its own next append. It is neither an instantaneous guarantee nor a background process, and the excess has two distinct sources.
 
 The first is accounting staleness. Consulting the shared ledger takes a lock, so it is kept off the per-frame path; an instance reuses its share until two seconds pass, until it has grown by 1/32 of the total, or until the write it is judging right now would carry it past that same 1/32 — whichever comes first. The pending write is part of the test, so no single frame, however large, can be admitted against a share that never accounted for it; and the bytes an admitted write will occupy are reserved in the ledger before it lands, so a peer deciding at the same moment sees them. An instance therefore never exceeds its last published figure by more than 1/32 of the total, which bounds this source of excess at 1/32 of the total per live instance.
 
@@ -373,15 +398,17 @@ The second is the equal-share floor, and it has no useful closed form. An instan
 
 Walk it through with three instances and a total `T`. `A` starts alone and fills to `T`. `B` starts; the live set is now two, `A` already holds everything, so `B`'s grant is its equal share `T/2`, and it fills it — combined `3T/2`. `C` starts; the live set is now three, its peers hold `3T/2`, so its grant is its equal share `T/3`, and it fills it — combined `11T/6`. Each step is exactly what the policy promises, and yet `11T/6` is more than `T + (N-1)/N × T` at `N = 3`. The reason is that the earlier instances were granted their share of a *smaller* live set and kept it. Extending the same construction to `N` sequential joins reaches `T × (1 + 1/2 + ... + 1/N)`, which grows without limit, though only logarithmically — roughly `2.9T` at ten instances. This is a construction, not a proven supremum; what matters is that no `(N-1)/N`-shaped bound survives it.
 
-What actually bounds the footprint is time, not a formula:
+What removes the excess is *operations*, not elapsed time. Krometrail runs no background trim or age-out scheduler. Every reclaim walk — budget pressure, in-session trimming, and age-out alike — happens inside some instance's own append, enforcement, or artifact-publication path, so an instance that is doing nothing reclaims nothing. Three things follow, and they are the whole of the guarantee:
 
-- **Steady state is the configured total.** Every instance holding more than its equal share is over its own grant, so it trims down to it on its own next append or enforcement pass. The construction above only holds while the earlier instances are idle.
-- **Age-out applies regardless of budget**, so evidence an idle instance is sitting on expires on its own schedule.
-- **Exit is immediate.** When a process exits its bytes stop counting toward the total at once, and the next instance to start reclaims its abandoned root.
+- **Excess never grows while idle.** An idle instance writes nothing and publishes nothing, so the combined figure is flat rather than creeping. Whatever the construction above reached is a ceiling until something happens.
+- **The next unit of work brings an over-sized instance back to its grant.** Its first append or enforcement pass after a peer joins recomputes the share and trims to it. This is what makes the excess transient in *use*, and it is the only mechanism that does so while every process stays alive.
+- **Exit is immediate and unconditional.** When a process exits its bytes stop counting toward the total at once, and the next instance to start reclaims its abandoned root. This is the one release that needs no cooperation from the instance holding the excess.
 
-So the honest statement is: the combined footprint converges to the configured total; the instantaneous figure may exceed it while a growing set of instances is still settling, by an amount governed by join order rather than by a fixed multiple; and every source of excess is transient under trimming, age-out, and exit.
+Walk the `11T/6` case to the end, because that is where a convergence claim would be wrong. `A`, `B`, and `C` have joined in sequence and jointly hold `11T/6`. If all three now go idle and stay idle, disk usage stays at `11T/6` indefinitely. Nothing is scheduled to reclaim it — age-out included, since age-out is checked on the same operation-driven walks. The figure does not grow, and no instance is over-granted from that point on, because each instance's *next* operation is judged against its current share. But the excess sits on disk until some instance does work or a process exits.
 
-When shared accounting is unavailable — a corrupt ledger, a contended lock, a process that died mid-transaction — an instance enforces the configured budget alone and continues recording. Degraded accounting never blocks capture.
+So the honest statement is: the combined footprint is bounded above at every instant, it never grows while instances are idle, and it returns to the configured total as instances work or exit. It does **not** converge on its own. An operator who sees a data directory above the configured total after several instances have started and gone quiet is seeing intended behavior, not a leak, and it clears the moment any instance resumes work or exits.
+
+When shared accounting is unavailable — a corrupt ledger, a contended lock, a process that died mid-transaction — an instance enforces its **equal share** of the total, the configured budget divided by the number of live instances, and continues recording. It does not fall back to the whole configured budget: a degraded pass never records its reservation, so peers cannot see the bytes it is about to hold, and the generous "whatever peers are not using" term depends on exactly that visibility. A single live process is unaffected, because its equal share *is* the configured budget. Degraded accounting never blocks capture.
 
 When a process exits, its instance root becomes reclaimable. Its bytes stop counting toward the total immediately, and the next instance to start removes the abandoned recording cache.
 
@@ -390,6 +417,8 @@ When a process exits, its instance root becomes reclaimable. Its bytes stop coun
 Krometrail reclaims on both size and age, through one ordered walk. Abandoned instance roots go first, then generated artifacts, then browser events and segments in retention order.
 
 Evidence older than the configured maximum age expires even when the store is well inside its budget, so a store does not accumulate until it reaches the budget wall and stay there. Reclaim also runs during a live session once usage crosses a high-water share of the instance's allowance, so a long session trims as it goes rather than degrading into permanent near-full pressure.
+
+Reclaim is driven by operations, not by a timer. There is no background scheduler: every walk, age-out included, runs inside an append, an enforcement pass, or an artifact publication. Expired evidence is therefore removed on the store's next operation rather than at the instant it expires, and a store whose process has gone quiet retains what it holds until that process does more work or exits.
 
 A segment backing an artifact published within a short grace window is skipped during budget pressure, so a freshly returned evidence link is not immediately invalidated. If every remaining segment is so protected, the grace is dropped rather than stalling capture, and the override is reported.
 
