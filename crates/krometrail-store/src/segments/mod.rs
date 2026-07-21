@@ -18,5 +18,5 @@ pub use scanner::{
 pub use writer::{
     FrameWriteCommit, OPEN_SEGMENT_EXTENSION, RotationConfig, SEALED_SEGMENT_EXTENSION,
     SEGMENT_WRITE_QUEUE_CAPACITY, SegmentRegistration, SegmentState, SegmentStoreConfig,
-    SegmentWriter, open_segment_path, sealed_segment_path,
+    SegmentWriter, open_segment_path, sealed_segment_path, segment_file_name,
 };

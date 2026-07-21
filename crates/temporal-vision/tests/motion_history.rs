@@ -170,7 +170,9 @@ fn public_plan_and_render_are_traceable_gap_aware_and_deterministic() {
     assert_eq!(manifest.algorithm().name(), "motion-history");
     assert_eq!(manifest.algorithm().version(), "1.0.0");
     assert_eq!(manifest.source_frame_count(), 7);
-    assert_eq!(manifest.omitted_frame_count(), 6);
+    // All seven frames were analyzed; only the reference frame is referenced.
+    assert_eq!(manifest.analyzed_frame_count(), 7);
+    assert_eq!(manifest.omitted_frame_count(), 0);
     assert_eq!(manifest.selected_frame_ids(), &[FrameId("f0".into())]);
     assert_eq!(manifest.gaps().len(), 1);
     assert_eq!(manifest.mask(), source.mask());

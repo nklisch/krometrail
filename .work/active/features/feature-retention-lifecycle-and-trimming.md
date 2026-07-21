@@ -79,6 +79,192 @@ Also fold in, if cohesive:
   survive both age-out and dynamic trimming — so settling the pin contract
   belongs here rather than drifting separately.
 
+## Architectural choice
+
+**One reclaim walk, narrowed by a filter — not a second eviction engine.**
+`RecordingStore::reclaim` is the single entry point for budget pressure,
+in-session trimming, and age-out. They differ only in the target byte count and
+in how the candidate set is narrowed (`SegmentReclaimFilter`); ordering and pin
+protection are identical by construction, so age-out cannot drift into subtly
+different behaviour.
+
+Reclaim proceeds in tiers, cheapest loss first: derived artifacts (regenerable),
+then browser events and segments in retention order. **Tier 0 is reserved for
+abandoned instance roots** — nothing live references them, so they are the
+cheapest possible reclaim. That tier slots in ahead of the rest without
+reshaping the walk.
+
+## Design decisions
+
+- **Age is read from SQLite's own clock, not an injected port.**
+  `created_unix_ms` defaults to `CAST(unixepoch('subsec') * 1000 AS INTEGER)` on
+  `segments` and `artifacts`, and cutoffs are computed from `now_unix_ms()` — the
+  same clock that stamped the rows, so a cutoff can never be compared against a
+  different time source. *A future reader will reasonably ask why this bypasses
+  the clock port:* the value is a property of the disposable cache ("how long has
+  this file been on disk") and carries none of the source/observed/session
+  semantics the clock ports exist to keep distinct. Defaulting in SQL also lets
+  startup recovery stamp rows identically without threading a clock through the
+  recovery path.
+- **Item 3, honest artifact lifetime — grace window with liveness override.**
+  A segment backing an artifact published within `artifact_grace` (default 15 min)
+  is skipped during budget pressure. If *every* remaining segment is so
+  protected, the grace is dropped and the eviction proceeds, logging
+  `retention.artifact_grace_overridden`. Rationale: protecting artifact files
+  alone would not work, because `read_artifact` revalidates source frames, so the
+  artifact's *segments* must survive; and an unconditional grace could stall
+  capture at a full store, which is worse than losing a fresh evidence link.
+  Liveness wins, and the broken promise is reported rather than hidden.
+- **Trimming does not flush.** It reclaims already-sealed evidence, so a hot
+  append path is never forced into segment rotation.
+- **Trim exhaustion latch.** A walk that reclaims nothing sets a latch, so a
+  store whose remaining evidence is entirely pinned does not re-walk (and
+  re-checkpoint) on every frame. Any later reclamation clears it.
+- **Age-out will not touch browser events it has not proven expired.** Events are
+  bounded by an expired segment's `retention_sequence`; with no such segment,
+  age-out skips events entirely. Unbounded event eviction remains correct only
+  under real pressure.
+- **Shared budget registry: the budget is a total, not a per-instance
+  allowance.** `budget_registry.rs` is a small JSON ledger under
+  `instances/.budget-registry.json`, guarded by its own `flock` file. Each
+  instance publishes its usage and reads its peers'; every budget decision goes
+  through `RecordingStore::effective_budget()` rather than the configured value.
+  - *Allocation policy:* `max(equal_share, total - other_live_usage)`. The first
+    term lets a busy instance use everything idle peers are not using; the floor
+    stops a busy instance being starved by peers that grew first. The floor is
+    also what permits the sum to exceed the total, because isolation forbids one
+    instance from reclaiming another's data. **Overshoot is bounded by
+    `(live - 1) * total / live`** and is transient: the over-sized instance trims
+    on its own append path, its evidence ages out, and on exit its bytes stop
+    counting immediately.
+  - *Liveness reuses `acquire_existing`* — the same primitive that decides
+    reclaimability — so "who counts toward the total" and "whose root may be
+    reclaimed" can never disagree. A dead instance's bytes stop counting exactly
+    when tier-0 reclaim becomes able to free them.
+  - *The lock is held only for the accounting transaction* (read, prune dead
+    entries, write, unlock), never across data I/O, so instances never serialize
+    on each other's capture writes. Acquisition is non-blocking: contention
+    degrades this pass rather than putting a lock wait on the capture path.
+  - *Never blocks capture.* Corrupt ledger, contended lock, failed write, or a
+    peer that died mid-transaction all degrade to per-instance enforcement.
+    Writes are temp-file-plus-rename, so a death mid-write leaves the previous
+    ledger intact. An undecidable liveness probe counts the peer as live, which
+    tightens this instance rather than letting the total silently overshoot.
+  - *Publish cadence:* throttled to `BUDGET_SHARE_REFRESH` (2 s) on the append
+    path, but forced at every `enforce_locked` (flush). The eager publish is
+    load-bearing — with throttling alone, a fast-filling instance kept
+    advertising its start-of-session usage and peers sized their shares against a
+    stale near-zero figure, letting the combined footprint drift well past the
+    total. Caught by `concurrent_instances_share_one_total_budget`.
+- **`status()` left the mutation gate.** It is a read, and serialising it behind
+  the gate made it wait out whatever eviction was running — the opposite of what
+  an agent checking a store under pressure needs. It uses
+  `live_usage_snapshot()`, which derives the index class from live pages instead
+  of the stored row (which is only written by mutating paths and would read zero
+  on a fresh store).
+  - **Accepted imprecision, recorded so it is not rediscovered as a bug:**
+    `live_usage_snapshot` does *not* run `PRAGMA wal_checkpoint(TRUNCATE)`, so
+    pages still sitting in an un-checkpointed WAL are not yet reflected in the
+    reported `index_bytes`. Under sustained writes, status can therefore
+    under-report total usage by up to the outstanding WAL size until the next
+    mutating path checkpoints. This is deliberate: every path that *acts* on the
+    budget (`ensure_append_capacity`, `enforce_locked`, `reclaim`) still calls
+    `refresh_usage()` and sees checkpointed accounting. Only the read-only status
+    projection trades that precision for never blocking.
+- **Pin coalescing unified.** `coalesce_protected_ranges` is exported from core
+  and the byte-identical copy in `recording.rs` is deleted. `PinState::new` still
+  recomputes and compares — **not** redundant, because that check guards
+  wire-decoded values arriving from outside the process.
+- **`retained_bounds` now orders by `segments.created_unix_ms`, not `rowid`.**
+  The bounds are global across sessions, so they need a key that is meaningful
+  across sessions. `rowid` is global *insertion* order, which answers a different
+  question, and `session_time` is measured from each session's own start, so
+  comparing two sessions' session times is meaningless by construction. That is
+  the root cause of the shakedown observation where `oldest_retained`
+  (`126065361437`) exceeded `newest_retained` (`118028908063`): the endpoints came
+  from different sessions and were never comparable.
+  - *Chosen authority:* `created_unix_ms`, because it is one wall clock shared by
+    every session — the only key here that genuinely orders evidence globally.
+    Ties break on `session_time` then `frame_id` for determinism.
+  - *Contract made explicit:* each endpoint still carries its own
+    session-relative time, since that is the coordinate needed to address the
+    frame within its session. Those two values are comparable, and a span between
+    them meaningful, **only when both endpoints share a session and target.** The
+    query guarantees the endpoints are *ordered*, not that their session times can
+    be subtracted. The MCP layer's `comparable_scope` flag is the correct
+    presentation of that contract and remains right.
+- **Legacy `pin_range`/`unpin_range` and the simpler `PinChange` were NOT
+  removed.** They are `RetentionStore` port methods implemented by test doubles
+  in `crates/krometrail-cdp/` and `src/progressive/service.rs` — outside this
+  task's ownership boundary. Removing them needs a coordinated pass.
+
+## Implementation Units
+
+1. `krometrail-core` — `RetentionLifecycle` (budget, max age, trim high-water,
+   artifact grace); `coalesce_protected_ranges` exported.
+2. Schema v8 — `created_unix_ms` on `segments` and `artifacts`, plus
+   `segment_created_idx` / `artifact_created_idx`.
+3. `index/retention.rs` — `SegmentReclaimFilter`, `oldest_reclaimable_segment`,
+   `oldest_reclaimable_artifact`, `expired_object_count`, `now_unix_ms`,
+   `open_segment_count`, `live_usage_snapshot`.
+4. `recording.rs` — `reclaim`/`reclaim_once` tiered walk, `trim_locked`,
+   `ReclaimOutcome` observability, gate-free `status()`,
+   `verify_recovery_completed`.
+5. `budget_registry.rs` (new) — shared lock-protected ledger, liveness pruning,
+   allocation policy.
+6. `src/app.rs` — retention configuration and the dead-instance reclaim tier.
+
+## Tunables
+
+Documented in `docs/SPEC.md` ("Disk Budget and Retention"):
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `KROMETRAIL_DISK_BUDGET_BYTES` | 10 GB | Total shared across all live instances. |
+| `KROMETRAIL_RETENTION_MAX_AGE_SECS` | 7 days | Age at which evidence expires regardless of budget. `0` disables age-out. |
+
+With reads instance-scoped, the maximum age is the main thing standing between a
+user and an ever-growing store, so it is deliberately on by default.
+
+## Testing
+
+`tests/retention_lifecycle.rs`: age-out reclaims while far inside budget; pinned
+evidence survives a 30-day backdate; in-session trimming keeps peak usage below
+the budget wall and the store `Available`; age-out with no expired segment leaves
+events alone. Backdating stored stamps is the deterministic way to exercise a
+real-time policy.
+
+`tests/retention_lifecycle.rs::retained_bounds_order_by_wall_clock_not_insertion_order`
+drives the shakedown inversion: a session inserted second but backdated to be
+wall-clock older. Verified to **fail** against the previous `rowid` query and pass
+against the wall-clock ordering, so it distinguishes the two implementations
+rather than passing incidentally.
+
+`tests/shared_budget.rs`: three concurrent instances sharing one total budget use
+strictly less than three unshared instances and stay inside the documented
+overshoot bound; a dead instance's bytes stop counting and the survivor regains
+the whole budget; a corrupt ledger degrades without blocking capture and is
+repaired by the next transaction; registry bookkeeping files are never mistaken
+for instance roots. Unit tests in `budget_registry.rs` cover the allocation
+policy directly, including that balanced instances sum exactly to the total.
+
+## Risks
+
+- **Age-out is now the only path to old data** (reads are instance-scoped), so an
+  over-aggressive policy loses evidence with no recovery. Default 7 days.
+- **Trim adds an index query per append** below the high-water mark
+  (`expired_object_count`). Cheap and indexed, but it is on the hot path.
+- **`unixepoch` is wall-clock**, so a large clock step backwards defers age-out
+  and a step forwards expires evidence early.
+- **Artifact grace is best effort**, not a guarantee; under sustained pressure a
+  fresh artifact link can still die. The override is logged.
+- **Shared-budget overshoot is real but bounded.** An instance that grew while
+  alone keeps its bytes until it trims, ages out, or exits. Worst case is
+  `(live - 1) * total / live` above the configured total.
+- **Registry liveness probing acquires peer locks.** Cheap and non-blocking, but
+  it means an accounting pass briefly claims and releases each dead peer's lock.
+  Harmless — reclaim re-acquires — but it is a side effect of a read-shaped call.
+
 ## Acceptance
 
 - The reproduced `sealed_segment_publication` / `not_found` / `writer_terminal`

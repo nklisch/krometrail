@@ -77,13 +77,13 @@ fn storyboard_outcome(epoch_index: u32) -> ArtifactOutcome {
     ArtifactOutcome::Available {
         epoch_index,
         generator_index: 0,
-        artifact: ArtifactHandle {
+        artifact: Box::new(ArtifactHandle {
             artifact_id: ArtifactId::from_uuid(Uuid::from_u128(epoch_index as u128 + 100)),
             cache: ArtifactCacheDisposition::Generated,
             media_type: NonEmptyText::new("image/png").unwrap(),
             encoded_byte_len: 1,
             manifest: storyboard_manifest(epoch_index),
-        },
+        }),
     }
 }
 

@@ -790,7 +790,12 @@ pub enum ArtifactOutcome {
     Available {
         epoch_index: u32,
         generator_index: u32,
-        artifact: ArtifactHandle,
+        // Boxed because a handle carries a full `ArtifactManifest`, which is far
+        // larger than the failure variant. Putting the indirection here keeps the
+        // size pressure at its source, so growing the manifest does not force
+        // unrelated fields to be shrunk to keep this enum under a lint threshold.
+        // `Box` is serde-transparent, so the wire shape is unchanged.
+        artifact: Box<ArtifactHandle>,
     },
     Unavailable {
         epoch_index: u32,

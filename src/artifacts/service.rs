@@ -640,12 +640,24 @@ fn plan_for_generator(
                     "narrow the range, or switch to frequency_mode normalized_frequency",
                 ))
             } else {
-                plan_for_analysis_sampling(request.sampling, plan, limits, effective_max_frames)
+                plan_for_analysis_sampling(
+                    request.sampling,
+                    plan,
+                    limits,
+                    effective_max_frames,
+                    explicit_reference_frame(request.reference),
+                )
             }
         }
         krometrail_core::ArtifactGeneratorRequest::MotionHistory(request) => {
             let effective_max_frames = analysis_effective_max_frames(plan, limits)?;
-            plan_for_analysis_sampling(request.sampling, plan, limits, effective_max_frames)
+            plan_for_analysis_sampling(
+                request.sampling,
+                plan,
+                limits,
+                effective_max_frames,
+                explicit_reference_frame(request.reference),
+            )
         }
     }?;
     if generator_plan.decoded_bytes > limits.max_decoded_bytes.get() {
@@ -659,11 +671,24 @@ fn plan_for_generator(
     Ok(generator_plan)
 }
 
+/// Only an explicitly named reference frame has to survive bounded sampling.
+/// `First` and `Last` are always retained because uniform selection keeps both
+/// endpoints of the source plan.
+fn explicit_reference_frame(
+    selector: krometrail_core::FrameSelector,
+) -> Option<krometrail_core::FrameId> {
+    match selector {
+        krometrail_core::FrameSelector::Frame(id) => Some(id),
+        krometrail_core::FrameSelector::First | krometrail_core::FrameSelector::Last => None,
+    }
+}
+
 fn plan_for_analysis_sampling(
     sampling: krometrail_core::ArtifactSampling,
     plan: &EpochPlan,
     limits: ArtifactWorkLimits,
     effective_max_frames: usize,
+    include_frame_id: Option<krometrail_core::FrameId>,
 ) -> Result<EpochPlan> {
     match sampling {
         krometrail_core::ArtifactSampling::Exhaustive => {
@@ -687,16 +712,21 @@ fn plan_for_analysis_sampling(
             }
         }
         krometrail_core::ArtifactSampling::UniformBounded => {
-            bounded_plan(plan, effective_max_frames, None)
+            bounded_plan(plan, effective_max_frames, include_frame_id)
         }
     }
 }
 
-fn analysis_effective_max_frames(plan: &EpochPlan, limits: ArtifactWorkLimits) -> Result<usize> {
+pub(crate) fn analysis_effective_max_frames(
+    plan: &EpochPlan,
+    limits: ArtifactWorkLimits,
+) -> Result<usize> {
     let per_frame_decoded_bytes = plan.frames.iter().try_fold(0, |maximum, frame| {
         Ok::<_, KrometrailError>(maximum.max(super::epoch::decoded_len(frame)?))
     })?;
-    let byte_frame_limit = limits.max_decoded_bytes.get() / per_frame_decoded_bytes;
+    // The non-empty-plan invariant already keeps this above zero; the floor makes the
+    // division structurally safe rather than invariant-dependent.
+    let byte_frame_limit = limits.max_decoded_bytes.get() / per_frame_decoded_bytes.max(1);
     Ok(limits.max_source_frames.get().min(byte_frame_limit).max(1))
 }
 
@@ -711,14 +741,14 @@ impl ArtifactGeneration for TemporalVisionArtifactService {
     }
 }
 
-fn handle(artifact: FlightArtifact, disposition: ArtifactCacheDisposition) -> ArtifactHandle {
-    ArtifactHandle {
+fn handle(artifact: FlightArtifact, disposition: ArtifactCacheDisposition) -> Box<ArtifactHandle> {
+    Box::new(ArtifactHandle {
         artifact_id: *artifact.manifest.artifact_id(),
         cache: disposition,
         media_type: artifact.media_type,
         encoded_byte_len: artifact.encoded_byte_len,
         manifest: artifact.manifest,
-    }
+    })
 }
 
 fn is_fatal(error: &KrometrailError) -> bool {

@@ -8,7 +8,8 @@ use std::{
 
 use krometrail_core::{
     ArtifactMarker, ArtifactMarkerId, ArtifactSourceFingerprint, EncodedFrame, ErrorCode,
-    KrometrailError, NonEmptyText, ResolvedRange, Result, VisualEpoch,
+    ErrorContext, KrometrailError, NonEmptyText, ResolvedRange, Result, SessionRange, SessionTime,
+    VisualEpoch,
 };
 use temporal_vision::select_indices;
 use temporal_vision::{DeclaredGap, Marker, OwnedFrameSequence, TimeRange, Timestamp};
@@ -106,10 +107,34 @@ pub(crate) struct EpochPlan {
     pub source_range: temporal_vision::TimeRange,
 }
 
+impl EpochPlan {
+    /// Investigation scope for any failure raised while adapting or generating from
+    /// this epoch. Only identities and session time are exposed — never encoded
+    /// bytes, cache identities, or filesystem locations.
+    pub(crate) fn error_context(&self) -> ErrorContext {
+        let Some(metadata) = self.frames.first().map(EncodedFrame::metadata) else {
+            return ErrorContext::default();
+        };
+        ErrorContext {
+            session_id: Some(metadata.session_id()),
+            target_id: Some(metadata.target_id()),
+            interaction_id: None,
+            range: SessionRange::new(
+                SessionTime::from_nanos(self.source_range.start().as_nanos()),
+                SessionTime::from_nanos(self.source_range.end().as_nanos()),
+            )
+            .ok(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct EpochInput {
     pub sequence:
         OwnedFrameSequence<krometrail_core::FrameId, ArtifactMarkerId, krometrail_core::GapId>,
+    /// Carried from the plan so generation failures can be related back to the
+    /// session, target, and time range under investigation.
+    pub context: ErrorContext,
 }
 
 pub(crate) fn bounded_plan(
@@ -141,8 +166,11 @@ pub(crate) fn bounded_plan(
             .max_by_key(|(_, candidate)| **candidate)
             .map(|(position, _)| position)
             .ok_or_else(|| {
-                source_error("bounded artifact selection could not retain the locator")
-                    .with_recovery(
+                source_error(format!(
+                    "bounded artifact selection could not retain frame {frame_id}"
+                ))
+                .with_context(plan.error_context())
+                .with_recovery(
                     NonEmptyText::new(
                         "retry with a larger tile limit or a locator within the selected frames",
                     )
@@ -206,25 +234,27 @@ pub(crate) fn validate_and_plan(
     cancellation: &WorkCancellation,
 ) -> Result<Vec<EpochPlan>> {
     cancellation.check()?;
+    let context = range_context(range);
     if frames.len() != range.frame_ids.len() || frames.is_empty() {
-        return Err(source_error(
-            "frame source did not return the exact resolved frame set",
-        ));
+        return Err(
+            source_error("frame source did not return the exact resolved frame set")
+                .with_context(context),
+        );
     }
     if markers.len() > limits.max_markers {
-        return Err(limit_error(
-            "artifact marker count exceeds the configured limit",
-        ));
+        return Err(
+            limit_error("artifact marker count exceeds the configured limit").with_context(context),
+        );
     }
     let encoded_bytes = frames.iter().try_fold(0_usize, |total, frame| {
-        total
-            .checked_add(frame.bytes().len())
-            .ok_or_else(|| limit_error("encoded source bytes overflow"))
+        total.checked_add(frame.bytes().len()).ok_or_else(|| {
+            limit_error("encoded source bytes overflow").with_context(context.clone())
+        })
     })?;
     if encoded_bytes > limits.max_encoded_source_bytes {
-        return Err(limit_error(
-            "encoded source bytes exceed the configured limit",
-        ));
+        return Err(
+            limit_error("encoded source bytes exceed the configured limit").with_context(context),
+        );
     }
 
     for (position, (expected_id, frame)) in range.frame_ids.iter().zip(&frames).enumerate() {
@@ -237,11 +267,13 @@ pub(crate) fn validate_and_plan(
                 && (frames[position - 1].metadata().capture_ordinal() >= metadata.capture_ordinal()
                     || frames[position - 1].metadata().session_time() > metadata.session_time())
         {
-            return Err(source_error(
-                "frame source order, scope, or metadata contradicts the resolved range",
-            ));
+            return Err(source_error(format!(
+                "frame source order, scope, or metadata contradicts the resolved range at frame {}",
+                metadata.id()
+            ))
+            .with_context(context));
         }
-        let _ = decoded_len(frame)?;
+        let _ = decoded_len(frame).map_err(|error| error.with_context(context.clone()))?;
     }
 
     let mut spans = Vec::new();
@@ -275,21 +307,25 @@ pub(crate) fn decode_plan(
     limits: AdaptationLimits,
     cancellation: &WorkCancellation,
 ) -> Result<EpochInput> {
+    let context = plan.error_context();
     let mut decoded = Vec::with_capacity(plan.frames.len());
     for frame in &plan.frames {
         cancellation.check()?;
-        decoded.push(decode_frame(frame, limits.decode_limits())?);
+        decoded.push(
+            decode_frame(frame, limits.decode_limits())
+                .map_err(|error| error.with_context(context.clone()))?,
+        );
     }
     let sequence =
         temporal_vision::FrameSequence::new(decoded, plan.markers, plan.gaps, None, None)
-            .map_err(vision_error)?
+            .map_err(|error| vision_error(error).with_context(context.clone()))?
             .with_source_provenance(
                 plan.source_frame_ids,
                 plan.source_indices,
                 plan.source_range,
             )
-            .map_err(vision_error)?;
-    Ok(EpochInput { sequence })
+            .map_err(|error| vision_error(error).with_context(context.clone()))?;
+    Ok(EpochInput { sequence, context })
 }
 
 #[cfg(test)]
@@ -567,6 +603,16 @@ fn clamp_range(start_value: u64, end_value: u64, start: u64, end: u64) -> (u64, 
         (end, end)
     } else {
         (start_value.max(start), end_value.min(end))
+    }
+}
+
+/// Investigation scope for a resolved range: identities and session time only.
+fn range_context(range: &ResolvedRange) -> ErrorContext {
+    ErrorContext {
+        session_id: Some(range.session_id),
+        target_id: Some(range.target_id),
+        interaction_id: None,
+        range: Some(range.resolved_range),
     }
 }
 

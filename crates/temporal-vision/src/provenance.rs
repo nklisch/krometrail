@@ -278,6 +278,12 @@ where
     let Some(indices) = source.source_indices() else {
         return Ok(None);
     };
+    // Only a genuinely decimated analysis may claim a sampling mode. An exhaustive
+    // run carries source provenance too, and describing it as `uniform_bounded`
+    // would be a false claim about how the evidence was produced.
+    if indices.len() >= source.source_frame_count() {
+        return Ok(None);
+    }
     let source_frame_count = u64::try_from(source.source_frame_count()).map_err(|_| {
         VisionError::new(
             ErrorCode::InvalidManifest,
@@ -466,6 +472,17 @@ impl<'de> Deserialize<'de> for OutputHash {
 }
 
 /// Reproducible machine-readable provenance for one generated artifact.
+///
+/// Three frame populations are distinguished, narrowest last:
+///
+/// - `source_frame_ids` — every retained frame in the artifact's visual epoch.
+/// - `analyzed_frame_ids` — the frames that actually contributed to the artifact.
+///   Sampling and bounded selection drop source frames here.
+/// - `selected_frame_ids` — the analyzed frames rendered or referenced in the
+///   output. An analysis artifact examines many frames but references only one.
+///
+/// `omitted_frame_count` is `source - analyzed`: frames that contributed nothing.
+/// Frames that were analyzed but not rendered are `analyzed - selected`.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId> {
     artifact_id: ArtifactId,
@@ -473,15 +490,19 @@ pub struct ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId> {
     evidence_class: EvidenceClass,
     algorithm: Box<AlgorithmDescriptor>,
     source_frame_ids: Box<[FrameId]>,
+    analyzed_frame_ids: Box<[FrameId]>,
     selected_frame_ids: Box<[FrameId]>,
     storyboard_selection: Option<Box<StoryboardSelection<FrameId>>>,
     source_frame_count: u64,
+    analyzed_frame_count: u64,
     omitted_frame_count: u64,
     range: TimeRange,
     markers: Box<[Marker<MarkerId>]>,
     gaps: Box<[DeclaredGap<GapId>]>,
     region: Option<FrameRegion>,
-    mask: Option<BinaryMask>,
+    /// Boxed like the other rarely populated members: only region filmstrips carry
+    /// a mask, and an inline one widens every manifest-bearing value.
+    mask: Option<Box<BinaryMask>>,
     normalization: Box<[NormalizationStep]>,
     parameters: Parameters,
     output_dimensions: PixelDimensions,
@@ -599,27 +620,35 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         output_hash: OutputHash,
     ) -> Result<Self> {
         let source_frame_ids: Box<[F]> = sequence.source_frame_ids().to_vec().into_boxed_slice();
+        // The decoded frames are exactly the frames that contributed to this artifact.
+        // Every count below derives from this one population so that the manifest and
+        // any sampling disclosure it carries cannot describe different evidence.
+        let analyzed_frame_ids: Box<[F]> = sequence
+            .frames()
+            .iter()
+            .map(|frame| frame.id().clone())
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         let source_frame_count = u64::try_from(source_frame_ids.len()).map_err(|_| {
             VisionError::new(
                 ErrorCode::InvalidManifest,
                 "source frame count exceeds the manifest representation",
             )
         })?;
-        let selected_count = u64::try_from(selected_frame_ids.len()).map_err(|_| {
+        let analyzed_frame_count = u64::try_from(analyzed_frame_ids.len()).map_err(|_| {
             VisionError::new(
                 ErrorCode::InvalidManifest,
-                "selected frame count exceeds the manifest representation",
+                "analyzed frame count exceeds the manifest representation",
             )
         })?;
-        let omitted_frame_count =
-            source_frame_count
-                .checked_sub(selected_count)
-                .ok_or_else(|| {
-                    VisionError::new(
-                        ErrorCode::InvalidManifest,
-                        "selected frame count exceeds source frame count",
-                    )
-                })?;
+        let omitted_frame_count = source_frame_count
+            .checked_sub(analyzed_frame_count)
+            .ok_or_else(|| {
+                VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analyzed frame count exceeds source frame count",
+                )
+            })?;
 
         let storyboard_selection = storyboard_selection
             .map(|selection| {
@@ -637,15 +666,17 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             evidence_class,
             algorithm: Box::new(algorithm),
             source_frame_ids,
+            analyzed_frame_ids,
             selected_frame_ids: selected_frame_ids.into_boxed_slice(),
             storyboard_selection,
             source_frame_count,
+            analyzed_frame_count,
             omitted_frame_count,
             range: sequence.range(),
             markers: sequence.markers().to_vec().into_boxed_slice(),
             gaps: sequence.gaps().to_vec().into_boxed_slice(),
             region,
-            mask,
+            mask: mask.map(Box::new),
             normalization: normalization.into_boxed_slice(),
             parameters,
             output_dimensions,
@@ -666,7 +697,24 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             &self.source_frame_ids,
             "source frame identifiers must be unique",
         )?;
-        validate_selected_subsequence(&self.source_frame_ids, &self.selected_frame_ids)?;
+        if self.analyzed_frame_ids.is_empty() {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "manifest analyzed frames must not be empty",
+            ));
+        }
+        validate_ordered_subsequence(
+            &self.source_frame_ids,
+            &self.analyzed_frame_ids,
+            "analyzed frame identifiers must be unique",
+            "analyzed frames must be an ordered subsequence of source frames",
+        )?;
+        validate_ordered_subsequence(
+            &self.analyzed_frame_ids,
+            &self.selected_frame_ids,
+            "selected frame identifiers must be unique",
+            "selected frames must be an ordered subsequence of analyzed frames",
+        )?;
         self.validate_storyboard_trace()?;
         let source_count = u64::try_from(self.source_frame_ids.len()).map_err(|_| {
             VisionError::new(
@@ -674,20 +722,22 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
                 "source frame count is too large",
             )
         })?;
-        let selected_count = u64::try_from(self.selected_frame_ids.len()).map_err(|_| {
+        let analyzed_count = u64::try_from(self.analyzed_frame_ids.len()).map_err(|_| {
             VisionError::new(
                 ErrorCode::InvalidManifest,
-                "selected frame count is too large",
+                "analyzed frame count is too large",
             )
         })?;
         if self.source_frame_count != source_count
-            || self.omitted_frame_count != source_count - selected_count
+            || self.analyzed_frame_count != analyzed_count
+            || self.omitted_frame_count != source_count - analyzed_count
         {
             return Err(VisionError::new(
                 ErrorCode::InvalidManifest,
                 "manifest frame counts contradict its identifiers",
             ));
         }
+        self.validate_analysis_sampling_disclosure()?;
         validate_markers(&self.markers, self.range).map_err(as_manifest_error)?;
         validate_gaps(&self.gaps, self.range).map_err(as_manifest_error)?;
         if let (Some(region), Some(mask)) = (self.region, self.mask.as_ref()) {
@@ -697,6 +747,52 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
                     "manifest region does not fit its source mask dimensions",
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// The `analysis_sampling` parameter block is what agent-facing surfaces read to
+    /// warn that an analysis was decimated. It must therefore describe the same
+    /// evidence as the manifest counts, and it must exist whenever an analysis
+    /// artifact actually dropped source frames.
+    fn validate_analysis_sampling_disclosure(&self) -> Result<()> {
+        let decimated = self.analyzed_frame_count < self.source_frame_count;
+        let Some(value) = self.parameters.get("analysis_sampling") else {
+            if decimated
+                && matches!(
+                    self.artifact_kind,
+                    ArtifactKind::DifferenceMap | ArtifactKind::MotionHistory
+                )
+            {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "a decimated analysis manifest must disclose its analysis sampling",
+                ));
+            }
+            return Ok(());
+        };
+        let ParameterValue::Object(values) = value else {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "analysis sampling disclosure must be an object",
+            ));
+        };
+        for (name, expected) in [
+            ("source_frame_count", self.source_frame_count),
+            ("analyzed_frame_count", self.analyzed_frame_count),
+        ] {
+            if values.get(name) != Some(&ParameterValue::Unsigned(expected)) {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling disclosure contradicts the manifest frame counts",
+                ));
+            }
+        }
+        if !decimated {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "an undecimated manifest must not claim an analysis sampling mode",
+            ));
         }
         Ok(())
     }
@@ -886,6 +982,10 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
     pub fn source_frame_ids(&self) -> &[F] {
         &self.source_frame_ids
     }
+    /// The frames that contributed to this artifact, before render selection.
+    pub fn analyzed_frame_ids(&self) -> &[F] {
+        &self.analyzed_frame_ids
+    }
     pub fn selected_frame_ids(&self) -> &[F] {
         &self.selected_frame_ids
     }
@@ -895,6 +995,10 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
     pub const fn source_frame_count(&self) -> u64 {
         self.source_frame_count
     }
+    pub const fn analyzed_frame_count(&self) -> u64 {
+        self.analyzed_frame_count
+    }
+    /// Source frames that contributed nothing to this artifact.
     pub const fn omitted_frame_count(&self) -> u64 {
         self.omitted_frame_count
     }
@@ -911,7 +1015,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         self.region
     }
     pub fn mask(&self) -> Option<&BinaryMask> {
-        self.mask.as_ref()
+        self.mask.as_deref()
     }
     pub fn normalization(&self) -> &[NormalizationStep] {
         &self.normalization
@@ -951,15 +1055,17 @@ where
             evidence_class: EvidenceClass,
             algorithm: AlgorithmDescriptor,
             source_frame_ids: Box<[F]>,
+            analyzed_frame_ids: Box<[F]>,
             selected_frame_ids: Box<[F]>,
             storyboard_selection: Option<Box<StoryboardSelection<F>>>,
             source_frame_count: u64,
+            analyzed_frame_count: u64,
             omitted_frame_count: u64,
             range: TimeRange,
             markers: Box<[Marker<M>]>,
             gaps: Box<[DeclaredGap<G>]>,
             region: Option<FrameRegion>,
-            mask: Option<BinaryMask>,
+            mask: Option<Box<BinaryMask>>,
             normalization: Box<[NormalizationStep]>,
             parameters: Parameters,
             output_dimensions: PixelDimensions,
@@ -972,9 +1078,11 @@ where
             evidence_class: wire.evidence_class,
             algorithm: Box::new(wire.algorithm),
             source_frame_ids: wire.source_frame_ids,
+            analyzed_frame_ids: wire.analyzed_frame_ids,
             selected_frame_ids: wire.selected_frame_ids,
             storyboard_selection: wire.storyboard_selection,
             source_frame_count: wire.source_frame_count,
+            analyzed_frame_count: wire.analyzed_frame_count,
             omitted_frame_count: wire.omitted_frame_count,
             range: wire.range,
             markers: wire.markers,
@@ -1000,17 +1108,22 @@ fn validate_unique<T: Eq>(values: &[T], message: &'static str) -> Result<()> {
     Ok(())
 }
 
-fn validate_selected_subsequence<F: Eq>(source: &[F], selected: &[F]) -> Result<()> {
-    validate_unique(selected, "selected frame identifiers must be unique")?;
+fn validate_ordered_subsequence<F: Eq>(
+    source: &[F],
+    subset: &[F],
+    unique_message: &'static str,
+    subsequence_message: &'static str,
+) -> Result<()> {
+    validate_unique(subset, unique_message)?;
     let mut source_index = 0;
-    for (index, selected_id) in selected.iter().enumerate() {
+    for (index, subset_id) in subset.iter().enumerate() {
         let Some(offset) = source[source_index..]
             .iter()
-            .position(|source_id| source_id == selected_id)
+            .position(|source_id| source_id == subset_id)
         else {
             return Err(VisionError::at(
                 ErrorCode::InvalidManifest,
-                "selected frames must be an ordered subsequence of source frames",
+                subsequence_message,
                 index,
             ));
         };

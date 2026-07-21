@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use krometrail_core::{
     ByteOffset, EncodedFrame, FrameId, SegmentId, SessionId, SessionTime, TargetId,
 };
@@ -34,7 +32,7 @@ pub(crate) fn list_segments(
 ) -> krometrail_core::Result<Vec<StoredSegment>> {
     let mut statement = connection
         .prepare(
-            "SELECT segment_id, session_id, target_id, state, relative_path, start_time_be, \
+            "SELECT segment_id, session_id, target_id, state, start_time_be, \
                     end_time_be, file_bytes_be, payload_bytes_be, record_count_be \
              FROM segments ORDER BY segment_id",
         )
@@ -46,12 +44,11 @@ pub(crate) fn list_segments(
                 row.get::<_, Vec<u8>>(1)?,
                 row.get::<_, Vec<u8>>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-                row.get::<_, Option<Vec<u8>>>(6)?,
+                row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Option<Vec<u8>>>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
                 row.get::<_, Vec<u8>>(7)?,
                 row.get::<_, Vec<u8>>(8)?,
-                row.get::<_, Vec<u8>>(9)?,
             ))
         })
         .map_err(|_| persistence_error("could not query recovery segments"))?;
@@ -64,7 +61,6 @@ pub(crate) fn list_segments(
                 session_id,
                 target_id,
                 state,
-                relative_path,
                 start_time,
                 end_time,
                 file_bytes,
@@ -82,7 +78,6 @@ pub(crate) fn list_segments(
                         session_id: SessionId::from_uuid(codec::decode_id(&session_id)?),
                         target_id: TargetId::from_uuid(codec::decode_id(&target_id)?),
                         state,
-                        relative_path: PathBuf::from(relative_path),
                         start_time: SessionTime::from_nanos(codec::decode_u64(&start_time)?),
                         end_time: end_time
                             .as_deref()

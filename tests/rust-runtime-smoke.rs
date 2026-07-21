@@ -97,8 +97,14 @@ fn mcp_eof_exits_cleanly_without_non_protocol_output() {
     std::fs::remove_dir_all(data).unwrap();
 }
 
+/// Startup moves to an owned instance root and clears the pre-isolation flat
+/// store, while leaving everything that is not recording cache alone.
+///
+/// The managed browser-profile assertion is the important one: profiles live in
+/// the same data directory as the recording cache, are expensive to recreate,
+/// and a wrongly scoped clear would silently destroy them.
 #[test]
-fn mcp_startup_replaces_an_incompatible_recording_cache() {
+fn mcp_startup_clears_the_legacy_flat_store_and_owns_an_instance_root() {
     let data = std::env::temp_dir().join(format!(
         "krometrail-mcp-stale-cache-{}-{}",
         std::process::id(),
@@ -139,9 +145,25 @@ fn mcp_startup_replaces_an_incompatible_recording_cache() {
     assert!(output.status.success(), "stderr: {}", text(&output.stderr));
     assert!(output.stdout.is_empty(), "stdout: {}", text(&output.stdout));
     assert!(output.stderr.is_empty(), "stderr: {}", text(&output.stderr));
-    let database = std::fs::read(&database_path).unwrap();
-    assert_eq!(u32::from_be_bytes(database[60..64].try_into().unwrap()), 7);
-    assert!(!segments_directory.join("stale.segment").exists());
+
+    // The legacy flat store is gone rather than upgraded in place.
+    assert!(!database_path.exists());
+    assert!(!segments_directory.exists());
+
+    // Exactly one instance root was claimed, carrying the current schema.
+    let roots: Vec<_> = std::fs::read_dir(data.join("instances"))
+        .expect("startup should create an instance directory")
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir())
+        .collect();
+    assert_eq!(roots.len(), 1, "expected one instance root, got {roots:?}");
+    let instance_database = std::fs::read(roots[0].join("index.sqlite3")).unwrap();
+    assert_eq!(
+        u32::from_be_bytes(instance_database[60..64].try_into().unwrap()),
+        8
+    );
+
+    // Managed browser profiles are not recording cache and must survive.
     assert_eq!(
         std::fs::read(data.join("browser-profiles/default/profile")).unwrap(),
         b"preserve"

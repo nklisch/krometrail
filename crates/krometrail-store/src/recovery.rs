@@ -367,10 +367,6 @@ fn normalize_file(
             session_id: analysis.header.session_id,
             target_id: analysis.header.target_id,
             state: SegmentState::Sealed,
-            relative_path: PathBuf::from(format!(
-                "{}.{}",
-                analysis.header.segment_id, SEALED_SEGMENT_EXTENSION
-            )),
             start_time: analysis.header.start_session_time,
             end_time: Some(analysis.footer.last_session_time),
             file_bytes,

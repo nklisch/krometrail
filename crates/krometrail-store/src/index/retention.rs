@@ -16,9 +16,22 @@ pub(crate) struct SegmentCandidate {
     pub segment_id: SegmentId,
     pub session_id: SessionId,
     pub target_id: TargetId,
-    pub relative_path: String,
     pub file_bytes: u64,
     pub retention_sequence: u64,
+}
+
+/// Narrows the segment reclaim candidate set without changing its ordering.
+///
+/// `None` in either field means "no restriction", which is exactly the
+/// budget-pressure behaviour. A future dead-instance tier narrows the same way.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SegmentReclaimFilter {
+    /// Only consider segments stamped before this instant.
+    pub created_before_unix_ms: Option<i64>,
+    /// Skip segments that any artifact published at or after this instant derives
+    /// from, so a fresh evidence link is not cascade-evicted out from under the
+    /// agent that was just handed it.
+    pub artifact_grace_since_unix_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -228,21 +241,84 @@ impl SqliteIndex {
     pub(crate) fn oldest_unpinned_segment(
         &self,
     ) -> krometrail_core::Result<Option<SegmentCandidate>> {
+        self.oldest_reclaimable_segment(SegmentReclaimFilter::default())
+    }
+
+    /// Selects the next sealed, unpinned segment in retention order.
+    ///
+    /// One query serves both budget pressure and age-out: the filter narrows the
+    /// candidate set, but the ordering and the pin exclusion are identical, so
+    /// age-out cannot drift into a second eviction policy. Pins are excluded
+    /// unconditionally — pinned evidence survives age-out exactly as it survives
+    /// budget pressure.
+    pub(crate) fn oldest_reclaimable_segment(
+        &self,
+        filter: SegmentReclaimFilter,
+    ) -> krometrail_core::Result<Option<SegmentCandidate>> {
         let connection = self.connection()?;
         connection
             .query_row(
-                "SELECT s.segment_id, s.session_id, s.target_id, s.relative_path, \
+                "SELECT s.segment_id, s.session_id, s.target_id, \
                         s.file_bytes_be, s.retention_sequence \
                  FROM segments s WHERE s.state='sealed' \
                    AND NOT EXISTS (SELECT 1 FROM pin_segments p WHERE p.segment_id=s.segment_id) \
+                   AND (?1 IS NULL OR s.created_unix_ms < ?1) \
+                   AND (?2 IS NULL OR NOT EXISTS ( \
+                         SELECT 1 FROM artifacts a \
+                         JOIN artifact_frames af USING(artifact_id) \
+                         JOIN frames f USING(frame_id) \
+                         WHERE f.segment_id=s.segment_id AND a.created_unix_ms >= ?2)) \
                  ORDER BY s.retention_sequence ASC, s.segment_id ASC LIMIT 1",
-                [],
+                params![
+                    filter.created_before_unix_ms,
+                    filter.artifact_grace_since_unix_ms
+                ],
                 decode_segment_candidate,
             )
             .optional()
             .map_err(|_| persistence_error("could not select oldest unpinned segment"))?
             .map(decode_segment_candidate_parts)
             .transpose()
+    }
+
+    /// Reports the number of segments and artifacts already older than `cutoff`.
+    ///
+    /// Age-out needs to know whether expired evidence exists *before* deciding to
+    /// walk, so that a store inside its byte budget still reclaims on time.
+    pub(crate) fn expired_object_count(&self, cutoff_unix_ms: i64) -> krometrail_core::Result<u64> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT (SELECT count(*) FROM segments s \
+                          WHERE s.state='sealed' AND s.created_unix_ms < ?1 \
+                            AND NOT EXISTS ( \
+                                  SELECT 1 FROM pin_segments p \
+                                  WHERE p.segment_id=s.segment_id)) \
+                      + (SELECT count(*) FROM artifacts WHERE created_unix_ms < ?1)",
+                params![cutoff_unix_ms],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|_| persistence_error("could not count expired retained objects"))
+            .and_then(|value| {
+                u64::try_from(value)
+                    .map_err(|_| persistence_error("expired object count is malformed"))
+            })
+    }
+
+    /// The index's own wall clock, in Unix milliseconds.
+    ///
+    /// Age comparisons read the same clock that stamped `created_unix_ms`, so a
+    /// cutoff can never be computed against a different time source than the rows
+    /// it is compared with.
+    pub(crate) fn now_unix_ms(&self) -> krometrail_core::Result<i64> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| persistence_error("could not read the retention clock"))
     }
 
     pub(crate) fn artifacts_for_segment(
@@ -290,13 +366,29 @@ impl SqliteIndex {
         &self,
         excluded: Option<ArtifactId>,
     ) -> krometrail_core::Result<Option<ArtifactCandidate>> {
+        self.oldest_reclaimable_artifact(excluded, None)
+    }
+
+    /// Selects the next evictable artifact, optionally restricted to expired ones.
+    ///
+    /// As with segments, budget pressure and age-out share one query so their
+    /// ordering can never diverge.
+    pub(crate) fn oldest_reclaimable_artifact(
+        &self,
+        excluded: Option<ArtifactId>,
+        created_before_unix_ms: Option<i64>,
+    ) -> krometrail_core::Result<Option<ArtifactCandidate>> {
         let connection = self.connection()?;
         let raw = connection
             .query_row(
                 "SELECT artifact_id, session_id, relative_path, byte_len_be FROM artifacts \
                  WHERE (?1 IS NULL OR artifact_id!=?1) \
+                   AND (?2 IS NULL OR created_unix_ms < ?2) \
                  ORDER BY start_time_be ASC, artifact_id ASC LIMIT 1",
-                [excluded.map(|id| codec::id(id.as_uuid()).to_vec())],
+                params![
+                    excluded.map(|id| codec::id(id.as_uuid()).to_vec()),
+                    created_before_unix_ms
+                ],
                 |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
@@ -320,9 +412,51 @@ impl SqliteIndex {
         .transpose()
     }
 
+    /// Counts segment rows still in the `open` state.
+    ///
+    /// Used as the construction-time proof that recovery already ran.
+    pub(crate) fn open_segment_count(&self) -> krometrail_core::Result<u64> {
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT count(*) FROM segments WHERE state='open'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|_| persistence_error("could not count open segments"))
+            .and_then(|value| {
+                u64::try_from(value)
+                    .map_err(|_| persistence_error("open segment count is malformed"))
+            })
+    }
+
     pub(crate) fn usage_snapshot(&self) -> krometrail_core::Result<UsageSnapshot> {
         let connection = self.connection()?;
         usage_snapshot(&connection)
+    }
+
+    /// Usage for read-only status, computed without writing or checkpointing.
+    ///
+    /// The stored `index` usage row is only refreshed by mutating paths, so a
+    /// status read that trusted it would report zero on a store that has not
+    /// mutated yet. Deriving the index class from live pages instead keeps status
+    /// honest while staying a pure read. The one accepted imprecision is that
+    /// pages still sitting in an un-checkpointed WAL may not be counted yet.
+    pub(crate) fn live_usage_snapshot(&self) -> krometrail_core::Result<UsageSnapshot> {
+        let connection = self.connection()?;
+        let mut snapshot = usage_snapshot(&connection)?;
+        let (live_pages, _) = super::maintenance::sqlite_page_usage(&connection)?;
+        let index_bytes = live_pages.saturating_sub(snapshot.usage.browser_event_bytes);
+        snapshot.usage = StorageUsage::new(
+            snapshot.usage.segment_bytes,
+            index_bytes,
+            snapshot.usage.browser_event_bytes,
+            snapshot.usage.artifact_bytes,
+            snapshot.usage.pending_deletion_bytes,
+            snapshot.usage.open_segment_bytes,
+            snapshot.usage.accounting_slack_bytes,
+        )?;
+        Ok(snapshot)
     }
 
     pub(crate) fn session_segments(
@@ -332,8 +466,13 @@ impl SqliteIndex {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(
-                "SELECT segment_id, session_id, target_id, relative_path, file_bytes_be, \
-                        retention_sequence FROM segments WHERE session_id=?1 \
+                // Sealed only. Session deletion runs after `flush_session`, so every
+                // segment of this session is already published; an `open` row here
+                // would belong to a live writer and must never become a deletion
+                // object.
+                "SELECT segment_id, session_id, target_id, file_bytes_be, \
+                        retention_sequence FROM segments \
+                 WHERE session_id=?1 AND state='sealed' \
                  ORDER BY retention_sequence, segment_id",
             )
             .map_err(|_| persistence_error("could not prepare session segment lookup"))?;
@@ -387,7 +526,7 @@ impl SqliteIndex {
     }
 }
 
-type RawSegment = (Vec<u8>, Vec<u8>, Vec<u8>, String, Vec<u8>, i64);
+type RawSegment = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, i64);
 
 fn decode_segment_candidate(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSegment> {
     Ok((
@@ -396,19 +535,16 @@ fn decode_segment_candidate(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSegm
         row.get(2)?,
         row.get(3)?,
         row.get(4)?,
-        row.get(5)?,
     ))
 }
 
 fn decode_segment_candidate_parts(raw: RawSegment) -> krometrail_core::Result<SegmentCandidate> {
-    validate_file_name(&raw.3)?;
     Ok(SegmentCandidate {
         segment_id: SegmentId::from_uuid(codec::decode_id(&raw.0)?),
         session_id: SessionId::from_uuid(codec::decode_id(&raw.1)?),
         target_id: TargetId::from_uuid(codec::decode_id(&raw.2)?),
-        relative_path: raw.3,
-        file_bytes: codec::decode_u64(&raw.4)?,
-        retention_sequence: u64::try_from(raw.5)
+        file_bytes: codec::decode_u64(&raw.3)?,
+        retention_sequence: u64::try_from(raw.4)
             .map_err(|_| persistence_error("stored retention sequence is malformed"))?,
     })
 }
@@ -721,6 +857,30 @@ fn segment_state_usage(
     Ok((values.len() as u64, checked_sum(values)?))
 }
 
+/// Oldest and newest retained evidence, ordered by wall clock.
+///
+/// **Ordering authority: `segments.created_unix_ms`.** These bounds are global —
+/// they range over every retained session — so they need an ordering key that is
+/// meaningful across sessions. `session_time` is not one: it is measured from
+/// each session's own start, so comparing two sessions' session times is
+/// meaningless by construction. The previous implementation ordered by `rowid`,
+/// which is global insertion order and answers a different question entirely
+/// ("which row was written first"). That is why a live store could report an
+/// `oldest_retained` session time *greater* than its `newest_retained`: the two
+/// endpoints came from different sessions, and their session-relative values were
+/// never comparable in the first place.
+///
+/// `created_unix_ms` is the right authority because it is one wall clock shared
+/// by every session, so "oldest" and "newest" genuinely order the retained
+/// evidence. Ties break on `session_time` then `frame_id` for determinism.
+///
+/// **What the returned `session_time` does and does not mean.** Each endpoint
+/// still carries its own session-relative time, because that is the coordinate a
+/// caller needs to address that frame within its session. Those two values are
+/// only comparable — and a span between them only meaningful — when both
+/// endpoints share a session and target. The MCP surface is responsible for not
+/// implying otherwise; this query guarantees only that the endpoints are ordered,
+/// not that their session times can be subtracted.
 fn retained_bounds(
     connection: &Connection,
 ) -> krometrail_core::Result<(Option<RetainedPoint>, Option<RetainedPoint>)> {
@@ -729,9 +889,13 @@ fn retained_bounds(
         ascending: bool,
     ) -> krometrail_core::Result<Option<RetainedPoint>> {
         let sql = if ascending {
-            "SELECT session_id, target_id, session_time_be FROM frames ORDER BY rowid ASC LIMIT 1"
+            "SELECT f.session_id, f.target_id, f.session_time_be \
+             FROM frames f JOIN segments s USING(segment_id) \
+             ORDER BY s.created_unix_ms ASC, f.session_time_be ASC, f.frame_id ASC LIMIT 1"
         } else {
-            "SELECT session_id, target_id, session_time_be FROM frames ORDER BY rowid DESC LIMIT 1"
+            "SELECT f.session_id, f.target_id, f.session_time_be \
+             FROM frames f JOIN segments s USING(segment_id) \
+             ORDER BY s.created_unix_ms DESC, f.session_time_be DESC, f.frame_id DESC LIMIT 1"
         };
         let raw = connection
             .query_row(sql, [], |row| {
@@ -772,7 +936,7 @@ pub(crate) fn validate_file_name(value: &str) -> krometrail_core::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::time::Duration;
 
     use krometrail_core::{RetentionRange, SessionRange};
     use tempfile::TempDir;
@@ -788,7 +952,6 @@ mod tests {
             session_id: SessionId::from_uuid(Uuid::from_u128(session)),
             target_id: TargetId::from_uuid(Uuid::from_u128(target)),
             state: SegmentState::Sealed,
-            relative_path: PathBuf::from(format!("{}.kts", Uuid::from_u128(id))),
             start_time: SessionTime::from_nanos(start),
             end_time: Some(SessionTime::from_nanos(start + 9)),
             file_bytes: 100,

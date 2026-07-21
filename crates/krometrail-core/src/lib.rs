@@ -172,7 +172,7 @@ pub use progressive::{
     RegionFilmstripEvidenceRequest, ResolvedProgressiveRegion, ResolvedRangeEvidenceRequest,
     RetentionPinRequest, RetrieveArtifactRequest, RetrieveSourceFrameRequest, Sha256Digest,
     SourceFrameBatch, SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection,
-    SourceFramesRequest, SourceReadLimitsRequest,
+    SourceFramesRequest, SourceReadLimitsRequest, coalesce_protected_ranges,
 };
 pub use range_handle::{
     MAX_RESOLVED_RANGE_HANDLE_BUDGET_BYTES, MAX_RESOLVED_RANGE_HANDLES, ResolvedRangeHandles,
@@ -180,9 +180,11 @@ pub use range_handle::{
 pub use recording::{
     ByteOffset, CaptureFailure, CaptureFailureStage, CaptureGap, CaptureGapReason, CaptureOrdinal,
     CaptureStatistics, CaptureStreamState, CaptureTimingSummary, CaptureWarning, CapturedFrame,
-    DEFAULT_DISK_BUDGET_BYTES, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, FrameAddress,
-    ImageFormat, PinChange, PixelDimensions, RecordingBudgetState, RecordingSession, RetainedPoint,
-    RetentionRange, RetentionStatus, SessionDeletion, StorageUsage, TargetCaptureStatus,
+    DEFAULT_ARTIFACT_GRACE, DEFAULT_DISK_BUDGET_BYTES, DEFAULT_RETENTION_MAX_AGE,
+    DEFAULT_TRIM_HIGH_WATER_PERCENT, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame,
+    FrameAddress, ImageFormat, PinChange, PixelDimensions, RecordingBudgetState, RecordingSession,
+    RetainedPoint, RetentionLifecycle, RetentionRange, RetentionStatus, SessionDeletion,
+    StorageUsage, TargetCaptureStatus,
 };
 pub use time::{ObservedTime, SessionOrigin, SessionRange, SessionTime, SourceTime};
 pub use timeline::{

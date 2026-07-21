@@ -91,6 +91,16 @@ impl SubscriberLag {
             ))
             .expect("lag message is non-empty"),
         )
+        // Missed revisions are not replayable, so the caller must re-read current target state
+        // rather than retry the subscription. Carrying that as a structured recovery field keeps
+        // the guidance machine-readable instead of buried in the message.
+        .with_retry(krometrail_core::RetryAdvice::AfterRecovery)
+        .with_recovery(
+            NonEmptyText::new(
+                "call list_pages to re-read current target state; missed revisions cannot be replayed",
+            )
+            .expect("lag recovery is non-empty"),
+        )
     }
 }
 

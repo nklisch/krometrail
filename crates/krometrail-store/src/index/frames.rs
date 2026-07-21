@@ -203,7 +203,7 @@ impl SqliteIndex {
 
 fn snapshot_select(predicate: &str, order: &str) -> String {
     format!(
-        "SELECT f.frame_id,f.session_id,f.target_id,f.segment_id,f.byte_offset_be,s.relative_path,\
+        "SELECT f.frame_id,f.session_id,f.target_id,f.segment_id,f.byte_offset_be,s.state,\
                 f.capture_ordinal_be,f.source_time_be,f.observed_time_be,f.session_time_be,f.format,\
                 f.image_width,f.image_height,f.viewport_width,f.viewport_height,f.device_scale,\
                 f.warnings_json FROM frames f JOIN segments s USING(segment_id) \
@@ -224,7 +224,7 @@ fn raw_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawSnapshot> {
             target_id: row.get(2)?,
             segment_id: row.get(3)?,
             byte_offset: row.get(4)?,
-            relative_path: row.get(5)?,
+            state: row.get(5)?,
         },
         metadata: RawMetadata {
             frame_id: row.get(0)?,
@@ -284,7 +284,7 @@ impl FrameSource for SqliteIndex {
                 let mut statement = connection
                     .prepare(
                         "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id, \
-                                f.byte_offset_be, s.relative_path \
+                                f.byte_offset_be, s.state \
                          FROM frames f JOIN segments s USING(segment_id) WHERE f.frame_id=?1",
                     )
                     .map_err(|_| persistence_error("could not prepare frame address lookup"))?;
@@ -349,7 +349,7 @@ impl FrameSource for SqliteIndex {
                 let mut statement = connection
                     .prepare(
                         "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id, \
-                                f.byte_offset_be, s.relative_path \
+                                f.byte_offset_be, s.state \
                          FROM frames f JOIN segments s USING(segment_id) \
                          WHERE f.session_id=?1 AND f.target_id=?2 \
                            AND f.session_time_be>=?3 AND f.session_time_be<=?4 \
@@ -401,7 +401,7 @@ impl FrameSource for SqliteIndex {
                 let mut statement = connection
                     .prepare(
                         "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id, \
-                                f.byte_offset_be, s.relative_path \
+                                f.byte_offset_be, s.state \
                          FROM frames f JOIN segments s USING(segment_id) \
                          WHERE f.session_id=?1 AND f.target_id=?2 \
                            AND f.capture_ordinal_be>=?3 AND f.capture_ordinal_be<=?4 \
@@ -642,7 +642,7 @@ struct RawAddress {
     target_id: Vec<u8>,
     segment_id: Vec<u8>,
     byte_offset: Vec<u8>,
-    relative_path: String,
+    state: String,
 }
 
 fn raw_address(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawAddress> {
@@ -652,27 +652,34 @@ fn raw_address(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawAddress> {
         target_id: row.get(2)?,
         segment_id: row.get(3)?,
         byte_offset: row.get(4)?,
-        relative_path: row.get(5)?,
+        state: row.get(5)?,
     })
 }
 
 fn decode_address(raw: RawAddress) -> krometrail_core::Result<StoredAddress> {
-    if raw.relative_path.is_empty() || raw.relative_path.contains(['/', '\\']) {
-        return Err(persistence_error("stored segment path is invalid"));
-    }
+    let state = match raw.state.as_str() {
+        "open" => crate::SegmentState::Open,
+        "sealed" => crate::SegmentState::Sealed,
+        _ => return Err(persistence_error("stored segment state is malformed")),
+    };
     Ok(StoredAddress {
         frame_id: FrameId::from_uuid(codec::decode_id(&raw.frame_id)?),
         session_id: SessionId::from_uuid(codec::decode_id(&raw.session_id)?),
         target_id: TargetId::from_uuid(codec::decode_id(&raw.target_id)?),
         segment_id: krometrail_core::SegmentId::from_uuid(codec::decode_id(&raw.segment_id)?),
         byte_offset: ByteOffset::new(codec::decode_u64(&raw.byte_offset)?),
-        relative_path: raw.relative_path,
+        state,
     })
 }
 
 impl SqliteIndex {
     fn read_address(&self, stored: StoredAddress) -> krometrail_core::Result<EncodedFrame> {
-        let path = self.segments_directory().join(&stored.relative_path);
+        let path = self
+            .segments_directory()
+            .join(crate::segments::segment_file_name(
+                stored.segment_id,
+                stored.state,
+            ));
         let mut file = File::open(path)
             .or_else(|_| {
                 File::open(sealed_segment_path(

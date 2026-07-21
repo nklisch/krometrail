@@ -24,7 +24,7 @@ fn current_schema_reopens_and_has_the_declared_inventory() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     let mut statement = connection
         .prepare(
             "SELECT name FROM sqlite_master \
@@ -37,6 +37,7 @@ fn current_schema_reopens_and_has_the_declared_inventory() {
         .collect::<Result<_, _>>()
         .unwrap();
     for required in [
+        "artifact_created_idx",
         "artifact_frames",
         "artifact_range_idx",
         "artifact_ready_cache_idx",
@@ -87,7 +88,7 @@ fn future_schema_is_replaced_with_the_current_cache() {
     let directory = TempDir::new().unwrap();
     let config = config(&directory);
     let connection = Connection::open(&config.database_path).unwrap();
-    connection.pragma_update(None, "user_version", 8).unwrap();
+    connection.pragma_update(None, "user_version", 9).unwrap();
     drop(connection);
 
     drop(SqliteIndex::open(config.clone()).unwrap());
@@ -95,7 +96,7 @@ fn future_schema_is_replaced_with_the_current_cache() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 }
 
 #[test]
@@ -133,7 +134,7 @@ fn incompatible_recording_cache_is_cleared_without_touching_other_data() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     let stale_table: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='stale')",

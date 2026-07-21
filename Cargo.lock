@@ -843,6 +843,7 @@ version = "1.2.7"
 dependencies = [
  "crc32fast",
  "krometrail-core",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

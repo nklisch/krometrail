@@ -127,7 +127,11 @@ fn browser_free_public_contract_is_traceable_bounded_and_deterministic() {
     assert_eq!(manifest.algorithm().name(), "temporal-difference-map");
     assert_eq!(manifest.algorithm().version(), "v1");
     assert_eq!(manifest.source_frame_count(), 4);
-    assert_eq!(manifest.omitted_frame_count(), 3);
+    // All four frames were analyzed; only the reference frame is referenced in the
+    // output. Referencing one frame is not the same as omitting the other three.
+    assert_eq!(manifest.analyzed_frame_count(), 4);
+    assert_eq!(manifest.omitted_frame_count(), 0);
+    assert_eq!(manifest.analyzed_frame_ids().len(), 4);
     assert_eq!(manifest.selected_frame_ids(), &[FrameId("f0".into())]);
     assert_eq!(manifest.markers().len(), 1);
     assert_eq!(manifest.gaps().len(), 1);
@@ -216,4 +220,131 @@ fn region_has_color(
 ) -> bool {
     (y..y + height)
         .any(|row| (x..x + width).any(|column| rgb_at(pixels, dimensions, column, row) == color))
+}
+
+/// Attach source provenance describing `source_len` retained frames, of which the
+/// fixture's four decoded frames sit at `indices`.
+fn with_provenance(source: Source, source_len: usize, indices: [usize; 4]) -> Source {
+    let ids: Vec<FrameId> = (0..source_len)
+        .map(|position| {
+            indices
+                .iter()
+                .position(|index| *index == position)
+                .map_or_else(
+                    || FrameId(format!("dropped-{position}")),
+                    |decoded| source.frames()[decoded].id().clone(),
+                )
+        })
+        .collect();
+    let range = TimeRange::new(Timestamp::from_nanos(0), Timestamp::from_nanos(100)).unwrap();
+    source
+        .with_source_provenance(ids, indices.to_vec(), range)
+        .unwrap()
+}
+
+fn sampling_block(
+    manifest: &ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId>,
+) -> Option<&temporal_vision::ParameterValue> {
+    manifest.parameters().get("analysis_sampling")
+}
+
+#[test]
+fn decimated_analysis_manifest_counts_agree_with_its_sampling_disclosure() {
+    let (source, normalized) = fixture();
+    let source = with_provenance(source, 9, [0, 3, 5, 8]);
+    let manifest = render_difference_map(
+        ArtifactId("difference-sampled".into()),
+        &source,
+        &normalized,
+        parameters(DifferenceMapLimits::default()),
+    )
+    .unwrap()
+    .manifest()
+    .clone();
+
+    // The four analyzed frames are what contributed; five source frames were dropped.
+    // Referencing only the reference frame must not be reported as omitting the rest.
+    assert_eq!(manifest.source_frame_count(), 9);
+    assert_eq!(manifest.analyzed_frame_count(), 4);
+    assert_eq!(manifest.omitted_frame_count(), 5);
+    assert_eq!(manifest.selected_frame_ids(), &[FrameId("f0".into())]);
+
+    // The disclosure agent surfaces read for their sampling warning must describe
+    // the same evidence as the counts above.
+    let Some(temporal_vision::ParameterValue::Object(values)) = sampling_block(&manifest) else {
+        panic!("a decimated analysis must disclose analysis_sampling");
+    };
+    assert_eq!(
+        values.get("source_frame_count"),
+        Some(&temporal_vision::ParameterValue::Unsigned(
+            manifest.source_frame_count()
+        ))
+    );
+    assert_eq!(
+        values.get("analyzed_frame_count"),
+        Some(&temporal_vision::ParameterValue::Unsigned(
+            manifest.analyzed_frame_count()
+        ))
+    );
+    assert_eq!(
+        values.get("mode"),
+        Some(&temporal_vision::ParameterValue::Text(
+            "uniform_bounded".into()
+        ))
+    );
+}
+
+#[test]
+fn undecimated_analysis_manifest_claims_no_sampling_mode() {
+    let (source, normalized) = fixture();
+    // Production always attaches source provenance, so an exhaustive run reaches the
+    // same code path as a sampled one. It must not claim `uniform_bounded` anyway.
+    let source = with_provenance(source, 4, [0, 1, 2, 3]);
+    let manifest = render_difference_map(
+        ArtifactId("difference-exhaustive".into()),
+        &source,
+        &normalized,
+        parameters(DifferenceMapLimits::default()),
+    )
+    .unwrap()
+    .manifest()
+    .clone();
+
+    assert_eq!(manifest.source_frame_count(), 4);
+    assert_eq!(manifest.analyzed_frame_count(), 4);
+    assert_eq!(manifest.omitted_frame_count(), 0);
+    assert_eq!(sampling_block(&manifest), None);
+}
+
+#[test]
+fn a_manifest_may_not_be_deserialized_with_a_contradictory_sampling_disclosure() {
+    let (source, normalized) = fixture();
+    let source = with_provenance(source, 9, [0, 3, 5, 8]);
+    let manifest = render_difference_map(
+        ArtifactId("difference-sampled".into()),
+        &source,
+        &normalized,
+        parameters(DifferenceMapLimits::default()),
+    )
+    .unwrap()
+    .manifest()
+    .clone();
+
+    let encoded = serde_json::to_vec(&manifest).unwrap();
+    serde_json::from_slice::<ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId>>(&encoded)
+        .unwrap();
+
+    let mut tampered: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    tampered["parameters"]["analysis_sampling"]["value"]["analyzed_frame_count"]["value"] =
+        serde_json::json!(1);
+    let tampered = serde_json::to_vec(&tampered).unwrap();
+    let error =
+        serde_json::from_slice::<ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId>>(&tampered)
+            .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("contradicts the manifest frame counts"),
+        "unexpected error: {error}"
+    );
 }

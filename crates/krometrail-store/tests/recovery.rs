@@ -97,7 +97,9 @@ fn metadata_snapshot(fixture: &Fixture) -> Vec<(String, Vec<u8>)> {
     for (label, sql) in [
         (
             "segments",
-            "SELECT hex(segment_id)||state||relative_path||hex(file_bytes_be) FROM segments ORDER BY segment_id",
+            // The on-disk name is derived from segment id plus state, so those two
+            // columns fingerprint the publication exactly as a stored path did.
+            "SELECT hex(segment_id)||state||hex(file_bytes_be) FROM segments ORDER BY segment_id",
         ),
         (
             "frames",

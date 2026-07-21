@@ -2,7 +2,16 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 7;
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 8;
+
+// `created_unix_ms` on `segments` and `artifacts` is the age-out clock.
+//
+// Age-out reads the index's own wall clock rather than an injected time port.
+// The value is a property of the disposable cache — "how long has this file been
+// on disk" — and carries none of the source, observed, or session-time semantics
+// that the clock ports exist to keep distinct. Defaulting it in SQL also keeps
+// every writer, including startup recovery, stamping rows identically without
+// threading a clock through the recovery path.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SchemaState {
@@ -27,13 +36,13 @@ CREATE TABLE segments (
     session_id BLOB NOT NULL CHECK(length(session_id) = 16),
     target_id BLOB NOT NULL CHECK(length(target_id) = 16),
     state TEXT NOT NULL CHECK(state IN ('open', 'sealed')),
-    relative_path TEXT NOT NULL UNIQUE,
     start_time_be BLOB NOT NULL CHECK(length(start_time_be) = 8),
     end_time_be BLOB NULL CHECK(end_time_be IS NULL OR length(end_time_be) = 8),
     file_bytes_be BLOB NOT NULL CHECK(length(file_bytes_be) = 8),
     payload_bytes_be BLOB NOT NULL CHECK(length(payload_bytes_be) = 8),
     record_count_be BLOB NOT NULL CHECK(length(record_count_be) = 8),
     retention_sequence INTEGER,
+    created_unix_ms INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     FOREIGN KEY(session_id, target_id) REFERENCES targets(session_id, target_id)
 ) STRICT;
 CREATE TABLE frames (
@@ -127,6 +136,7 @@ CREATE TABLE artifacts (
     adapter_version TEXT NOT NULL CHECK(length(adapter_version)>0),
     generator_name TEXT NOT NULL CHECK(length(generator_name)>0),
     generator_version TEXT NOT NULL CHECK(length(generator_version)>0),
+    created_unix_ms INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
     FOREIGN KEY(session_id,target_id) REFERENCES targets(session_id,target_id) ON DELETE CASCADE
 ) STRICT;
 CREATE TABLE artifact_frames (
@@ -244,6 +254,8 @@ CREATE INDEX evicted_frame_range_idx ON evicted_frame_ranges(session_id, target_
 CREATE UNIQUE INDEX navigation_anchor_id_idx ON timeline_observations(kind, payload_sort_key) WHERE kind='navigation';
 CREATE UNIQUE INDEX marker_anchor_id_idx ON timeline_observations(kind, payload_sort_key) WHERE kind='marker';
 CREATE UNIQUE INDEX interaction_boundary_point_idx ON timeline_observations(kind, payload_sort_key, session_time_be) WHERE kind='interaction_boundary';
+CREATE INDEX segment_created_idx ON segments(created_unix_ms, segment_id);
+CREATE INDEX artifact_created_idx ON artifacts(created_unix_ms, artifact_id);
 CREATE INDEX artifact_range_idx ON artifacts(session_id,target_id,state,start_time_be,end_time_be);
 CREATE INDEX artifact_ready_cache_idx ON artifacts(cache_key) WHERE state='ready';
 CREATE INDEX artifact_source_frame_idx ON artifact_frames(frame_id,artifact_id,source_position);
@@ -360,6 +372,7 @@ mod tests {
             ]
         );
         let expected_indexes = [
+            "artifact_created_idx",
             "artifact_range_idx",
             "artifact_ready_cache_idx",
             "artifact_source_frame_idx",
@@ -377,6 +390,7 @@ mod tests {
             "interaction_latest_idx",
             "marker_anchor_id_idx",
             "navigation_anchor_id_idx",
+            "segment_created_idx",
             "segment_retention_idx",
             "segment_retention_sequence_idx",
             "timeline_range_idx",
@@ -403,7 +417,7 @@ mod tests {
             ("targets", "session_id,target_id,record_json"),
             (
                 "segments",
-                "segment_id,session_id,target_id,state,relative_path,start_time_be,end_time_be,file_bytes_be,payload_bytes_be,record_count_be,retention_sequence",
+                "segment_id,session_id,target_id,state,start_time_be,end_time_be,file_bytes_be,payload_bytes_be,record_count_be,retention_sequence,created_unix_ms",
             ),
             (
                 "frames",
@@ -424,7 +438,7 @@ mod tests {
             ("pin_segments", "pin_id,segment_id"),
             (
                 "artifacts",
-                "artifact_id,session_id,target_id,state,kind,start_time_be,end_time_be,manifest_json,manifest_hash,media_type,output_hash,relative_path,byte_len_be,cache_key,source_fingerprint,parameter_hash,visual_epoch_hash,cache_schema_version,adapter_version,generator_name,generator_version",
+                "artifact_id,session_id,target_id,state,kind,start_time_be,end_time_be,manifest_json,manifest_hash,media_type,output_hash,relative_path,byte_len_be,cache_key,source_fingerprint,parameter_hash,visual_epoch_hash,cache_schema_version,adapter_version,generator_name,generator_version,created_unix_ms",
             ),
             (
                 "artifact_frames",
@@ -521,7 +535,7 @@ mod tests {
 
     #[test]
     fn incompatible_versions_are_classified_without_mutation() {
-        for version in [1, 2, 3, 4, 5, 6, 8, u32::MAX] {
+        for version in [1, 2, 3, 4, 5, 6, 7, 9, u32::MAX] {
             let mut connection = Connection::open_in_memory().unwrap();
             connection
                 .execute("CREATE TABLE retained(value TEXT) STRICT", [])

@@ -343,7 +343,7 @@ Tools belonging to a disabled or startup-unavailable capability are not register
 
 ## Disk Budget and Retention
 
-The Krometrail data directory uses one configurable global disk budget across active sessions, retained sessions, indexes, browser events, and generated artifacts. The default budget is 10 GB.
+The Krometrail data directory uses one configurable global disk budget across active sessions, retained sessions, indexes, browser events, and generated artifacts. The default budget is 10 GB, and it is a total shared across every concurrently running instance rather than a per-process allowance.
 
 Recorded data is stored in time-based immutable segments. Session metadata and artifact indexes are stored separately from frame payloads. Stopping a session leaves its retained ranges queryable under the global budget.
 
@@ -357,9 +357,35 @@ staging—initializes the current format, and continues startup. It does not mig
 formats. Configuration, managed browser profiles, diagnostics, and other data-root members are not
 recording cache and remain untouched.
 
-When total stored data exceeds the budget, Krometrail removes the oldest unpinned segments across all sessions until usage returns below the limit.
+### Instance isolation and the shared budget
 
-A time range can be pinned. Pinning protects every storage segment required to reconstruct that range. If pinned data consumes the entire budget, recording pauses before deleting protected evidence and reports the condition clearly.
+Each Krometrail process owns one instance root under `instances/<uuid>/` in the data directory and holds an advisory lock on it for its lifetime. A process never reads or mutates another instance's storage, so a second process cannot disturb a running one's capture. Evidence is therefore scoped to the instance that recorded it: after the Krometrail process restarts, evidence recorded by a previous process is no longer queryable.
+
+The disk budget is a *total* across concurrent instances, not a per-process allowance. Live instances publish their usage to a small shared, lock-protected ledger and each enforces against the combined figure. An instance may occupy whatever its peers are not using, but never less than an equal share, so an idle instance cannot hold capacity it is not using and a busy instance cannot be starved. Because one instance may not reclaim another's data, an instance that grew while alone is not forced to give bytes back immediately; that overshoot is transient and resolves as the over-sized instance trims, its evidence ages out, or it exits.
+
+When shared accounting is unavailable — a corrupt ledger, a contended lock, a process that died mid-transaction — an instance enforces the configured budget alone and continues recording. Degraded accounting never blocks capture.
+
+When a process exits, its instance root becomes reclaimable. Its bytes stop counting toward the total immediately, and the next instance to start removes the abandoned recording cache.
+
+### Reclaim
+
+Krometrail reclaims on both size and age, through one ordered walk. Abandoned instance roots go first, then generated artifacts, then browser events and segments in retention order.
+
+Evidence older than the configured maximum age expires even when the store is well inside its budget, so a store does not accumulate until it reaches the budget wall and stay there. Reclaim also runs during a live session once usage crosses a high-water share of the instance's allowance, so a long session trims as it goes rather than degrading into permanent near-full pressure.
+
+A segment backing an artifact published within a short grace window is skipped during budget pressure, so a freshly returned evidence link is not immediately invalidated. If every remaining segment is so protected, the grace is dropped rather than stalling capture, and the override is reported.
+
+A time range can be pinned. Pinning protects every storage segment required to reconstruct that range, against both budget pressure and age-out. If pinned data consumes the entire budget, recording pauses before deleting protected evidence and reports the condition clearly.
+
+### Retention configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `KROMETRAIL_DATA_DIR` | platform data directory | Root holding instance storage, browser profiles, and diagnostics. |
+| `KROMETRAIL_DISK_BUDGET_BYTES` | 10 GB | Total budget shared across all live instances. |
+| `KROMETRAIL_RETENTION_MAX_AGE_SECS` | 7 days | Age at which evidence expires regardless of budget. `0` disables age-out. |
+
+Because evidence is instance-scoped, the maximum age is the main control over long-term growth; disabling it means a store only ever reclaims under budget pressure.
 
 The status surface reports:
 

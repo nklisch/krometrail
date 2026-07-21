@@ -682,7 +682,20 @@ fn resolve_reference(selector: FrameSelector, epoch: &EpochInput) -> Result<usiz
             .frames()
             .iter()
             .position(|frame| frame.id() == &id)
-            .ok_or_else(|| generation_error("reference frame is outside this visual epoch")),
+            .ok_or_else(|| {
+                // Sampling now retains an explicitly named reference frame, so reaching
+                // here means the frame genuinely belongs to another visual epoch.
+                generation_error(format!(
+                    "reference frame {id} is not a source frame of this visual epoch"
+                ))
+                .with_context(epoch.context.clone())
+                .with_recovery(
+                    NonEmptyText::new(
+                        "select a reference frame from this epoch's source frames, or resolve a range that contains it",
+                    )
+                    .expect("reference recovery is non-empty"),
+                )
+            }),
     }
 }
 

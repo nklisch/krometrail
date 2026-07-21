@@ -803,18 +803,21 @@ impl BrowserSessionPort for ProductionSession {
                 .session_state
                 == BrowserSessionState::Ended
             {
-                return Ok(BrowserStopOutcome::clean_with_cleanup_note(
-                    match shared.ownership {
-                        BrowserOwnership::Managed => {
-                            krometrail_core::BrowserClosure::ManagedBrowserClosed
-                        }
-                        BrowserOwnership::Attached => krometrail_core::BrowserClosure::Detached,
-                    },
-                    NonEmptyText::new(
-                        "ended browser session cleanup completed; call start_browser to create a new session",
-                    )
-                    .unwrap(),
-                ));
+                // The session ended without this call driving the shutdown, so there is no
+                // in-flight report to read. Reporting a clean closure here would claim evidence
+                // was closed cleanly without checking, which is the same defect as a status
+                // surface reporting healthy capture over a terminal writer. Consult what the
+                // capture coordinator actually observed and report that instead.
+                let outcome = ended_stop_outcome(
+                    shared.ownership,
+                    &shared
+                        .capture
+                        .as_ref()
+                        .map(|runtime| runtime.coordinator.statuses())
+                        .unwrap_or_default(),
+                );
+                *shared.stop_result.lock().expect("stop result lock") = Some(Ok(outcome.clone()));
+                return Ok(outcome);
             }
             shared.operation_cancellation.stop();
             let (sender, receiver) = oneshot::channel();
@@ -832,6 +835,42 @@ impl BrowserSessionPort for ProductionSession {
             *shared.stop_result.lock().expect("stop result lock") = Some(result.clone());
             result
         })
+    }
+}
+
+/// Builds the stop outcome for a session that already reached `Ended` without this call driving
+/// the shutdown.
+///
+/// A terminal capture failure observed by the coordinator outlives the session state transition,
+/// so it is still readable here. Reusing [`shutdown::stop_outcome`] keeps one degraded-stop shape
+/// and one recovery-guidance mapping, rather than inventing a second terminal report.
+fn ended_stop_outcome(
+    ownership: BrowserOwnership,
+    capture_statuses: &[TargetCaptureStatus],
+) -> BrowserStopOutcome {
+    let capture_failure = capture_statuses
+        .iter()
+        .find_map(|status| status.failure().cloned());
+    match capture_failure {
+        Some(failure) => shutdown::stop_outcome(
+            &shutdown::ShutdownReport {
+                quality: ShutdownQuality::Degraded,
+                failed_phase: Some(ShutdownFailurePhase::CaptureStopDrainFlush),
+                capture_failure: Some(failure),
+                remaining: Vec::new(),
+            },
+            ownership,
+        ),
+        None => BrowserStopOutcome::clean_with_cleanup_note(
+            match ownership {
+                BrowserOwnership::Managed => krometrail_core::BrowserClosure::ManagedBrowserClosed,
+                BrowserOwnership::Attached => krometrail_core::BrowserClosure::Detached,
+            },
+            NonEmptyText::new(
+                "ended browser session cleanup completed; call start_browser to create a new session",
+            )
+            .expect("static cleanup note is non-empty"),
+        ),
     }
 }
 
@@ -2848,6 +2887,84 @@ mod tests {
                 .unwrap()
                 .as_str()
                 .contains("restart the Krometrail MCP process")
+        );
+    }
+
+    /// A stop that arrives after the session already reached `Ended` has no in-flight shutdown
+    /// report to read, and used to synthesize a *clean* closure regardless of what actually
+    /// happened. That is a surface reporting health it never verified. It must report the
+    /// terminal outcome the capture coordinator observed.
+    #[test]
+    fn stop_on_an_ended_session_reports_the_observed_terminal_outcome_not_a_clean_one() {
+        let failed_status = |recoverability| {
+            let cause = KrometrailError::new(
+                ErrorCode::PersistenceFailed,
+                NonEmptyText::new("frame persistence failed").unwrap(),
+            )
+            .with_persistence(krometrail_core::PersistenceFailure::new(
+                krometrail_core::PersistenceOperation::SealedSegmentPublicationSync,
+                krometrail_core::PersistenceFailureCategory::PermissionDenied,
+                recoverability,
+            ));
+            TargetCaptureStatus::new(
+                krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(1)),
+                1,
+                krometrail_core::CaptureStreamState::Failed,
+                krometrail_core::CaptureStatistics::default(),
+                1,
+                0,
+                None,
+                krometrail_core::CaptureTimingSummary::empty(),
+                krometrail_core::CaptureTimingSummary::empty(),
+                EveryNthFrame::default(),
+                Some(
+                    krometrail_core::CaptureFailure::new(
+                        krometrail_core::CaptureFailureStage::FramePersistence,
+                        cause,
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap()
+        };
+
+        let terminal = ended_stop_outcome(
+            BrowserOwnership::Managed,
+            &[failed_status(PersistenceRecoverability::WriterTerminal)],
+        );
+        assert_eq!(terminal.quality(), ShutdownQuality::Degraded);
+        assert_eq!(terminal.closure(), BrowserClosure::ManagedBrowserClosed);
+        assert_eq!(
+            terminal.failed_phase(),
+            Some(ShutdownFailurePhase::CaptureStopDrainFlush)
+        );
+        assert!(terminal.capture_failure().is_some());
+        assert!(
+            terminal
+                .recovery()
+                .unwrap()
+                .as_str()
+                .contains("restart the Krometrail MCP process")
+        );
+        // The degraded path shares one recovery mapping with a live degraded stop, so a reusable
+        // writer keeps its weaker guidance rather than being escalated.
+        let reusable = ended_stop_outcome(
+            BrowserOwnership::Attached,
+            &[failed_status(PersistenceRecoverability::WriterUsable)],
+        );
+        assert_eq!(reusable.closure(), BrowserClosure::Detached);
+        assert!(!reusable.recovery().unwrap().as_str().contains("restart"));
+
+        // With nothing observed, the clean cleanup note is still the truthful answer.
+        let clean = ended_stop_outcome(BrowserOwnership::Managed, &[]);
+        assert_eq!(clean.quality(), ShutdownQuality::Clean);
+        assert!(clean.capture_failure().is_none());
+        assert!(
+            clean
+                .cleanup_note()
+                .unwrap()
+                .as_str()
+                .contains("ended browser session cleanup completed")
         );
     }
 }

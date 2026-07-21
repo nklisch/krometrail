@@ -1691,3 +1691,175 @@ fn test_error(
 ) -> krometrail_core::KrometrailError {
     krometrail_core::KrometrailError::new(code, NonEmptyText::new(message).unwrap())
 }
+
+/// Defect 3: wire-default `uniform_bounded` sampling used to drop an explicitly
+/// named reference frame that fell off the uniform grid, failing with a message
+/// claiming the frame was outside the epoch when sampling had discarded it.
+#[tokio::test]
+async fn uniform_bounded_sampling_retains_an_explicitly_named_reference_frame() {
+    // 367 sources bound to 120 analyzed frames. The uniform grid starts 0, 3, 6…
+    // so source position 1 is never selected by spacing alone.
+    let off_grid = FrameId::from_uuid(Uuid::from_u128(11));
+    let mut rig =
+        rig_with_transition_and_frame_count(367, false, false, ArtifactWorkLimits::default());
+    let mut generators = rig.request.generators().to_vec();
+    let ArtifactGeneratorRequest::DifferenceMap(difference) = &mut generators[1] else {
+        panic!("default second generator is difference map");
+    };
+    difference.frequency_mode = FrequencyMode::NormalizedFrequency;
+    difference.sampling = krometrail_core::ArtifactSampling::UniformBounded;
+    difference.reference = FrameSelector::Frame(off_grid);
+    let ArtifactGeneratorRequest::MotionHistory(motion) = &mut generators[3] else {
+        panic!("default fourth generator is motion history");
+    };
+    motion.sampling = krometrail_core::ArtifactSampling::UniformBounded;
+    motion.reference = FrameSelector::Frame(off_grid);
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![generators[1].clone(), generators[3].clone()],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let result = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect("an explicit reference frame must survive bounded sampling");
+    assert_eq!(result.outcomes.len(), 2);
+    for outcome in result.outcomes {
+        let ArtifactOutcome::Available { artifact, .. } = outcome else {
+            panic!("bounded analysis with an explicit reference should be available");
+        };
+        assert!(
+            artifact.manifest.analyzed_frame_ids().contains(&off_grid),
+            "sampling dropped the reference frame"
+        );
+        assert_eq!(artifact.manifest.selected_frame_ids(), &[off_grid]);
+    }
+}
+
+/// Defect 1: the manifest counts and the sampling disclosure that agent surfaces
+/// turn into a warning must describe the same evidence. `omitted_frame_count`
+/// counts source frames that contributed nothing, not frames left unreferenced.
+#[tokio::test]
+async fn sampled_analysis_manifest_counts_match_its_sampling_disclosure() {
+    let mut rig =
+        rig_with_transition_and_frame_count(367, false, false, ArtifactWorkLimits::default());
+    let mut generators = rig.request.generators().to_vec();
+    let ArtifactGeneratorRequest::DifferenceMap(difference) = &mut generators[1] else {
+        panic!("default second generator is difference map");
+    };
+    difference.frequency_mode = FrequencyMode::NormalizedFrequency;
+    difference.sampling = krometrail_core::ArtifactSampling::UniformBounded;
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![generators[1].clone()],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let result = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect("bounded difference map should succeed");
+    let ArtifactOutcome::Available { artifact, .. } = &result.outcomes[0] else {
+        panic!("bounded difference map should be available");
+    };
+    let manifest = &artifact.manifest;
+    assert_eq!(manifest.source_frame_count(), 367);
+    assert_eq!(manifest.analyzed_frame_count(), 120);
+    // 247 source frames were dropped by sampling. The single referenced frame does
+    // not make the other 119 analyzed frames omitted evidence.
+    assert_eq!(manifest.omitted_frame_count(), 247);
+    assert_eq!(manifest.selected_frame_ids().len(), 1);
+
+    let temporal_vision::ParameterValue::Object(values) = manifest
+        .parameters()
+        .get("analysis_sampling")
+        .expect("a sampled analysis must disclose its sampling")
+    else {
+        panic!("analysis_sampling must be an object");
+    };
+    assert_eq!(
+        values["source_frame_count"],
+        temporal_vision::ParameterValue::Unsigned(manifest.source_frame_count())
+    );
+    assert_eq!(
+        values["analyzed_frame_count"],
+        temporal_vision::ParameterValue::Unsigned(manifest.analyzed_frame_count())
+    );
+}
+
+/// Defect 2: production always attaches source provenance, so an exhaustive run
+/// reached the same code path as a sampled one and claimed `uniform_bounded`.
+#[tokio::test]
+async fn exhaustive_analysis_manifest_claims_no_sampling_mode() {
+    let mut rig =
+        rig_with_transition_and_frame_count(4, false, false, ArtifactWorkLimits::default());
+    let mut generators = rig.request.generators().to_vec();
+    let ArtifactGeneratorRequest::DifferenceMap(difference) = &mut generators[1] else {
+        panic!("default second generator is difference map");
+    };
+    difference.sampling = krometrail_core::ArtifactSampling::Exhaustive;
+    rig.request = ArtifactGenerationRequest::new(
+        rig.request.range().clone(),
+        vec![],
+        vec![generators[1].clone()],
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+
+    let result = rig
+        .service
+        .generate(rig.request, ArtifactGenerationContext::default())
+        .await
+        .expect("exhaustive difference map should succeed");
+    let ArtifactOutcome::Available { artifact, .. } = &result.outcomes[0] else {
+        panic!("exhaustive difference map should be available");
+    };
+    assert_eq!(artifact.manifest.source_frame_count(), 4);
+    assert_eq!(artifact.manifest.analyzed_frame_count(), 4);
+    assert_eq!(artifact.manifest.omitted_frame_count(), 0);
+    assert_eq!(
+        artifact.manifest.parameters().get("analysis_sampling"),
+        None,
+        "an exhaustive run must not claim a sampling mode"
+    );
+}
+
+#[test]
+fn analysis_frame_budget_survives_a_zero_byte_per_frame_divisor() {
+    // The non-empty-plan invariant keeps the divisor above zero today. The floor
+    // makes the division structurally safe rather than invariant-dependent.
+    let limits = ArtifactWorkLimits::default();
+    let plan = super::epoch::EpochPlan {
+        descriptor: krometrail_core::VisualEpoch {
+            index: 0,
+            frame_ids: vec![],
+            image: PixelDimensions::new(1, 1).unwrap(),
+            viewport: PixelDimensions::new(1, 1).unwrap(),
+            device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
+        },
+        source_fingerprints: vec![],
+        cache_sources: vec![],
+        frames: vec![],
+        markers: vec![],
+        gaps: vec![],
+        decoded_bytes: 0,
+        source_frame_ids: vec![],
+        source_indices: vec![],
+        source_range: temporal_vision::TimeRange::new(
+            temporal_vision::Timestamp::from_nanos(0),
+            temporal_vision::Timestamp::from_nanos(1),
+        )
+        .unwrap(),
+    };
+    assert_eq!(
+        super::service::analysis_effective_max_frames(&plan, limits).unwrap(),
+        limits.max_source_frames.get()
+    );
+}

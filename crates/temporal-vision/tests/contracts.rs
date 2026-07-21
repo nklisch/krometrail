@@ -133,7 +133,18 @@ fn browser_free_consumer_builds_deterministic_complete_manifest() {
     .unwrap();
 
     assert_eq!(manifest.source_frame_count(), 3);
-    assert_eq!(manifest.omitted_frame_count(), 1);
+    // Every source frame contributed to this artifact, so nothing was omitted.
+    // Two of the three analyzed frames were referenced in the output.
+    assert_eq!(manifest.analyzed_frame_count(), 3);
+    assert_eq!(manifest.omitted_frame_count(), 0);
+    assert_eq!(
+        manifest.analyzed_frame_ids(),
+        &[FrameId([1; 16]), FrameId([2; 16]), FrameId([3; 16])]
+    );
+    assert_eq!(
+        manifest.selected_frame_ids(),
+        &[FrameId([1; 16]), FrameId([3; 16])]
+    );
     assert_eq!(manifest.markers()[0].id(), &MarkerId("marker-b".into()));
     assert_eq!(manifest.mask().unwrap().bits(), &[0xa0]);
 

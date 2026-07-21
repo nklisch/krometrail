@@ -1560,6 +1560,17 @@ fn ranges_intersect(left: SessionRange, right: SessionRange) -> bool {
     left.start() <= right.end() && right.start() <= left.end()
 }
 
+/// The authoritative union of protected segment ranges.
+///
+/// Producers must build `coalesced_protected_ranges` with this rather than
+/// reimplementing the walk. [`PinState::new`] still recomputes and compares it,
+/// which is not redundant: that check guards wire-decoded values, where the
+/// field arrives from outside this process and cannot be assumed to be the true
+/// union.
+pub fn coalesce_protected_ranges(segments: &[ProtectedSegment]) -> Result<Vec<SessionRange>> {
+    coalesce_ranges(segments)
+}
+
 fn coalesce_ranges(segments: &[ProtectedSegment]) -> Result<Vec<SessionRange>> {
     let mut ranges: Vec<_> = segments
         .iter()

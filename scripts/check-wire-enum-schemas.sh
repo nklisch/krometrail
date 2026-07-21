@@ -35,6 +35,38 @@ scan_file() {
         function start_variant(line) {
             return line ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\{|\(|=|,|$)/
         }
+        # An enum whose body opens and closes on one line never reaches the
+        # per-line variant scan, so count its variants from the inline body.
+        function last_index_of(line, needle,   position, found) {
+            found = 0
+            for (position = length(line); position >= 1; position--) {
+                if (substr(line, position, 1) == needle) {
+                    found = position
+                    break
+                }
+            }
+            return found
+        }
+        function inline_variants(line,   body, start, stop, slot, count, parts, token) {
+            start = index(line, "{")
+            stop = last_index_of(line, "}")
+            if (start == 0 || stop <= start) {
+                return
+            }
+            body = substr(line, start + 1, stop - start - 1)
+            count = split(body, parts, ",")
+            for (slot = 1; slot <= count; slot++) {
+                token = parts[slot]
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", token)
+                if (token == "") {
+                    continue
+                }
+                variant_count++
+                if (token ~ /rename(_all)?[[:space:]]*=/) {
+                    renamed_variant_count++
+                }
+            }
+        }
         function begin_candidate(line) {
             derive_line = enum_line
             enum_braces = brace_delta(line)
@@ -43,6 +75,10 @@ scan_file() {
             renamed_variant_count = 0
             pending_variant_rename = 0
             in_enum = 1
+            if (enum_braces == 0 && line ~ /\{/ && line ~ /\}/) {
+                inline_variants(line)
+                finish_candidate()
+            }
         }
         function finish_candidate() {
             if (!enum_container_naming && renamed_variant_count < variant_count) {
@@ -171,6 +207,15 @@ if [[ "${KROMETRAIL_WIRE_ENUM_SCHEMA_SELF_TEST:-1}" == 1 ]]; then
         'enum NamingBeforeDerive {' \
         '    StillPascalCase,' \
         '}' > "$fixture_root/naming_before_derive.rs"
+    # rustfmt always breaks enum bodies across lines, so these shapes do not occur
+    # in-tree. The guard's logic must still cover them rather than pass by accident.
+    printf '%s\n' \
+        '#[derive(schemars::JsonSchema)]' \
+        'enum SingleLineBare { First, Second }' > "$fixture_root/single_line_bare.rs"
+    printf '%s\n' \
+        '#[derive(schemars::JsonSchema)]' \
+        '#[serde(rename_all = "snake_case")]' \
+        'enum SingleLineRenamed { First, Second }' > "$fixture_root/single_line_renamed.rs"
     printf '%s\n' \
         '#[derive(schemars::JsonSchema)]' \
         'enum FullyRenamedVariants {' \
@@ -185,13 +230,13 @@ if [[ "${KROMETRAIL_WIRE_ENUM_SCHEMA_SELF_TEST:-1}" == 1 ]]; then
         echo "wire enum schema guard self-test did not reject invalid fixtures" >&2
         exit 1
     fi
-    for fixture in plain.rs irrelevant_container.rs partial_variant.rs; do
+    for fixture in plain.rs irrelevant_container.rs partial_variant.rs single_line_bare.rs; do
         if [[ "$self_test_output" != *"$fixture:"* ]]; then
             echo "wire enum schema guard self-test missed $fixture" >&2
             exit 1
         fi
     done
-    for accepted in naming_before_derive.rs fully_renamed.rs; do
+    for accepted in naming_before_derive.rs fully_renamed.rs single_line_renamed.rs; do
         if [[ "$self_test_output" == *"$accepted:"* ]]; then
             echo "wire enum schema guard self-test rejected $accepted" >&2
             exit 1

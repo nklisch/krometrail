@@ -81,13 +81,18 @@ impl SegmentState {
     }
 }
 
+/// Metadata for one segment publication.
+///
+/// The on-disk file name is intentionally *not* stored: it is always
+/// `segment_id` plus the extension implied by `state`. Deriving it at every use
+/// site keeps a wrong name — most dangerously a live `.open` file named by a
+/// deletion object — structurally inexpressible.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SegmentRegistration {
     pub segment_id: SegmentId,
     pub session_id: SessionId,
     pub target_id: TargetId,
     pub state: SegmentState,
-    pub relative_path: PathBuf,
     pub start_time: SessionTime,
     pub end_time: Option<SessionTime>,
     pub file_bytes: u64,
@@ -380,16 +385,11 @@ impl WorkerState {
 
 impl OpenSegment {
     fn registration(&self, state: SegmentState) -> SegmentRegistration {
-        let extension = match state {
-            SegmentState::Open => OPEN_SEGMENT_EXTENSION,
-            SegmentState::Sealed => SEALED_SEGMENT_EXTENSION,
-        };
         SegmentRegistration {
             segment_id: self.header.segment_id,
             session_id: self.header.session_id,
             target_id: self.header.target_id,
             state,
-            relative_path: PathBuf::from(format!("{}.{extension}", self.header.segment_id)),
             start_time: self.header.start_session_time,
             end_time: (state == SegmentState::Sealed).then_some(self.last_session_time),
             file_bytes: self.file_len,
@@ -581,18 +581,36 @@ fn seal_segment(
         .checked_add(footer_bytes.len() as u64)
         .ok_or_else(|| writer_invalid("sealed segment file length overflow"))?;
     let registration = open.registration(SegmentState::Sealed);
+    let segment_id = open.header.segment_id;
     drop(open.writer);
-    fs::rename(
-        open_segment_path(directory, open.header.segment_id),
-        sealed_segment_path(directory, open.header.segment_id),
-    )
-    .map_err(|error| {
-        io_error(
-            PersistenceOperation::SealedSegmentPublication,
-            error,
-            PersistenceRecoverability::WriterTerminal,
-        )
-    })?;
+    let sealed_path = sealed_segment_path(directory, segment_id);
+    match fs::rename(open_segment_path(directory, segment_id), &sealed_path) {
+        Ok(()) => {}
+        // The open file is gone. Either this segment was already published under
+        // its sealed name by a reconciler — in which case sealing is complete and
+        // this call is simply idempotent — or the source genuinely vanished. Both
+        // outcomes are scoped to *this* segment: the caller has already removed
+        // the entry from `open_segments`, so the writer stays usable either way
+        // and `WriterTerminal` would be the wrong classification.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !sealed_publication_matches(&sealed_path, segment_id) {
+                return Err(store_error(
+                    PersistenceOperation::SealedSegmentPublication,
+                    PersistenceFailureCategory::NotFound,
+                    PersistenceRecoverability::WriterUsable,
+                    "open segment disappeared before publication",
+                ));
+            }
+            return Ok(registration);
+        }
+        Err(error) => {
+            return Err(io_error(
+                PersistenceOperation::SealedSegmentPublication,
+                error,
+                PersistenceRecoverability::WriterUsable,
+            ));
+        }
+    }
     directory_sync.sync(directory).map_err(|error| {
         io_error(
             PersistenceOperation::SealedSegmentPublicationSync,
@@ -603,12 +621,43 @@ fn seal_segment(
     Ok(registration)
 }
 
+/// Reports whether `path` is a published segment whose header carries `segment_id`.
+///
+/// This is the reconciliation test for an absent open file at seal time. A
+/// matching header proves the segment reached its sealed name intact, so the
+/// seal has already succeeded and re-reporting it as a failure would destroy a
+/// writer over work that is already durable. Anything else — missing, short,
+/// corrupt, or a different segment — is not a reconciliation and must fail.
+fn sealed_publication_matches(path: &Path, segment_id: SegmentId) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    let mut header = [0_u8; SEGMENT_HEADER_LEN];
+    if std::io::Read::read_exact(&mut file, &mut header).is_err() {
+        return false;
+    }
+    SegmentHeader::decode(&header).is_ok_and(|header| header.segment_id == segment_id)
+}
+
 pub fn open_segment_path(directory: &Path, segment_id: SegmentId) -> PathBuf {
-    directory.join(format!("{segment_id}.{OPEN_SEGMENT_EXTENSION}"))
+    directory.join(segment_file_name(segment_id, SegmentState::Open))
+}
+
+/// The single authority for a segment's on-disk file name.
+///
+/// Every path, deletion object, and staging name derives from this, so a name
+/// that does not correspond to a real `(segment_id, state)` pair cannot be
+/// constructed anywhere in the store.
+pub fn segment_file_name(segment_id: SegmentId, state: SegmentState) -> String {
+    let extension = match state {
+        SegmentState::Open => OPEN_SEGMENT_EXTENSION,
+        SegmentState::Sealed => SEALED_SEGMENT_EXTENSION,
+    };
+    format!("{segment_id}.{extension}")
 }
 
 pub fn sealed_segment_path(directory: &Path, segment_id: SegmentId) -> PathBuf {
-    directory.join(format!("{segment_id}.{SEALED_SEGMENT_EXTENSION}"))
+    directory.join(segment_file_name(segment_id, SegmentState::Sealed))
 }
 
 fn verify_writable(directory: &Path) -> krometrail_core::Result<()> {
@@ -905,6 +954,126 @@ mod tests {
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    /// Drives the interleaving proven in the seventh shakedown: a second process
+    /// ran startup recovery against a live data directory, footered and renamed
+    /// this writer's open segment to its sealed name, and the writer then sealed
+    /// onto a source that no longer existed. That ENOENT latched `terminal_error`
+    /// and killed capture globally until process restart.
+    ///
+    /// The segment is already published, so the seal is complete: it must report
+    /// success and the writer must stay usable for every other session.
+    #[tokio::test]
+    async fn seal_reconciles_when_the_segment_is_already_published() {
+        let directory = TempDir::new().unwrap();
+        let sink = SegmentWriter::open(config(&directory)).unwrap();
+        let session_id = SessionId::from_uuid(Uuid::from_u128(40));
+        let address = sink
+            .append_indexable(test_frame(session_id, 1))
+            .await
+            .unwrap()
+            .address;
+
+        // Stand in for the intruding process's recovery: publish the live open
+        // segment under its sealed name behind this writer's back.
+        fs::rename(
+            open_segment_path(directory.path(), address.segment_id),
+            sealed_segment_path(directory.path(), address.segment_id),
+        )
+        .unwrap();
+
+        let registrations = sink.flush_indexable(session_id).await.unwrap();
+        assert_eq!(registrations.len(), 1);
+        assert_eq!(registrations[0].segment_id, address.segment_id);
+        assert_eq!(registrations[0].state, SegmentState::Sealed);
+
+        // The writer survived: an unrelated session still records and seals.
+        let other = SessionId::from_uuid(Uuid::from_u128(41));
+        let next = sink
+            .append_indexable(test_frame(other, 2))
+            .await
+            .unwrap()
+            .address;
+        assert_ne!(next.segment_id, address.segment_id);
+        sink.flush_indexable(other).await.unwrap();
+        assert!(sealed_segment_path(directory.path(), next.segment_id).is_file());
+    }
+
+    /// An open segment that vanished without being published is a genuine loss,
+    /// but it is still scoped to one segment. It must not latch `terminal_error`:
+    /// `WriterTerminal` would take down every other session's capture over a
+    /// per-segment fault.
+    #[tokio::test]
+    async fn vanished_open_segment_fails_only_its_own_segment() {
+        let directory = TempDir::new().unwrap();
+        let sink = SegmentWriter::open(config(&directory)).unwrap();
+        let session_id = SessionId::from_uuid(Uuid::from_u128(50));
+        let address = sink
+            .append_indexable(test_frame(session_id, 1))
+            .await
+            .unwrap()
+            .address;
+        fs::remove_file(open_segment_path(directory.path(), address.segment_id)).unwrap();
+
+        let error = sink.flush_indexable(session_id).await.unwrap_err();
+        let persistence = error.persistence.as_ref().unwrap();
+        assert_eq!(
+            persistence.operation(),
+            PersistenceOperation::SealedSegmentPublication
+        );
+        assert_eq!(persistence.category(), PersistenceFailureCategory::NotFound);
+        assert_eq!(
+            persistence.recoverability(),
+            PersistenceRecoverability::WriterUsable
+        );
+
+        // Not latched: the next append on a fresh session succeeds rather than
+        // replaying the previous failure.
+        let other = SessionId::from_uuid(Uuid::from_u128(51));
+        let next = sink
+            .append_indexable(test_frame(other, 2))
+            .await
+            .unwrap()
+            .address;
+        sink.flush_indexable(other).await.unwrap();
+        assert!(sealed_segment_path(directory.path(), next.segment_id).is_file());
+    }
+
+    /// A file sitting at the sealed name that belongs to a *different* segment is
+    /// not a reconciliation and must not be reported as a successful seal.
+    #[tokio::test]
+    async fn foreign_sealed_publication_is_not_treated_as_reconciliation() {
+        let directory = TempDir::new().unwrap();
+        let sink = SegmentWriter::open(config(&directory)).unwrap();
+        let session_id = SessionId::from_uuid(Uuid::from_u128(60));
+        let address = sink
+            .append_indexable(test_frame(session_id, 1))
+            .await
+            .unwrap()
+            .address;
+        fs::remove_file(open_segment_path(directory.path(), address.segment_id)).unwrap();
+        // A well-formed header for an unrelated segment id.
+        let foreign = SegmentHeader::new(
+            SegmentId::from_uuid(Uuid::from_u128(999)),
+            session_id,
+            TargetId::from_uuid(Uuid::from_u128(200)),
+            SessionTime::from_nanos(0),
+            ObservedTime::from_nanos(0),
+            1,
+            1,
+        );
+        fs::write(
+            sealed_segment_path(directory.path(), address.segment_id),
+            foreign.encode(),
+        )
+        .unwrap();
+
+        let error = sink.flush_indexable(session_id).await.unwrap_err();
+        assert_eq!(
+            error.persistence.as_ref().unwrap().recoverability(),
+            PersistenceRecoverability::WriterUsable
         );
     }
 

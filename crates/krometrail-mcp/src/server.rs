@@ -428,7 +428,7 @@ mod tests {
         );
 
         let mapped = crate::response::map_lifecycle_result("browser_status", json!({})).unwrap();
-        let mut succeeded = crate::response::into_call_tool_result(mapped).unwrap();
+        let mut succeeded = crate::response::into_call_tool_result(mapped, &[]).unwrap();
         assert_eq!(
             attach_diagnostics(&mut succeeded, "correlation-2", &context),
             "succeeded"
@@ -1226,7 +1226,7 @@ mod tests {
                     ArtifactOutcome::Available {
                         epoch_index: 0,
                         generator_index: 0,
-                        artifact,
+                        artifact: Box::new(artifact),
                     },
                     ArtifactOutcome::Unavailable {
                         epoch_index: 0,
@@ -2135,6 +2135,155 @@ mod tests {
 
     fn protocol_status() -> BrowserStatus {
         protocol_status_with_stride(EveryNthFrame::default())
+    }
+
+    fn terminal_capture_status() -> TargetCaptureStatus {
+        TargetCaptureStatus::new(
+            target_id(),
+            1,
+            CaptureStreamState::Failed,
+            CaptureStatistics::default(),
+            1,
+            0,
+            None,
+            CaptureTimingSummary::empty(),
+            CaptureTimingSummary::empty(),
+            EveryNthFrame::default(),
+            Some(
+                krometrail_core::CaptureFailure::new(
+                    krometrail_core::CaptureFailureStage::FramePersistence,
+                    KrometrailError::new(
+                        ErrorCode::PersistenceFailed,
+                        NonEmptyText::new("frame persistence failed").unwrap(),
+                    )
+                    .with_persistence(
+                        krometrail_core::PersistenceFailure::new(
+                            krometrail_core::PersistenceOperation::SealedSegmentPublicationSync,
+                            krometrail_core::PersistenceFailureCategory::PermissionDenied,
+                            krometrail_core::PersistenceRecoverability::WriterTerminal,
+                        ),
+                    ),
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap()
+    }
+
+    /// The health surfaces used to be the ones that stayed quiet: `browser_status` reported
+    /// `state: ready` with an empty `warnings` array while the writer was terminally dead, and
+    /// `start_browser` handed back a green light on a session that was already doomed. Capture
+    /// health is now applied on the shared response exit every tool passes through, so this
+    /// asserts the property for the whole surface rather than for one tool at a time.
+    #[test]
+    fn no_tool_reports_healthy_capture_while_the_writer_is_terminal() {
+        let terminal = [terminal_capture_status()];
+        let status = protocol_status();
+
+        let mut responses = Vec::new();
+        for detail in [
+            crate::response::ResponseDetail::Concise,
+            crate::response::ResponseDetail::Expanded,
+            crate::response::ResponseDetail::Full,
+        ] {
+            responses.push(
+                crate::response::map_browser_status(
+                    "browser_status",
+                    status.clone(),
+                    crate::response::ResponseRequest {
+                        detail,
+                        inline_images: Some(false),
+                    },
+                )
+                .unwrap(),
+            );
+        }
+        // `start_browser` and `attach_browser` both return a `BrowserStatus` through the shared
+        // lifecycle mapping, which is the path that previously reported `state: capturing`.
+        responses
+            .push(crate::response::map_lifecycle_result("start_browser", status.clone()).unwrap());
+        responses.push(crate::response::map_lifecycle_result("attach_browser", status).unwrap());
+
+        for mapped in responses {
+            let tool = mapped.response.tool.clone();
+            let result = crate::response::into_call_tool_result(mapped, &terminal).unwrap();
+            let structured = result.structured_content.expect("structured response");
+            assert_eq!(
+                structured["status"], "degraded",
+                "{tool} reported healthy capture while the writer was terminal"
+            );
+            let warnings = structured["warnings"].as_array().expect("warnings array");
+            let warning = warnings
+                .iter()
+                .find(|warning| warning["code"] == "capture_failed")
+                .unwrap_or_else(|| panic!("{tool} omitted the capture_failed warning"));
+            assert!(
+                warning["recovery"]
+                    .as_str()
+                    .expect("terminal capture failure carries recovery guidance")
+                    .contains("restart the Krometrail MCP process"),
+                "{tool} lost the terminal recovery path"
+            );
+        }
+    }
+
+    /// Retained endpoints are session-relative, so a raw pair drawn from two different sessions
+    /// let an agent read `oldest > newest`. The projection now states the scope instead.
+    #[test]
+    fn retained_bounds_declare_whether_their_endpoints_are_comparable() {
+        let point = |session: u128, nanos: u64| krometrail_core::RetainedPoint {
+            session_id: SessionId::from_uuid(uuid::Uuid::from_u128(session)),
+            target_id: target_id(),
+            session_time: krometrail_core::SessionTime::from_nanos(nanos),
+        };
+        let retention = |oldest, newest| {
+            RetentionStatus::new(
+                krometrail_core::DiskBudgetBytes::default(),
+                krometrail_core::StorageUsage::new(10, 0, 0, 0, 0, 0, 0).unwrap(),
+                0,
+                Some(oldest),
+                Some(newest),
+                krometrail_core::RecordingBudgetState::Available,
+                false,
+                false,
+                0,
+                0,
+                0,
+            )
+            .unwrap()
+        };
+
+        let mut cross_session = protocol_status();
+        cross_session.retention = retention(point(7, 126_065_361_437), point(8, 118_028_908_063));
+        let mut same_session = protocol_status();
+        same_session.retention = retention(point(7, 10), point(7, 40));
+
+        for detail in [
+            crate::response::ResponseDetail::Concise,
+            crate::response::ResponseDetail::Full,
+        ] {
+            let request = crate::response::ResponseRequest {
+                detail,
+                inline_images: Some(false),
+            };
+            let projected = |status: BrowserStatus| {
+                crate::response::map_browser_status("browser_status", status, request)
+                    .unwrap()
+                    .response
+                    .result["retention"]
+                    .clone()
+            };
+
+            let across = projected(cross_session.clone());
+            assert!(across.get("oldest_retained").is_none());
+            assert!(across.get("newest_retained").is_none());
+            assert_eq!(across["retained_bounds"]["comparable_scope"], false);
+            assert!(across["retained_bounds"].get("span_nanos").is_none());
+
+            let within = projected(same_session.clone());
+            assert_eq!(within["retained_bounds"]["comparable_scope"], true);
+            assert_eq!(within["retained_bounds"]["span_nanos"], 30);
+        }
     }
 
     fn protocol_status_with_stride(stride: EveryNthFrame) -> BrowserStatus {
@@ -3088,8 +3237,18 @@ mod tests {
         assert!(snapshots[0].get("nodes").is_none());
         assert_eq!(snapshots[1]["unchanged"], true);
         assert!(snapshots[1].get("semantic_context").is_none());
-        assert_eq!(snapshots[2]["nodes"].as_array().unwrap().len(), 121);
-        assert_eq!(snapshots[3]["nodes"].as_array().unwrap().len(), 121);
+        // `full` is a bounded projection with the same omission accounting as `expanded`, only
+        // with wider ceilings — it never emits the raw node array. Unlike the economical tiers it
+        // always materializes: these two calls repeat an unchanged generation, and `full` must
+        // still hand back the projected content rather than an `unchanged` summary.
+        for snapshot in &snapshots[2..=3] {
+            assert!(snapshot.get("unchanged").is_none());
+            assert!(snapshot.get("nodes").is_none());
+            assert!(snapshot["targets"].is_array());
+            assert!(snapshot["semantic_context"].is_array());
+            assert!(snapshot["omissions"].is_object());
+        }
+        assert_eq!(snapshots[3], snapshots[2]);
         for projected in &structured {
             assert_eq!(
                 projected["result"]["observation"]["page"]["available"]["url"],
@@ -3212,7 +3371,8 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(generic_with_image.response.images.len(), 1);
-        let generic_content = crate::response::into_call_tool_result(generic_with_image).unwrap();
+        let generic_content =
+            crate::response::into_call_tool_result(generic_with_image, &[]).unwrap();
         assert_eq!(
             generic_content
                 .content
@@ -3269,9 +3429,15 @@ mod tests {
         assert!(compact.get("manifest").is_none());
         assert!(compact.get("source_frame_ids").is_none());
         assert_eq!(compact["manifest_uri"], manifest_uri);
+        // Three narrowing populations, documented here because the arithmetic is not obvious:
+        // the fixture's single source frame WAS analyzed, so nothing was omitted
+        // (`omitted = source - analyzed = 1 - 1 = 0`). It is simply not rendered in the output,
+        // which is `analyzed - selected = 1`. A projection reporting only source/selected/omitted
+        // would read as "1 source, 0 selected, 0 omitted" and not reconcile.
         assert_eq!(compact["source_frame_count"], 1);
+        assert_eq!(compact["analyzed_frame_count"], 1);
         assert_eq!(compact["selected_frame_count"], 0);
-        assert_eq!(compact["omitted_frame_count"], 1);
+        assert_eq!(compact["omitted_frame_count"], 0);
         let output_hash = compact["output_hash"].as_str().unwrap();
         assert_eq!(output_hash, Sha256Digest::digest(&bytes).to_string());
 

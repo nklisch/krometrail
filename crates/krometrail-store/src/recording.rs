@@ -15,8 +15,8 @@ use krometrail_core::{
     EvidenceScope, FrameAddress, FrameId, FrameSource, InteractionAnchor, InteractionAnchorSource,
     InteractionEvidenceSink, InteractionId, InteractionRecord, InteractionRecordSource,
     KrometrailError, NavigationId, NonEmptyText, ObservedTime, PersistenceOperation, PinChange,
-    PinProtectionScope, PinState, PortFuture, ProgressivePinChange, ProtectedSegment,
-    RecordingBudgetState, RecordingSink, ResolvedRange, RetentionPinRequest, RetentionRange,
+    PinProtectionScope, PinState, PortFuture, ProgressivePinChange, RecordingBudgetState,
+    RecordingSink, ResolvedRange, RetentionLifecycle, RetentionPinRequest, RetentionRange,
     RetentionStatus, RetentionStore, RetrieveArtifactRequest, RetrieveSourceFrameRequest,
     RetryAdvice, SessionDeletion, SessionId, SessionRange, SessionTime, Sha256Digest,
     SourceFrameBatch, SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection,
@@ -41,7 +41,7 @@ use crate::{
         },
         deletion::{DeletionKind, DeletionObject, DeletionObjectKind, DeletionState},
         frames::{FrameReadSnapshot, index_frame_tx},
-        retention::{ArtifactCandidate, SegmentCandidate},
+        retention::{ArtifactCandidate, SegmentCandidate, SegmentReclaimFilter},
         segments::register_segment_tx,
     },
     persistence_error,
@@ -49,6 +49,9 @@ use crate::{
 };
 
 const RECORD_ENVELOPE_ALLOWANCE: u64 = 4096;
+/// How long a shared-budget share is reused before the registry is consulted
+/// again. Keeps the lock-protected accounting transaction off the append path.
+const BUDGET_SHARE_REFRESH: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EvidenceReadKind {
@@ -61,6 +64,26 @@ struct EvidenceReadPause {
     kind: EvidenceReadKind,
     reached: tokio::sync::Notify,
     resume: tokio::sync::Notify,
+}
+
+/// What one reclaim walk actually removed.
+///
+/// Reclaim is otherwise invisible to the agent: usage simply moves. Reporting
+/// the counts makes trimming and age-out observable in the runtime log instead
+/// of leaving evidence to disappear silently.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ReclaimOutcome {
+    segments: u64,
+    artifacts: u64,
+    browser_events: u64,
+    bytes: u64,
+    artifact_grace_overridden: bool,
+}
+
+impl ReclaimOutcome {
+    const fn reclaimed_anything(self) -> bool {
+        self.segments != 0 || self.artifacts != 0 || self.browser_events != 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,9 +103,19 @@ pub struct RecordingStore {
     artifact_files: ArtifactFiles,
     artifact_publications: PublicationRegistry,
     artifact_cache_locks: CacheLocks,
-    budget: DiskBudgetBytes,
+    retention: RetentionLifecycle,
     open_overhead_limit: u64,
     budget_state: StdMutex<RecordingBudgetState>,
+    /// Set when a trim walk found nothing to reclaim; cleared by any later
+    /// reclamation so trimming resumes once the store can make progress again.
+    trim_exhausted: StdMutex<bool>,
+    /// Shared ledger keeping concurrent instances inside one total budget.
+    /// Absent when this store is not part of a multi-instance data directory, in
+    /// which case the configured budget is enforced directly.
+    budget_registry: Option<Arc<crate::BudgetRegistry>>,
+    /// Last computed share, refreshed on a short interval so the accounting
+    /// transaction stays off the per-frame path.
+    budget_share: StdMutex<Option<(std::time::Instant, u64)>>,
     availability: watch::Sender<u64>,
     #[cfg(test)]
     evidence_read_pause: StdMutex<Option<Arc<EvidenceReadPause>>>,
@@ -93,13 +126,34 @@ impl RecordingStore {
         segments: Arc<SegmentWriter>,
         index: Arc<SqliteIndex>,
     ) -> krometrail_core::Result<Self> {
-        Self::with_budget(segments, index, DiskBudgetBytes::default())
+        Self::with_retention(segments, index, RetentionLifecycle::default(), None)
     }
 
     pub fn with_budget(
         segments: Arc<SegmentWriter>,
         index: Arc<SqliteIndex>,
         budget: DiskBudgetBytes,
+    ) -> krometrail_core::Result<Self> {
+        Self::with_retention(
+            segments,
+            index,
+            RetentionLifecycle::with_budget(budget),
+            None,
+        )
+    }
+
+    /// Opens the store under a complete retention lifecycle.
+    ///
+    /// Callers must have completed `recover()` against this index first; the
+    /// constructor verifies that invariant rather than trusting it.
+    ///
+    /// `budget_registry` shares one total budget across concurrent instances.
+    /// Without it the configured budget is enforced by this instance alone.
+    pub fn with_retention(
+        segments: Arc<SegmentWriter>,
+        index: Arc<SqliteIndex>,
+        retention: RetentionLifecycle,
+        budget_registry: Option<Arc<crate::BudgetRegistry>>,
     ) -> krometrail_core::Result<Self> {
         let data_directory = index
             .database_path()
@@ -126,16 +180,36 @@ impl RecordingStore {
             artifact_files,
             artifact_publications: PublicationRegistry::new(),
             artifact_cache_locks: CacheLocks::new(),
-            budget,
+            retention,
             budget_state: StdMutex::new(RecordingBudgetState::Available),
+            trim_exhausted: StdMutex::new(false),
+            budget_registry,
+            budget_share: StdMutex::new(None),
             availability,
             #[cfg(test)]
             evidence_read_pause: StdMutex::new(None),
         };
+        store.verify_recovery_completed()?;
         store.resume_deletions()?;
         store.recover_artifacts()?;
         store.recover_browser_events()?;
         Ok(store)
+    }
+
+    /// Enforces the caller invariant that `recover()` ran before construction.
+    ///
+    /// Recovery seals every `open` segment row it finds, so an `open` row at
+    /// construction time can only mean a previous process left one behind and
+    /// recovery was skipped. Continuing would let a writer allocate segments
+    /// alongside unreconciled state, so this fails closed instead of documenting
+    /// the ordering and hoping callers honour it.
+    fn verify_recovery_completed(&self) -> krometrail_core::Result<()> {
+        if self.index.open_segment_count()? != 0 {
+            return Err(persistence_error(
+                "recording store opened before segment recovery completed",
+            ));
+        }
+        Ok(())
     }
 
     pub fn index(&self) -> &Arc<SqliteIndex> {
@@ -452,7 +526,7 @@ impl RecordingStore {
             snapshot.usage.accounting_slack_bytes,
         )?;
         RetentionStatus::new(
-            self.budget,
+            self.retention.budget(),
             usage,
             snapshot.pinned_usage_bytes,
             snapshot.oldest_retained,
@@ -475,7 +549,7 @@ impl RecordingStore {
         request: RetentionPinRequest,
     ) -> krometrail_core::Result<PinState> {
         let snapshot = self.index.progressive_pin_snapshot(&request)?;
-        let coalesced = coalesce_protected_segments(&snapshot.protected_segments)?;
+        let coalesced = krometrail_core::coalesce_protected_ranges(&snapshot.protected_segments)?;
         let retention = self.current_status()?;
         PinState::new(
             request,
@@ -496,23 +570,27 @@ impl RecordingStore {
             .checked_add(RECORD_ENVELOPE_ALLOWANCE)
             .ok_or_else(|| persistence_error("frame storage estimate overflow"))?;
         let snapshot = self.refresh_usage()?;
-        if snapshot
-            .usage
-            .total_bytes()?
+        let total = snapshot.usage.total_bytes()?;
+        if total
             .checked_add(required)
-            .is_some_and(|needed| needed <= self.budget.get())
+            .is_some_and(|needed| needed <= self.effective_budget())
         {
+            // The frame fits, but a long session should still trim as it goes
+            // rather than climbing to the budget wall and staying there. Reclaim
+            // already-sealed evidence back to the high-water mark, and age out
+            // expired evidence even below it.
+            self.trim_locked(total).await?;
             return Ok(());
         }
         self.flush_all().await?;
-        self.cleanup_to(self.budget.get().saturating_sub(required), None)
+        self.cleanup_to(self.effective_budget().saturating_sub(required), None)
             .await?;
         let snapshot = self.refresh_usage()?;
         if snapshot
             .usage
             .total_bytes()?
             .checked_add(required)
-            .is_some_and(|needed| needed <= self.budget.get())
+            .is_some_and(|needed| needed <= self.effective_budget())
         {
             self.set_budget_state(RecordingBudgetState::Available);
             Ok(())
@@ -525,14 +603,73 @@ impl RecordingStore {
         }
     }
 
+    /// In-session trimming.
+    ///
+    /// Runs on the append path while the frame still fits, so reclaim happens
+    /// during a live session instead of only at the budget wall. Trimming never
+    /// flushes: it reclaims evidence that is already sealed, which keeps a hot
+    /// append path from forcing segment rotation.
+    ///
+    /// A walk that reclaims nothing sets an exhaustion latch, so a store whose
+    /// remaining evidence is entirely pinned does not re-walk on every frame.
+    /// Any later reclamation clears the latch.
+    async fn trim_locked(&self, total_bytes: u64) -> krometrail_core::Result<()> {
+        let high_water = self
+            .retention
+            .trim_high_water_bytes(self.effective_budget());
+        let expired_pending = match self.expiry_cutoff()? {
+            Some(cutoff) => self.index.expired_object_count(cutoff)? != 0,
+            None => false,
+        };
+        if total_bytes < high_water && !expired_pending {
+            return Ok(());
+        }
+        if self.trim_exhausted() && !expired_pending {
+            return Ok(());
+        }
+        let outcome = self.reclaim(high_water, None).await?;
+        if outcome.reclaimed_anything() {
+            tracing::info!(
+                event = "retention.trimmed",
+                trigger = "in_session",
+                segments = outcome.segments,
+                artifacts = outcome.artifacts,
+                browser_events = outcome.browser_events,
+                bytes = outcome.bytes,
+                high_water_bytes = high_water,
+                "reclaimed retained evidence during a live session"
+            );
+        } else {
+            self.set_trim_exhausted(true);
+        }
+        Ok(())
+    }
+
+    fn trim_exhausted(&self) -> bool {
+        *self
+            .trim_exhausted
+            .lock()
+            .expect("trim exhaustion lock poisoned")
+    }
+
+    fn set_trim_exhausted(&self, value: bool) {
+        *self
+            .trim_exhausted
+            .lock()
+            .expect("trim exhaustion lock poisoned") = value;
+    }
+
     async fn enforce_locked(&self) -> krometrail_core::Result<RetentionStatus> {
+        // Republish before deciding: peers must see this instance's real usage,
+        // and this instance must enforce against theirs.
+        self.republish_budget_share();
         let mut snapshot = self.refresh_usage()?;
         if self.usage_is_within_budget(&snapshot)? {
             self.set_budget_state(RecordingBudgetState::Available);
             return self.status_from_snapshot(snapshot, RecordingBudgetState::Available);
         }
         self.flush_all().await?;
-        self.cleanup_to(self.budget.get(), None).await?;
+        self.cleanup_to(self.effective_budget(), None).await?;
         snapshot = self.refresh_usage()?;
         let state = if self.usage_is_within_budget(&snapshot)? {
             RecordingBudgetState::Available
@@ -548,11 +685,11 @@ impl RecordingStore {
         snapshot: &crate::index::retention::UsageSnapshot,
     ) -> krometrail_core::Result<bool> {
         let total = snapshot.usage.total_bytes()?;
-        if total <= self.budget.get() {
+        if total <= self.effective_budget() {
             return Ok(true);
         }
         if snapshot.open_segment_count != 1
-            || total.saturating_sub(self.budget.get()) > self.open_overhead_limit
+            || total.saturating_sub(self.effective_budget()) > self.open_overhead_limit
         {
             return Ok(false);
         }
@@ -569,57 +706,229 @@ impl RecordingStore {
         target_bytes: u64,
         protected_artifact: Option<krometrail_core::ArtifactId>,
     ) -> krometrail_core::Result<()> {
-        loop {
-            if self.refresh_usage()?.usage.total_bytes()? <= target_bytes {
-                return Ok(());
+        self.reclaim(target_bytes, protected_artifact)
+            .await
+            .map(|_| ())
+    }
+
+    /// This instance's current byte allowance.
+    ///
+    /// With a shared registry this is the configured total minus what other live
+    /// instances hold (never below an equal share), so N concurrent instances fit
+    /// inside one total budget rather than consuming N budgets. Without a
+    /// registry — or whenever shared accounting is unavailable — it is the
+    /// configured budget, which is what a lone instance should get anyway.
+    ///
+    /// The registry transaction is throttled off the per-frame path: it takes a
+    /// file lock, and putting that on every append would be both slow and a
+    /// contention point. A share at most `BUDGET_SHARE_REFRESH` old is accurate
+    /// enough for a decision that only matters near the budget wall.
+    fn effective_budget(&self) -> u64 {
+        self.budget_share(false)
+    }
+
+    /// Publishes usage and recomputes the share, ignoring the throttle.
+    ///
+    /// Called at durability boundaries. Without an eager publish, an instance
+    /// that fills quickly would still advertise the usage it had when it started,
+    /// and its peers would size their own shares against a stale, far too small
+    /// figure — letting the combined footprint drift well past the total.
+    /// Publishing on flush ties the ledger to the cadence the store already uses
+    /// to make evidence durable.
+    fn republish_budget_share(&self) -> u64 {
+        self.budget_share(true)
+    }
+
+    fn budget_share(&self, force: bool) -> u64 {
+        let configured = self.retention.budget().get();
+        let Some(registry) = self.budget_registry.as_ref() else {
+            return configured;
+        };
+        let now = std::time::Instant::now();
+        if !force {
+            let cached = self
+                .budget_share
+                .lock()
+                .expect("budget share lock poisoned");
+            if let Some((at, effective)) = *cached
+                && now.duration_since(at) < BUDGET_SHARE_REFRESH
+            {
+                return effective;
             }
-            if let Some(artifact) = self.index.oldest_artifact_excluding(protected_artifact)? {
-                self.remove_objects(
+        }
+        // Publishing needs this instance's own usage; the accounting rows are
+        // already maintained, so this is a read rather than a checkpoint.
+        let my_usage = self
+            .index
+            .usage_snapshot()
+            .ok()
+            .and_then(|snapshot| snapshot.usage.total_bytes().ok())
+            .unwrap_or(0);
+        let effective = registry
+            .publish(my_usage, configured)
+            .map_or(configured, |share| share.effective_budget);
+        *self
+            .budget_share
+            .lock()
+            .expect("budget share lock poisoned") = Some((now, effective));
+        effective
+    }
+
+    /// Age cutoff for the configured policy, read from the index's own clock.
+    fn expiry_cutoff(&self) -> krometrail_core::Result<Option<i64>> {
+        let Some(max_age) = self.retention.max_age() else {
+            return Ok(None);
+        };
+        let millis = i64::try_from(max_age.as_millis()).unwrap_or(i64::MAX);
+        Ok(Some(self.index.now_unix_ms()?.saturating_sub(millis)))
+    }
+
+    /// Instant before which a published artifact has left its grace window.
+    fn artifact_grace_since(&self) -> krometrail_core::Result<Option<i64>> {
+        let grace = self.retention.artifact_grace();
+        if grace.is_zero() {
+            return Ok(None);
+        }
+        let millis = i64::try_from(grace.as_millis()).unwrap_or(i64::MAX);
+        Ok(Some(self.index.now_unix_ms()?.saturating_sub(millis)))
+    }
+
+    /// The single reclaim walk.
+    ///
+    /// Budget pressure, in-session trimming, and age-out all enter here; they
+    /// differ only in the target and in how the candidate set is narrowed, never
+    /// in ordering or in what pins protect. Keeping them on one walk is what
+    /// stops age-out from becoming a second, subtly different eviction engine.
+    ///
+    /// Reclaim proceeds in tiers, cheapest loss first. Tier 0 is reserved for
+    /// whole abandoned instance roots once per-instance isolation lands: nothing
+    /// live references them, so they belong ahead of every tier here and slot in
+    /// without reshaping the walk.
+    async fn reclaim(
+        &self,
+        target_bytes: u64,
+        protected_artifact: Option<krometrail_core::ArtifactId>,
+    ) -> krometrail_core::Result<ReclaimOutcome> {
+        let mut outcome = ReclaimOutcome::default();
+        loop {
+            let over_target = self.refresh_usage()?.usage.total_bytes()? > target_bytes;
+            let filter = if over_target {
+                SegmentReclaimFilter {
+                    created_before_unix_ms: None,
+                    artifact_grace_since_unix_ms: self.artifact_grace_since()?,
+                }
+            } else {
+                // Inside the byte target, only expired evidence is reclaimable.
+                // This is what stops a store from sitting pinned at ~99% forever.
+                let Some(cutoff) = self.expiry_cutoff()? else {
+                    return Ok(outcome);
+                };
+                if self.index.expired_object_count(cutoff)? == 0 {
+                    return Ok(outcome);
+                }
+                SegmentReclaimFilter {
+                    created_before_unix_ms: Some(cutoff),
+                    artifact_grace_since_unix_ms: None,
+                }
+            };
+            if !self
+                .reclaim_once(filter, over_target, protected_artifact, &mut outcome)
+                .await?
+            {
+                return Ok(outcome);
+            }
+        }
+    }
+
+    /// Reclaims one object, returning whether progress was made.
+    async fn reclaim_once(
+        &self,
+        filter: SegmentReclaimFilter,
+        under_pressure: bool,
+        protected_artifact: Option<krometrail_core::ArtifactId>,
+        outcome: &mut ReclaimOutcome,
+    ) -> krometrail_core::Result<bool> {
+        // Derived artifacts go first: they are regenerable, so they are the
+        // cheapest evidence to lose.
+        if let Some(artifact) = self
+            .index
+            .oldest_reclaimable_artifact(protected_artifact, filter.created_before_unix_ms)?
+        {
+            let (_, _, artifacts, bytes) = self
+                .remove_objects(
                     DeletionKind::Eviction,
                     None,
                     vec![artifact_object(artifact)],
                 )
                 .await?;
-                continue;
-            }
-            let segment = self.index.oldest_unpinned_segment()?;
-            let event = self.index.oldest_browser_event()?;
-            let event_is_older = match (&segment, event) {
-                (_, None) => false,
-                (None, Some(_)) => true,
-                (Some(segment), Some(event)) => {
-                    event.retention_sequence < segment.retention_sequence
-                }
-            };
-            if event_is_older {
-                let before = segment.as_ref().map(|segment| segment.retention_sequence);
-                if self.index.evict_oldest_browser_events(before)? == 0 {
-                    return Ok(());
-                }
-                continue;
-            }
-            let Some(segment) = segment else {
-                return Ok(());
-            };
-            let mut objects: Vec<_> = self
-                .index
-                .artifacts_for_segment(segment.segment_id)?
-                .into_iter()
-                .map(artifact_object)
-                .collect();
-            objects.push(segment_object(segment));
-            self.remove_objects(DeletionKind::Eviction, None, objects)
-                .await?;
+            outcome.artifacts = outcome.artifacts.saturating_add(artifacts);
+            outcome.bytes = outcome.bytes.saturating_add(bytes);
+            return Ok(true);
         }
+
+        let mut segment = self.index.oldest_reclaimable_segment(filter)?;
+        if segment.is_none() && filter.artifact_grace_since_unix_ms.is_some() {
+            // Every remaining segment backs an artifact still inside its grace
+            // window. Liveness wins over the grace promise: stalling capture at a
+            // full store is worse than losing a fresh evidence link, so the grace
+            // is dropped and the override is reported rather than hidden.
+            segment = self
+                .index
+                .oldest_reclaimable_segment(SegmentReclaimFilter {
+                    artifact_grace_since_unix_ms: None,
+                    ..filter
+                })?;
+            if segment.is_some() {
+                tracing::info!(
+                    event = "retention.artifact_grace_overridden",
+                    "budget pressure evicted a segment backing a recently published artifact"
+                );
+                outcome.artifact_grace_overridden = true;
+            }
+        }
+
+        let event = self.index.oldest_browser_event()?;
+        let event_is_older = match (&segment, event) {
+            (_, None) => false,
+            // Without a bounding segment, unbounded event eviction is only
+            // correct under pressure. Age-out must not reach events it has not
+            // proven to be expired.
+            (None, Some(_)) => under_pressure,
+            (Some(segment), Some(event)) => event.retention_sequence < segment.retention_sequence,
+        };
+        if event_is_older {
+            let before = segment.as_ref().map(|segment| segment.retention_sequence);
+            let removed = self.index.evict_oldest_browser_events(before)?;
+            outcome.browser_events = outcome.browser_events.saturating_add(removed);
+            return Ok(removed != 0);
+        }
+
+        let Some(segment) = segment else {
+            return Ok(false);
+        };
+        let mut objects: Vec<_> = self
+            .index
+            .artifacts_for_segment(segment.segment_id)?
+            .into_iter()
+            .map(artifact_object)
+            .collect();
+        objects.push(segment_object(segment));
+        let (segments, _, artifacts, bytes) = self
+            .remove_objects(DeletionKind::Eviction, None, objects)
+            .await?;
+        outcome.segments = outcome.segments.saturating_add(segments);
+        outcome.artifacts = outcome.artifacts.saturating_add(artifacts);
+        outcome.bytes = outcome.bytes.saturating_add(bytes);
+        Ok(true)
     }
 
     async fn ensure_staged_artifact_capacity(
         &self,
         row: &ArtifactRow,
     ) -> krometrail_core::Result<()> {
-        self.cleanup_to(self.budget.get(), Some(row.artifact_id))
+        self.cleanup_to(self.effective_budget(), Some(row.artifact_id))
             .await?;
-        if self.refresh_usage()?.usage.total_bytes()? <= self.budget.get() {
+        if self.refresh_usage()?.usage.total_bytes()? <= self.effective_budget() {
             self.set_budget_state(RecordingBudgetState::Available);
             return Ok(());
         }
@@ -641,6 +950,7 @@ impl RecordingStore {
         let batch = self.index.prepare_deletion(kind, session_id, objects)?;
         self.removal.stage(batch.clone()).await?;
         let (segments, frames, artifacts) = self.index.remove_deletion_metadata(&batch)?;
+        self.set_trim_exhausted(false);
         let mut committed = batch.clone();
         committed.state = DeletionState::MetadataRemoved;
         self.removal.finalize(committed).await?;
@@ -1627,7 +1937,7 @@ impl BrowserEventSink for RecordingStore {
             // only bounded inserts and bounded event-only evictions.
             let managed_usage = self.refresh_usage()?.usage.total_bytes()?;
             self.index
-                .append_browser_event_batch(batch, self.budget.get(), managed_usage)
+                .append_browser_event_batch(batch, self.effective_budget(), managed_usage)
         })
     }
 }
@@ -1983,10 +2293,23 @@ impl RetentionStore for RecordingStore {
         })
     }
 
+    /// Reports retention status without taking the mutation gate.
+    ///
+    /// Status is a read. Serialising it behind the gate made it wait out whatever
+    /// eviction or deletion happened to be running, which is the opposite of what
+    /// an agent checking on a store under pressure needs. It therefore also skips
+    /// the WAL checkpoint that `refresh_usage` performs: object usage comes
+    /// straight from the accounting rows and is exact, while the index-page class
+    /// may lag until the next mutation refreshes it. Trading a slightly stale
+    /// page figure for a status call that never blocks is the right side of that
+    /// bargain, and every mutating path still refreshes before it decides
+    /// anything.
     fn status(&self) -> PortFuture<'_, krometrail_core::Result<RetentionStatus>> {
         Box::pin(async move {
-            let _mutation = self.mutations.lock().await;
-            self.current_status()
+            self.status_from_snapshot(
+                self.index.live_usage_snapshot()?,
+                self.current_budget_state(),
+            )
         })
     }
 
@@ -2042,32 +2365,6 @@ impl RetentionStore for RecordingStore {
             }
         })
     }
-}
-
-fn coalesce_protected_segments(
-    segments: &[ProtectedSegment],
-) -> krometrail_core::Result<Vec<SessionRange>> {
-    let mut ranges: Vec<_> = segments
-        .iter()
-        .map(|segment| segment.retained_range)
-        .collect();
-    ranges.sort_by_key(|range| (range.start(), range.end()));
-    let mut coalesced: Vec<SessionRange> = Vec::new();
-    for range in ranges {
-        if let Some(last) = coalesced.last_mut() {
-            let adjacent = last
-                .end()
-                .as_nanos()
-                .checked_add(1)
-                .is_some_and(|next| range.start().as_nanos() <= next);
-            if range.start() <= last.end() || adjacent {
-                *last = SessionRange::new(last.start(), last.end().max(range.end()))?;
-                continue;
-            }
-        }
-        coalesced.push(range);
-    }
-    Ok(coalesced)
 }
 
 fn source_read_not_found(snapshot: Option<&FrameReadSnapshot>) -> KrometrailError {
@@ -2172,10 +2469,19 @@ fn artifact_object(candidate: ArtifactCandidate) -> DeletionObject {
     }
 }
 
+/// Builds the deletion object for an evictable segment.
+///
+/// The file name is derived as the *sealed* name for this segment id, never read
+/// back from storage. Both candidate queries that feed this already restrict to
+/// `state='sealed'`, so deriving here means a deletion object naming a live
+/// `.open` file cannot be constructed even if a future query forgets the filter.
 fn segment_object(candidate: SegmentCandidate) -> DeletionObject {
     DeletionObject {
         kind: DeletionObjectKind::Segment(candidate.segment_id),
-        relative_path: candidate.relative_path,
+        relative_path: crate::segments::segment_file_name(
+            candidate.segment_id,
+            crate::SegmentState::Sealed,
+        ),
         byte_len: candidate.file_bytes,
         session_id: candidate.session_id,
     }
@@ -2642,7 +2948,10 @@ mod tests {
         let candidate = index.oldest_unpinned_segment().unwrap().unwrap();
         std::fs::OpenOptions::new()
             .write(true)
-            .open(index.segments_directory().join(candidate.relative_path))
+            .open(crate::segments::sealed_segment_path(
+                index.segments_directory(),
+                candidate.segment_id,
+            ))
             .unwrap()
             .set_len(8)
             .unwrap();

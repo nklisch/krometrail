@@ -8,8 +8,9 @@ use krometrail_core::{
     CapabilitySnapshot, CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource,
     IdValue, InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText,
     ProgressiveEvidence, ProgressiveEvidenceStore, RecordingCatalog, RecordingSink,
-    ResolvedRangeHandles, Result, RetentionStore, TemporalContextQuery, TemporalDebugBundles,
-    TemporalQuery, TemporalVideoEncoder, TemporalVideoGeneration, TimelineStore, WallClock,
+    ResolvedRangeHandles, Result, RetentionLifecycle, RetentionStore, TemporalContextQuery,
+    TemporalDebugBundles, TemporalQuery, TemporalVideoEncoder, TemporalVideoGeneration,
+    TimelineStore, WallClock,
 };
 use uuid::Uuid;
 
@@ -33,8 +34,8 @@ use krometrail_ffmpeg::{
 };
 use krometrail_mcp::{DiagnosticContext, McpConfig, McpDependencies, build_service};
 use krometrail_store::{
-    IndexStoreConfig, RecordingStore, RecoveryReport, RotationConfig, SegmentStoreConfig,
-    SegmentWriter, SqliteIndex, recover,
+    IndexStoreConfig, InstanceOwnership, RecordingStore, RecoveryReport, RotationConfig,
+    SegmentStoreConfig, SegmentWriter, SqliteIndex, recover,
 };
 
 #[cfg(all(test, feature = "qualification-support"))]
@@ -358,17 +359,36 @@ fn open_storage_with_budget(
     data_directory: &std::path::Path,
     budget: DiskBudgetBytes,
 ) -> Result<StorageDependencies> {
-    let segments_directory = data_directory.join("segments");
+    // Claim an exclusive instance root before touching any retained data. Every
+    // destructive startup path below — legacy clearing, incompatible-cache
+    // clearing, recovery — runs only against storage this process owns.
+    let ownership = InstanceOwnership::acquire_new(data_directory)?;
+    let instance_root = ownership.root().to_path_buf();
+
+    // The pre-isolation flat layout has no supported consumer, so it is cleared
+    // rather than migrated. Only recording-cache members are removed; browser
+    // profiles, diagnostics, downloads, plugin state, and configuration share
+    // this directory and must survive.
+    if krometrail_store::has_legacy_flat_store(data_directory) {
+        let bytes = krometrail_store::clear_legacy_flat_store(data_directory)?;
+        tracing::warn!(
+            event = "retention.legacy_store_cleared",
+            reclaimed_bytes = bytes,
+            "cleared the pre-isolation recording cache"
+        );
+    }
+    reclaim_abandoned_instances(data_directory, &instance_root);
+
+    let segments_directory = instance_root.join("segments");
     // Open and validate metadata before capture infrastructure can accept writes.
     let index = Arc::new(SqliteIndex::open(IndexStoreConfig {
-        database_path: data_directory.join("index.sqlite3"),
+        database_path: instance_root.join("index.sqlite3"),
         segments_directory: segments_directory.clone(),
         busy_timeout: std::time::Duration::from_secs(5),
     })?);
-    let segments = Arc::new(SegmentWriter::open(SegmentStoreConfig {
-        directory: segments_directory,
-        rotation: RotationConfig::suggested(),
-    })?);
+    // Recovery reconciles every unsealed segment left by a previous process and
+    // must complete before a writer exists. Opening the writer first let a
+    // freshly created open segment coexist with recovery's directory sweep.
     let recovery = recover(index.as_ref())?;
     tracing::info!(
         open_segments_sealed = recovery.open_segments_sealed,
@@ -378,10 +398,26 @@ fn open_storage_with_budget(
         frames_removed = recovery.frames_removed,
         "recording store recovery complete"
     );
-    let store = Arc::new(RecordingStore::with_budget(
+    let segments = Arc::new(SegmentWriter::open(SegmentStoreConfig {
+        directory: segments_directory,
+        rotation: RotationConfig::suggested(),
+    })?);
+    // The shared ledger keeps concurrent instances inside one total budget.
+    // Its absence is not an error: the instance then enforces the configured
+    // budget alone rather than refusing to start.
+    let budget_registry =
+        krometrail_store::BudgetRegistry::open(data_directory, &instance_root).map(Arc::new);
+    if budget_registry.is_none() {
+        tracing::warn!(
+            event = "retention.shared_budget_unavailable",
+            "shared budget accounting is unavailable; enforcing the configured budget alone"
+        );
+    }
+    let store = Arc::new(RecordingStore::with_retention(
         segments,
         Arc::clone(&index),
-        budget,
+        configured_retention(budget)?,
+        budget_registry,
     )?);
     Ok(StorageDependencies {
         store: Arc::clone(&store),
@@ -397,6 +433,90 @@ fn open_storage_with_budget(
         gaps: Arc::clone(&index) as Arc<dyn CaptureGapStore>,
         frames: store as Arc<dyn FrameSource>,
     })
+}
+
+/// Reclaims instance roots abandoned by processes that are no longer running.
+///
+/// Tier one of retention: an abandoned root is the cheapest possible reclaim
+/// because nothing live can reference it. Acquiring the root's lock is both the
+/// liveness test and the ownership transfer, so reclamation always runs as that
+/// root's legitimate owner and can never race a live process.
+///
+/// Reclamation is best effort. A root that cannot be reclaimed must never keep
+/// this process from starting, so failures are reported and stepped over.
+fn reclaim_abandoned_instances(data_directory: &std::path::Path, owned: &std::path::Path) {
+    let roots = match krometrail_store::sibling_instance_roots(data_directory, owned) {
+        Ok(roots) => roots,
+        Err(error) => {
+            tracing::warn!(
+                event = "retention.instance_scan_failed",
+                error = %error.message.as_str(),
+                "could not enumerate abandoned instance roots"
+            );
+            return;
+        }
+    };
+    for root in roots {
+        match InstanceOwnership::acquire_existing(&root) {
+            // Held by a live process: not ours, not abandoned, leave it alone.
+            Ok(None) => {}
+            Ok(Some(ownership)) => match krometrail_store::reclaim_instance_root(&ownership) {
+                Ok(bytes) => tracing::info!(
+                    event = "retention.instance_reclaimed",
+                    reclaimed_bytes = bytes,
+                    "reclaimed an abandoned instance recording cache"
+                ),
+                Err(error) => tracing::warn!(
+                    event = "retention.instance_reclaim_failed",
+                    error = %error.message.as_str(),
+                    "could not reclaim an abandoned instance recording cache"
+                ),
+            },
+            Err(error) => tracing::warn!(
+                event = "retention.instance_lock_failed",
+                error = %error.message.as_str(),
+                "could not test an instance root for abandonment"
+            ),
+        }
+    }
+}
+
+/// Resolves the retention lifecycle from the environment.
+///
+/// Age-out is on by default: a store with no age policy accumulates until it
+/// reaches the budget wall and then stays there. Setting the max age to `0`
+/// disables expiry explicitly for callers who want size-only retention.
+fn configured_retention(budget: DiskBudgetBytes) -> Result<RetentionLifecycle> {
+    let max_age = match std::env::var_os("KROMETRAIL_RETENTION_MAX_AGE_SECS") {
+        Some(value) => {
+            let seconds = value
+                .to_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(invalid_retention_max_age)?;
+            (seconds != 0).then(|| std::time::Duration::from_secs(seconds))
+        }
+        None => Some(krometrail_core::DEFAULT_RETENTION_MAX_AGE),
+    };
+    RetentionLifecycle::new(
+        budget,
+        max_age,
+        krometrail_core::DEFAULT_TRIM_HIGH_WATER_PERCENT,
+        krometrail_core::DEFAULT_ARTIFACT_GRACE,
+    )
+}
+
+fn invalid_retention_max_age() -> KrometrailError {
+    KrometrailError::new(
+        ErrorCode::InvalidInput,
+        NonEmptyText::new("KROMETRAIL_RETENTION_MAX_AGE_SECS must be a non-negative integer")
+            .expect("static retention error is non-empty"),
+    )
+    .with_recovery(
+        NonEmptyText::new(
+            "set KROMETRAIL_RETENTION_MAX_AGE_SECS to a decimal second count, or 0 to disable age-out",
+        )
+        .expect("static retention recovery is non-empty"),
+    )
 }
 
 fn configured_disk_budget() -> Result<DiskBudgetBytes> {

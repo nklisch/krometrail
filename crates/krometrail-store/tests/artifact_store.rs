@@ -75,6 +75,18 @@ fn open_store_with_budget(
 }
 
 async fn fixture() -> Fixture {
+    fixture_padded(0).await
+}
+
+/// Builds the standard fixture, optionally padding the source segment.
+///
+/// Budget-driven eviction tests need the segment they are trying to evict to be
+/// large relative to SQLite's page granularity; otherwise the range of budgets
+/// that force eviction without also forbidding the follow-up append is narrower
+/// than a single page, and the test measures page rounding rather than retention
+/// behaviour. The pad frame is deliberately not part of `frame_ids`, so artifact
+/// provenance is unchanged.
+async fn fixture_padded(pad_bytes: usize) -> Fixture {
     let directory = TempDir::new().unwrap();
     let store = open_store(directory.path());
     let session = SessionId::from_uuid(Uuid::from_u128(1));
@@ -106,6 +118,27 @@ async fn fixture() -> Fixture {
         .unwrap();
         store
             .append_frame(EncodedFrame::new(metadata, bytes.clone()).unwrap())
+            .await
+            .unwrap();
+    }
+    if pad_bytes != 0 {
+        let metadata = CapturedFrame::new(
+            FrameId::from_uuid(Uuid::from_u128(9_000)),
+            session,
+            target,
+            CaptureOrdinal::new(9_000).unwrap(),
+            None,
+            ObservedTime::from_nanos(9_000),
+            SessionTime::from_nanos(9_000),
+            ImageFormat::Jpeg,
+            CoreDimensions::new(1, 1).unwrap(),
+            CoreDimensions::new(1, 1).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap();
+        store
+            .append_frame(EncodedFrame::new(metadata, vec![9; pad_bytes]).unwrap())
             .await
             .unwrap();
     }
@@ -689,7 +722,9 @@ async fn pins_protect_sources_not_regenerable_artifacts() {
 
 #[tokio::test]
 async fn source_segment_eviction_removes_linked_artifact_before_frames() {
-    let fixture = fixture().await;
+    // A padded source segment keeps the eviction decision well clear of SQLite
+    // page granularity.
+    let fixture = fixture_padded(120_000).await;
     let publication = publication(&fixture, 65, 66);
     fixture
         .store
@@ -697,13 +732,26 @@ async fn source_segment_eviction_removes_linked_artifact_before_frames() {
         .await
         .unwrap();
     let usage = fixture.store.status().await.unwrap().usage;
+    // Budget headroom is chosen relative to the incoming frame, not to leftover
+    // page slack: large enough that the replacement fits *once* the existing
+    // segment and artifact are evicted, but smaller than the cost of keeping
+    // them, so eviction is genuinely forced. Deriving it from the frame's own
+    // storage cost keeps the test from depending on how much the SQLite index
+    // happens to shrink when rows are deleted.
+    const REPLACEMENT_FRAME_BYTES: u64 = 3_000;
+    const RECORD_ENVELOPE_ALLOWANCE: u64 = 4_096;
+    // Room for the metadata index plus exactly one new frame, and nothing else.
+    // Retaining either the source segment or its derived artifact then puts the
+    // store over budget, so both must be reclaimed — the artifact first, as the
+    // cascade removes it along with the segment it derives from.
+    let headroom = REPLACEMENT_FRAME_BYTES + RECORD_ENVELOPE_ALLOWANCE;
     let budget = DiskBudgetBytes::new(
         usage
             .total_bytes()
             .unwrap()
             .saturating_sub(usage.segment_bytes)
             .saturating_sub(usage.artifact_bytes)
-            + 3_000,
+            + headroom,
     )
     .unwrap();
     drop(fixture.store);

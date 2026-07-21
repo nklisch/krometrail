@@ -31,10 +31,20 @@ const MAX_EXPANDED_TARGETS: usize = 48;
 const MAX_EXPANDED_TARGET_JSON_BYTES: usize = 12 * 1024;
 const MAX_EXPANDED_CONTEXT_NODES: usize = 96;
 const MAX_EXPANDED_SNAPSHOT_JSON_BYTES: usize = 32 * 1024;
+// `full` is the most complete *bounded* projection, not an unbounded dump: an ordinary
+// encyclopedia article produced a ~930 KB accessibility tree that exceeded an agent's whole
+// context. Every full ceiling is four times its expanded counterpart, so the extra detail is
+// real while the worst case stays predictable and its omissions stay accounted for.
+const MAX_FULL_TARGETS: usize = 192;
+const MAX_FULL_TARGET_JSON_BYTES: usize = 48 * 1024;
+const MAX_FULL_CONTEXT_NODES: usize = 384;
+const MAX_FULL_SNAPSHOT_JSON_BYTES: usize = 128 * 1024;
 const MAX_CONCISE_ASSETS: usize = 16;
 const MAX_CONCISE_ASSET_JSON_BYTES: usize = 6 * 1024;
 const MAX_EXPANDED_ASSETS: usize = 64;
 const MAX_EXPANDED_ASSET_JSON_BYTES: usize = 16 * 1024;
+const MAX_FULL_ASSETS: usize = 256;
+const MAX_FULL_ASSET_JSON_BYTES: usize = 64 * 1024;
 const MAX_SEMANTIC_OUTCOMES: usize = 8;
 const MAX_SEMANTIC_OUTCOME_JSON_BYTES: usize = 4 * 1024;
 
@@ -91,6 +101,42 @@ pub(crate) struct ConciseRetentionStatus {
     pub pinned_bytes: u64,
     pub budget_state: RecordingBudgetState,
     pub recording_blocked: bool,
+    pub retained_bounds: Option<RetainedBounds>,
+}
+
+/// Retained-evidence endpoints projected with their comparability made explicit.
+///
+/// `session_time` is session-relative, so the two endpoints are only orderable when they share
+/// one session and target. Reporting the raw pair alone let an agent read `oldest > newest` and
+/// conclude the store was corrupt, so the projection states the scope instead of implying one.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) struct RetainedBounds {
+    pub oldest: krometrail_core::RetainedPoint,
+    pub newest: krometrail_core::RetainedPoint,
+    /// True only when both endpoints share one session and target.
+    pub comparable_scope: bool,
+    /// Elapsed session time between the endpoints; present only within a comparable scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_nanos: Option<u64>,
+}
+
+impl RetainedBounds {
+    fn project(retention: &krometrail_core::RetentionStatus) -> Option<Self> {
+        let (oldest, newest) = (retention.oldest_retained?, retention.newest_retained?);
+        let comparable_scope =
+            oldest.session_id == newest.session_id && oldest.target_id == newest.target_id;
+        Some(Self {
+            oldest,
+            newest,
+            comparable_scope,
+            span_nanos: comparable_scope.then(|| {
+                newest
+                    .session_time
+                    .as_nanos()
+                    .saturating_sub(oldest.session_time.as_nanos())
+            }),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -255,7 +301,13 @@ pub struct BundleArtifactHandle {
     pub encoded_byte_len: u64,
     pub artifact_kind: ArtifactKind,
     pub evidence_class: EvidenceClass,
+    // Three narrowing populations. `source` is every retained frame in the epoch, `analyzed` is
+    // the frames that contributed to the artifact, and `selected` is the analyzed frames the
+    // output actually renders or references. `omitted` is `source - analyzed`. Without
+    // `analyzed_frame_count` the other three do not reconcile — an analysis that examined one
+    // frame and rendered none reads as `source 1, selected 0, omitted 0`.
     pub source_frame_count: u32,
+    pub analyzed_frame_count: u32,
     pub selected_frame_count: u32,
     pub omitted_frame_count: u32,
     pub output_dimensions: PixelDimensions,
@@ -476,25 +528,19 @@ pub(crate) fn map_operation_result_with_capture(
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
     response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    map_operation_result_with_capture_and_novelty(
-        tool,
-        result,
-        capture_statuses,
-        response,
-        SnapshotNovelty::Novel,
-    )
+    let mut mapped =
+        map_operation_result_with_novelty(tool, result, response, SnapshotNovelty::Novel)?;
+    apply_capture_health(&mut mapped, capture_statuses);
+    Ok(mapped)
 }
 
-pub(crate) fn map_operation_result_with_capture_and_novelty(
+pub(crate) fn map_operation_result_with_novelty(
     tool: &str,
     result: BrowserOperationResult,
-    capture_statuses: &[krometrail_core::TargetCaptureStatus],
     response: ResponseRequest,
     novelty: SnapshotNovelty,
 ) -> Result<MappedResult, ResponseInvariantError> {
     let mut projection = project_operation(result, response, novelty)?;
-    let target_id = projection_target_id(&projection);
-    add_capture_warnings(&mut projection, capture_statuses, target_id);
     project_response(tool, &mut projection, response)?;
     let status = projection.status;
     Ok(mapped(
@@ -616,7 +662,12 @@ pub(crate) fn map_browser_status(
     response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
     match response.detail {
-        ResponseDetail::Full => map_lifecycle_result(tool, status),
+        ResponseDetail::Full => {
+            let bounds = RetainedBounds::project(&status.retention);
+            let mut mapped = map_lifecycle_result(tool, status)?;
+            project_retained_bounds(&mut mapped.response.result, bounds)?;
+            Ok(mapped)
+        }
         ResponseDetail::Concise | ResponseDetail::Expanded => {
             let capture = status
                 .capture
@@ -642,6 +693,7 @@ pub(crate) fn map_browser_status(
                 pinned_bytes: status.retention.pinned_usage_bytes,
                 budget_state: status.retention.budget_state,
                 recording_blocked: status.retention.recording_blocked,
+                retained_bounds: RetainedBounds::project(&status.retention),
             };
             let page_count =
                 u32::try_from(status.pages.len()).map_err(|_| ResponseInvariantError)?;
@@ -669,6 +721,24 @@ pub(crate) fn map_browser_status(
             }
         }
     }
+}
+
+/// Replaces the raw retained endpoints in a serialized status with the scoped projection, so no
+/// detail tier hands an agent two session-relative times that look comparable but are not.
+fn project_retained_bounds(
+    value: &mut Value,
+    bounds: Option<RetainedBounds>,
+) -> Result<(), ResponseInvariantError> {
+    let Some(retention) = value.get_mut("retention").and_then(Value::as_object_mut) else {
+        return Err(ResponseInvariantError);
+    };
+    retention.remove("oldest_retained");
+    retention.remove("newest_retained");
+    retention.insert(
+        "retained_bounds".into(),
+        serde_json::to_value(bounds).map_err(|_| ResponseInvariantError)?,
+    );
+    Ok(())
 }
 
 pub(crate) fn map_temporal_video_result(
@@ -744,12 +814,10 @@ pub(crate) fn visible_error_with_capture(
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
 ) -> CallToolResult {
     let summary = format!("{tool} failed: {}", error.message);
-    let target_id = error.context.target_id;
     let mut projection = Projection::success(json!({}));
     projection.interaction = failure_interaction_anchor(tool, &error);
     projection.fail_with(error);
-    add_capture_warnings(&mut projection, capture_statuses, target_id);
-    into_call_tool_result(mapped(tool, projection, summary))
+    into_call_tool_result(mapped(tool, projection, summary), capture_statuses)
         .expect("stable error envelopes always serialize")
 }
 
@@ -771,41 +839,80 @@ fn failure_interaction_anchor(
     })
 }
 
-fn add_capture_warnings(
-    projection: &mut Projection,
+fn projection_target_id(projection: &Projection) -> Option<TargetId> {
+    response_target_id(projection.interaction.as_ref(), &projection.result)
+}
+
+fn response_target_id(
+    interaction: Option<&ResponseInteractionAnchor>,
+    result: &Value,
+) -> Option<TargetId> {
+    interaction
+        .and_then(|interaction| interaction.target_id)
+        .or_else(|| {
+            ["/context/target_id", "/target_id"]
+                .into_iter()
+                .find_map(|pointer| result.pointer(pointer)?.as_str()?.parse().ok())
+        })
+}
+
+/// Applies terminal-capture health to a mapped response.
+///
+/// This is the single place where the `capture_failed` warning enters a tool response. It runs
+/// on the shared exit every tool must pass through, so a surface cannot report healthy capture
+/// while the writer is terminal — including surfaces added later, which get this for free rather
+/// than having to opt in.
+fn apply_capture_health(
+    mapped: &mut MappedResult,
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
-    target_id: Option<TargetId>,
 ) {
+    let target_id = response_target_id(
+        mapped.response.interaction.as_ref(),
+        &mapped.response.result,
+    )
+    .or_else(|| {
+        mapped
+            .response
+            .error
+            .as_ref()
+            .and_then(|error| error.context.target_id)
+    });
+    let mut degraded = false;
     for status in capture_statuses
         .iter()
         .filter(|status| status.state() == krometrail_core::CaptureStreamState::Failed)
         .filter(|status| target_id.is_none_or(|target_id| status.target_id() == target_id))
     {
+        let warning = capture_failed_warning(status);
+        if mapped.response.warnings.contains(&warning) {
+            continue;
+        }
         let failure = status
             .failure()
             .expect("failed capture status is validated with a failure");
-        projection.degrade_with_stage(
-            vec![capture_failed_warning(status)],
-            failure.stage().as_str(),
+        tracing::warn!(
+            event = "mcp.response.degraded",
+            failure_stage = failure.stage().as_str(),
+            error_code = warning.code.as_str(),
+            "mcp.response.degraded"
+        );
+        mapped.response.warnings.push(warning);
+        degraded = true;
+    }
+    if degraded && mapped.response.status == ToolResponseStatus::Succeeded {
+        mapped.response.status = ToolResponseStatus::Degraded;
+        mapped.summary = format!(
+            "{} succeeded, but retained temporal evidence is unavailable",
+            mapped.response.tool
         );
     }
 }
 
-fn projection_target_id(projection: &Projection) -> Option<TargetId> {
-    projection
-        .interaction
-        .as_ref()
-        .and_then(|interaction| interaction.target_id)
-        .or_else(|| {
-            ["/context/target_id", "/target_id"]
-                .into_iter()
-                .find_map(|pointer| projection.result.pointer(pointer)?.as_str()?.parse().ok())
-        })
-}
-
 pub(crate) fn into_call_tool_result(
-    mapped: MappedResult,
+    mut mapped: MappedResult,
+    capture_statuses: &[krometrail_core::TargetCaptureStatus],
 ) -> Result<CallToolResult, rmcp::ErrorData> {
+    apply_capture_health(&mut mapped, capture_statuses);
     let mut content = Vec::with_capacity(1 + mapped.images.len() + mapped.response.resources.len());
     content.push(Content::text(mapped.summary));
     for image in mapped.images {
@@ -1381,7 +1488,7 @@ struct TargetOmissions {
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
-struct ExpandedSnapshotOmissions {
+struct BoundedSnapshotOmissions {
     source_nodes: u32,
     presentation_targets: u32,
     presentation_context_nodes: u32,
@@ -1409,12 +1516,12 @@ struct SemanticContextEntry {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct ExpandedSnapshot {
+struct BoundedSnapshot {
     context: krometrail_core::ObservationContext,
     generation: krometrail_core::SnapshotGeneration,
     targets: Vec<ExactTarget>,
     semantic_context: Vec<SemanticContextEntry>,
-    omissions: ExpandedSnapshotOmissions,
+    omissions: BoundedSnapshotOmissions,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1508,9 +1615,6 @@ fn project_page_assets(
     inventory: PageAssetInventory,
     detail: ResponseDetail,
 ) -> Result<Value, ResponseInvariantError> {
-    if detail == ResponseDetail::Full {
-        return serde_json::to_value(inventory).map_err(|_| ResponseInvariantError);
-    }
     let mut by_kind = AssetKindCounts::default();
     for asset in &inventory.assets {
         by_kind.record(asset.kind);
@@ -1518,7 +1622,7 @@ fn project_page_assets(
     let (max_rows, max_bytes) = match detail {
         ResponseDetail::Concise => (MAX_CONCISE_ASSETS, MAX_CONCISE_ASSET_JSON_BYTES),
         ResponseDetail::Expanded => (MAX_EXPANDED_ASSETS, MAX_EXPANDED_ASSET_JSON_BYTES),
-        ResponseDetail::Full => unreachable!("full projection returned above"),
+        ResponseDetail::Full => (MAX_FULL_ASSETS, MAX_FULL_ASSET_JSON_BYTES),
     };
     let mut assets = Vec::new();
     let mut bytes = 2usize;
@@ -1599,11 +1703,47 @@ fn exact_target(
     })
 }
 
+/// Every detail tier is bounded. `full` is the widest tier, not an unbounded one.
+#[derive(Clone, Copy, Debug)]
+struct SnapshotBudget {
+    max_targets: usize,
+    max_target_json_bytes: usize,
+    max_context_nodes: usize,
+    max_snapshot_json_bytes: usize,
+}
+
+impl SnapshotBudget {
+    fn for_detail(detail: ResponseDetail) -> Self {
+        match detail {
+            ResponseDetail::Concise => Self {
+                max_targets: MAX_CONCISE_TARGETS,
+                max_target_json_bytes: MAX_CONCISE_TARGET_JSON_BYTES,
+                max_context_nodes: 0,
+                max_snapshot_json_bytes: MAX_CONCISE_TARGET_JSON_BYTES,
+            },
+            ResponseDetail::Expanded => Self {
+                max_targets: MAX_EXPANDED_TARGETS,
+                max_target_json_bytes: MAX_EXPANDED_TARGET_JSON_BYTES,
+                max_context_nodes: MAX_EXPANDED_CONTEXT_NODES,
+                max_snapshot_json_bytes: MAX_EXPANDED_SNAPSHOT_JSON_BYTES,
+            },
+            ResponseDetail::Full => Self {
+                max_targets: MAX_FULL_TARGETS,
+                max_target_json_bytes: MAX_FULL_TARGET_JSON_BYTES,
+                max_context_nodes: MAX_FULL_CONTEXT_NODES,
+                max_snapshot_json_bytes: MAX_FULL_SNAPSHOT_JSON_BYTES,
+            },
+        }
+    }
+}
+
 fn bounded_targets(
     snapshot: &PageSnapshot,
-    concise: bool,
+    detail: ResponseDetail,
     visual_viewport: Option<&CssRect>,
 ) -> Result<Vec<ExactTarget>, ResponseInvariantError> {
+    let concise = detail == ResponseDetail::Concise;
+    let budget = SnapshotBudget::for_detail(detail);
     let mut actions = snapshot
         .nodes
         .iter()
@@ -1628,11 +1768,7 @@ fn bounded_targets(
             )
         });
     }
-    let (max_targets, max_bytes) = if concise {
-        (MAX_CONCISE_TARGETS, MAX_CONCISE_TARGET_JSON_BYTES)
-    } else {
-        (MAX_EXPANDED_TARGETS, MAX_EXPANDED_TARGET_JSON_BYTES)
-    };
+    let (max_targets, max_bytes) = (budget.max_targets, budget.max_target_json_bytes);
     let mut targets = Vec::new();
     let mut bytes = 2usize;
     for (_, node) in actions {
@@ -1683,7 +1819,7 @@ fn concise_snapshot(
     visual_viewport: Option<&CssRect>,
 ) -> Result<Value, ResponseInvariantError> {
     let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
-    let targets = bounded_targets(snapshot, true, visual_viewport)?;
+    let targets = bounded_targets(snapshot, ResponseDetail::Concise, visual_viewport)?;
     let omissions = TargetOmissions {
         source_nodes: snapshot.omitted_node_count,
         presentation_targets: u32::try_from(actionable - targets.len())
@@ -1707,12 +1843,16 @@ fn concise_snapshot(
     .map_err(|_| ResponseInvariantError)
 }
 
-fn expanded_snapshot(
+/// Shared bounded projection for the `expanded` and `full` detail tiers. Both emit the same
+/// omission accounting; only the ceilings differ, so `full` is wider without being unbounded.
+fn bounded_snapshot(
     snapshot: &PageSnapshot,
+    detail: ResponseDetail,
     novelty: SnapshotNovelty,
     visual_viewport: Option<&CssRect>,
 ) -> Result<Value, ResponseInvariantError> {
-    let targets = bounded_targets(snapshot, false, visual_viewport)?;
+    let budget = SnapshotBudget::for_detail(detail);
+    let targets = bounded_targets(snapshot, detail, visual_viewport)?;
     let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
     let context_count = snapshot.nodes.len() - actionable;
     let mut candidates = snapshot
@@ -1724,7 +1864,7 @@ fn expanded_snapshot(
     candidates.sort_by_key(|(index, node)| (semantic_rank(node), *index));
     let mut semantic_context = Vec::new();
     for (_, node) in candidates {
-        if semantic_context.len() == MAX_EXPANDED_CONTEXT_NODES {
+        if semantic_context.len() == budget.max_context_nodes {
             break;
         }
         let entry = SemanticContextEntry {
@@ -1738,12 +1878,12 @@ fn expanded_snapshot(
             states: node.properties.clone(),
         };
         semantic_context.push(entry);
-        let candidate = ExpandedSnapshot {
+        let candidate = BoundedSnapshot {
             context: snapshot.context.clone(),
             generation: snapshot.generation,
             targets: targets.clone(),
             semantic_context: semantic_context.clone(),
-            omissions: ExpandedSnapshotOmissions {
+            omissions: BoundedSnapshotOmissions {
                 source_nodes: snapshot.omitted_node_count,
                 presentation_targets: u32::try_from(actionable - targets.len())
                     .map_err(|_| ResponseInvariantError)?,
@@ -1755,38 +1895,37 @@ fn expanded_snapshot(
         if serde_json::to_vec(&candidate)
             .map_err(|_| ResponseInvariantError)?
             .len()
-            > MAX_EXPANDED_SNAPSHOT_JSON_BYTES
+            > budget.max_snapshot_json_bytes
         {
             semantic_context.pop();
             continue;
         }
     }
-    if novelty == SnapshotNovelty::Unchanged {
+    let omissions = BoundedSnapshotOmissions {
+        source_nodes: snapshot.omitted_node_count,
+        presentation_targets: u32::try_from(actionable - targets.len())
+            .map_err(|_| ResponseInvariantError)?,
+        presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
+            .map_err(|_| ResponseInvariantError)?,
+        geometry_omitted: snapshot.geometry_omitted,
+    };
+    // `full` always materializes. The unchanged-generation summary answers the question a
+    // `concise` or `expanded` caller is asking — give me an economical projection — but a caller
+    // that explicitly asked for the widest tier and received a summary has had its request
+    // silently reinterpreted, with no way to force materialization. The bound, not the
+    // short-circuit, is what makes `full` safe.
+    if novelty == SnapshotNovelty::Unchanged && detail != ResponseDetail::Full {
         return Ok(json!({
             "generation": snapshot.generation,
             "unchanged": true,
             "target_count": actionable,
-            "omissions": ExpandedSnapshotOmissions {
-                source_nodes: snapshot.omitted_node_count,
-                presentation_targets: u32::try_from(actionable - targets.len())
-                    .map_err(|_| ResponseInvariantError)?,
-                presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
-                    .map_err(|_| ResponseInvariantError)?,
-                geometry_omitted: snapshot.geometry_omitted,
-            },
+            "omissions": omissions,
         }));
     }
-    serde_json::to_value(ExpandedSnapshot {
+    serde_json::to_value(BoundedSnapshot {
         context: snapshot.context.clone(),
         generation: snapshot.generation,
-        omissions: ExpandedSnapshotOmissions {
-            source_nodes: snapshot.omitted_node_count,
-            presentation_targets: u32::try_from(actionable - targets.len())
-                .map_err(|_| ResponseInvariantError)?,
-            presentation_context_nodes: u32::try_from(context_count - semantic_context.len())
-                .map_err(|_| ResponseInvariantError)?,
-            geometry_omitted: snapshot.geometry_omitted,
-        },
+        omissions,
         targets,
         semantic_context,
     })
@@ -1875,7 +2014,6 @@ fn project_root_snapshot(
     visual_viewport: Option<&CssRect>,
 ) -> Result<(), ResponseInvariantError> {
     match detail {
-        ResponseDetail::Full => {}
         ResponseDetail::Concise => {
             *value = concise_snapshot(
                 &serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?,
@@ -1883,9 +2021,10 @@ fn project_root_snapshot(
                 visual_viewport,
             )?
         }
-        ResponseDetail::Expanded => {
-            *value = expanded_snapshot(
+        ResponseDetail::Expanded | ResponseDetail::Full => {
+            *value = bounded_snapshot(
                 &serde_json::from_value(value.clone()).map_err(|_| ResponseInvariantError)?,
+                detail,
                 novelty,
                 visual_viewport,
             )?
@@ -2409,7 +2548,7 @@ fn primary_artifact(generation: &ArtifactGenerationResult) -> Option<(u32, u32, 
                 epoch_index,
                 generator_index,
                 artifact,
-            } => Some((*epoch_index, *generator_index, artifact)),
+            } => Some((*epoch_index, *generator_index, artifact.as_ref())),
             ArtifactOutcome::Unavailable { .. } => None,
         })
         .min_by_key(|(epoch, generator, artifact)| {
@@ -2592,6 +2731,8 @@ fn compact_artifact_handle(
         artifact_kind: manifest.artifact_kind(),
         evidence_class: manifest.evidence_class(),
         source_frame_count: u32::try_from(manifest.source_frame_count())
+            .map_err(|_| ResponseInvariantError)?,
+        analyzed_frame_count: u32::try_from(manifest.analyzed_frame_ids().len())
             .map_err(|_| ResponseInvariantError)?,
         selected_frame_count: u32::try_from(manifest.selected_frame_ids().len())
             .map_err(|_| ResponseInvariantError)?,
@@ -3032,7 +3173,7 @@ mod tests {
             outcomes: vec![ArtifactOutcome::Available {
                 epoch_index: 0,
                 generator_index: 0,
-                artifact,
+                artifact: Box::new(artifact),
             }],
         }
     }
@@ -3189,7 +3330,7 @@ mod tests {
         for forbidden in ["provenance", "encoded_bytes", "provider", "upload"] {
             assert!(!compact.contains(forbidden), "leaked {forbidden}");
         }
-        let result = into_call_tool_result(mapped).unwrap();
+        let result = into_call_tool_result(mapped, &[]).unwrap();
         let links = result
             .content
             .iter()
@@ -3294,6 +3435,123 @@ mod tests {
             document_rect: None,
         });
         PageSnapshot::new(context(), generation, nodes, 7).unwrap()
+    }
+
+    /// An ordinary encyclopedia article — 2215 source nodes, 160 actionable targets — produced a
+    /// 933 KB `snapshot` at `detail: full` and exceeded an agent's entire context in one call.
+    /// `full` is the widest bounded tier, not an unbounded one, so this pins a hard ceiling and
+    /// checks that everything dropped is accounted for exactly.
+    fn encyclopedia_scale_snapshot() -> PageSnapshot {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root_id = SnapshotNodeId::new(1).unwrap();
+        let mut nodes = vec![SnapshotNode {
+            id: root_id,
+            parent: None,
+            depth: 0,
+            role: "document".into(),
+            name: Some("Temporal logic".into()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+            document_rect: None,
+        }];
+        for value in 2..=2215 {
+            let id = SnapshotNodeId::new(value).unwrap();
+            let actionable = value % 14 == 0;
+            nodes.push(SnapshotNode {
+                id,
+                parent: Some(root_id),
+                depth: 1,
+                role: if actionable { "link" } else { "static_text" }.into(),
+                name: Some(format!("node-{value}-{}", "temporal ".repeat(24))),
+                value: None,
+                description: Some("x".repeat(160)),
+                properties: vec![
+                    AccessibleProperty::new("focusable", AccessibleValue::Boolean(true)).unwrap(),
+                ],
+                actionable,
+                reference: actionable.then_some(NodeReference {
+                    target_id: target_id(),
+                    generation,
+                    node_id: id,
+                }),
+                document_rect: None,
+            });
+        }
+        PageSnapshot::new(context(), generation, nodes, 4744).unwrap()
+    }
+
+    #[test]
+    fn full_snapshot_of_a_large_page_stays_bounded_with_exact_omission_accounting() {
+        let snapshot = encyclopedia_scale_snapshot();
+        let actionable = snapshot.nodes.iter().filter(|node| node.actionable).count();
+        let context_nodes = snapshot.nodes.len() - actionable;
+
+        let full = bounded_snapshot(
+            &snapshot,
+            ResponseDetail::Full,
+            SnapshotNovelty::Novel,
+            None,
+        )
+        .unwrap();
+        let encoded = serde_json::to_vec(&full).unwrap();
+        assert!(
+            encoded.len() <= MAX_FULL_SNAPSHOT_JSON_BYTES,
+            "full snapshot projected {} bytes, above the {MAX_FULL_SNAPSHOT_JSON_BYTES} ceiling",
+            encoded.len()
+        );
+
+        let targets = full["targets"].as_array().unwrap().len();
+        let context = full["semantic_context"].as_array().unwrap().len();
+        assert!(targets <= MAX_FULL_TARGETS);
+        assert!(context <= MAX_FULL_CONTEXT_NODES);
+        assert_eq!(
+            full["omissions"]["presentation_targets"],
+            u64::try_from(actionable - targets).unwrap()
+        );
+        assert_eq!(
+            full["omissions"]["presentation_context_nodes"],
+            u64::try_from(context_nodes - context).unwrap()
+        );
+        // Nodes the acquisition layer never handed us stay distinct from nodes this projection
+        // chose to leave out.
+        assert_eq!(full["omissions"]["source_nodes"], 4744);
+        assert!(full.get("nodes").is_none());
+
+        // `full` must still be strictly richer than `expanded`, or the tier would be pointless.
+        let expanded = bounded_snapshot(
+            &snapshot,
+            ResponseDetail::Expanded,
+            SnapshotNovelty::Novel,
+            None,
+        )
+        .unwrap();
+        assert!(targets > expanded["targets"].as_array().unwrap().len());
+        assert!(context > expanded["semantic_context"].as_array().unwrap().len());
+        assert!(encoded.len() > serde_json::to_vec(&expanded).unwrap().len());
+
+        // The economical tiers may answer an unchanged generation with a summary. `full` may not:
+        // a caller that asked for the widest tier must not have that request reinterpreted, and
+        // has no other way to force materialization.
+        let unchanged_full = bounded_snapshot(
+            &snapshot,
+            ResponseDetail::Full,
+            SnapshotNovelty::Unchanged,
+            None,
+        )
+        .unwrap();
+        assert!(unchanged_full.get("unchanged").is_none());
+        assert_eq!(unchanged_full, full);
+        let unchanged_expanded = bounded_snapshot(
+            &snapshot,
+            ResponseDetail::Expanded,
+            SnapshotNovelty::Unchanged,
+            None,
+        )
+        .unwrap();
+        assert_eq!(unchanged_expanded["unchanged"], true);
     }
 
     #[test]
@@ -3681,7 +3939,13 @@ mod tests {
                 .iter()
                 .any(|state| state["name"] == "disabled")
         );
-        let expanded = expanded_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
+        let expanded = bounded_snapshot(
+            &snapshot,
+            ResponseDetail::Expanded,
+            SnapshotNovelty::Novel,
+            None,
+        )
+        .unwrap();
         assert!(
             expanded["targets"][0]["states"]
                 .as_array()
@@ -3786,7 +4050,7 @@ mod tests {
             0,
         )
         .unwrap();
-        let targets = bounded_targets(&snapshot, true, None).unwrap();
+        let targets = bounded_targets(&snapshot, ResponseDetail::Concise, None).unwrap();
         assert_eq!(targets[0].reference.node_id, focused_id);
         assert_eq!(targets[1].reference.node_id, named_link_id);
     }
@@ -3880,7 +4144,7 @@ mod tests {
         ];
         let snapshot = PageSnapshot::new(context(), generation, nodes, 0).unwrap();
         let viewport = rect(0.0, 0.0, 100.0, 100.0);
-        let targets = bounded_targets(&snapshot, true, Some(&viewport)).unwrap();
+        let targets = bounded_targets(&snapshot, ResponseDetail::Concise, Some(&viewport)).unwrap();
         assert_eq!(targets[0].reference.node_id, inside);
         let outcomes = semantic_outcomes(&snapshot, Some(&viewport)).unwrap();
         assert_eq!(outcomes[0].name.as_deref(), Some("inside text"));
@@ -3970,7 +4234,13 @@ mod tests {
             serde_json::to_vec(&expected_concise).unwrap()
         );
 
-        let expanded = expanded_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
+        let expanded = bounded_snapshot(
+            &snapshot,
+            ResponseDetail::Expanded,
+            SnapshotNovelty::Novel,
+            None,
+        )
+        .unwrap();
         let expected_expanded = json!({
             "context": context(),
             "generation": 1,
@@ -4065,9 +4335,18 @@ mod tests {
             expanded["omissions"]["presentation_assets"],
             u32::try_from(100 - expanded_rows).unwrap()
         );
-        assert_eq!(full["assets"].as_array().unwrap().len(), 100);
-        assert_eq!(full["omitted_asset_count"], 7);
-        assert!(full.get("by_kind").is_none());
+        // `full` is the widest bounded tier, not an unbounded dump: it still aggregates by kind
+        // and still accounts for what it left out.
+        let full_rows = full["assets"].as_array().unwrap().len();
+        assert!(full_rows <= MAX_FULL_ASSETS);
+        assert!(full_rows >= expanded_rows);
+        assert!(serde_json::to_vec(&full["assets"]).unwrap().len() <= MAX_FULL_ASSET_JSON_BYTES);
+        assert_eq!(full["omissions"]["source_assets"], 7);
+        assert_eq!(
+            full["omissions"]["presentation_assets"],
+            u32::try_from(100 - full_rows).unwrap()
+        );
+        assert_eq!(full["by_kind"]["script"], 25);
     }
 
     #[test]
@@ -4080,7 +4359,13 @@ mod tests {
             .unwrap()
             .properties
             .push(AccessibleProperty::new("focusable", AccessibleValue::Boolean(true)).unwrap());
-        let expanded = expanded_snapshot(&snapshot, SnapshotNovelty::Novel, None).unwrap();
+        let expanded = bounded_snapshot(
+            &snapshot,
+            ResponseDetail::Expanded,
+            SnapshotNovelty::Novel,
+            None,
+        )
+        .unwrap();
         let encoded = serde_json::to_vec(&expanded).unwrap();
         assert!(encoded.len() <= MAX_EXPANDED_SNAPSHOT_JSON_BYTES);
         assert!(
@@ -4230,7 +4515,21 @@ mod tests {
         assert!(concise.response.result.get("targets").is_some());
         assert!(concise.response.result.get("nodes").is_none());
         assert!(expanded.response.result.get("semantic_context").is_some());
-        assert!(full.response.result.get("nodes").is_some());
+        // `full` grows the projection without abandoning the bound: no raw node array, and the
+        // same omission accounting `expanded` emits.
+        assert!(full.response.result.get("nodes").is_none());
+        assert!(full.response.result.get("semantic_context").is_some());
+        assert!(full.response.result.get("omissions").is_some());
+        assert!(
+            full.response.result["semantic_context"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= expanded.response.result["semantic_context"]
+                    .as_array()
+                    .unwrap()
+                    .len()
+        );
     }
 
     #[test]
@@ -4591,7 +4890,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let result = into_call_tool_result(mapped).unwrap();
+            let result = into_call_tool_result(mapped, &[]).unwrap();
             assert_eq!(result.content.len(), 2);
             assert_eq!(result.content[1].as_image().unwrap().mime_type, mime);
             let structured = result.structured_content.unwrap();

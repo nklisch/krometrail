@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -111,6 +113,90 @@ pub struct PinChange {
 pub enum RecordingBudgetState {
     Available,
     PausedBudget,
+}
+
+/// Complete retention lifecycle for the managed recording directory.
+///
+/// Size pressure alone is not a lifecycle: a store that only reclaims at the
+/// budget wall accumulates until it hits the wall and then sits there. This
+/// bundles the three policies that together make evidence expire on time as
+/// well as on size, and they deliberately share one reclaim walk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetentionLifecycle {
+    budget: DiskBudgetBytes,
+    max_age: Option<Duration>,
+    trim_high_water_percent: u8,
+    artifact_grace: Duration,
+}
+
+/// Evidence older than this expires even when the store is well inside budget.
+pub const DEFAULT_RETENTION_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Trimming begins once usage crosses this share of the budget, so a long
+/// session reclaims as it goes instead of degrading into permanent near-full
+/// pressure and only reclaiming when a frame no longer fits.
+pub const DEFAULT_TRIM_HIGH_WATER_PERCENT: u8 = 85;
+/// A freshly published artifact is shielded from cascade eviction for this long,
+/// so a returned resource link is not already dying when the agent receives it.
+pub const DEFAULT_ARTIFACT_GRACE: Duration = Duration::from_secs(15 * 60);
+
+impl RetentionLifecycle {
+    pub fn new(
+        budget: DiskBudgetBytes,
+        max_age: Option<Duration>,
+        trim_high_water_percent: u8,
+        artifact_grace: Duration,
+    ) -> Result<Self> {
+        if trim_high_water_percent == 0 || trim_high_water_percent > 100 {
+            return Err(invalid(
+                "retention trim high-water percent must be between 1 and 100",
+            ));
+        }
+        if max_age.is_some_and(|age| age.is_zero()) {
+            return Err(invalid("retention max age must be greater than zero"));
+        }
+        Ok(Self {
+            budget,
+            max_age,
+            trim_high_water_percent,
+            artifact_grace,
+        })
+    }
+
+    pub fn with_budget(budget: DiskBudgetBytes) -> Self {
+        Self {
+            budget,
+            max_age: Some(DEFAULT_RETENTION_MAX_AGE),
+            trim_high_water_percent: DEFAULT_TRIM_HIGH_WATER_PERCENT,
+            artifact_grace: DEFAULT_ARTIFACT_GRACE,
+        }
+    }
+
+    pub const fn budget(self) -> DiskBudgetBytes {
+        self.budget
+    }
+
+    pub const fn max_age(self) -> Option<Duration> {
+        self.max_age
+    }
+
+    pub const fn artifact_grace(self) -> Duration {
+        self.artifact_grace
+    }
+
+    /// Usage at or above this triggers in-session trimming.
+    ///
+    /// Taken against the caller's *effective* allowance rather than the
+    /// configured total, so an instance sharing a budget trims relative to what
+    /// it may actually occupy.
+    pub const fn trim_high_water_bytes(self, effective_budget: u64) -> u64 {
+        (effective_budget / 100).saturating_mul(self.trim_high_water_percent as u64)
+    }
+}
+
+impl Default for RetentionLifecycle {
+    fn default() -> Self {
+        Self::with_budget(DiskBudgetBytes::default())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

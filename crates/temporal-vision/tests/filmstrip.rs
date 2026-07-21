@@ -237,7 +237,10 @@ fn generator_renders_traceable_padding_locator_gaps_and_deterministic_manifest()
         ]
     );
     assert_eq!(first.manifest().source_frame_count(), 5);
-    assert_eq!(first.manifest().omitted_frame_count(), 2);
+    // Every source frame was analyzed; three were rendered as tiles. The two
+    // unrendered frames are `analyzed - selected`, not omitted evidence.
+    assert_eq!(first.manifest().analyzed_frame_count(), 5);
+    assert_eq!(first.manifest().omitted_frame_count(), 0);
     assert_eq!(
         first.manifest().artifact_kind(),
         ArtifactKind::RegionFilmstrip
@@ -364,7 +367,10 @@ fn generator_renders_traceable_padding_locator_gaps_and_deterministic_manifest()
             FrameId("f4".into())
         ]
     );
-    assert_eq!(explicit_locator.manifest().omitted_frame_count(), 1);
+    assert_eq!(explicit_locator.manifest().analyzed_frame_count(), 5);
+    assert_eq!(explicit_locator.manifest().omitted_frame_count(), 0);
+    // The parameter block reports the strip-local count of analyzed-but-unrendered
+    // frames, which is `analyzed - selected` and not the manifest omission count.
     assert_eq!(
         explicit_locator
             .manifest()

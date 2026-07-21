@@ -30,10 +30,10 @@ use crate::{
     config::{McpConfig, McpDependencies},
     response::{
         ResponseRequest, into_call_tool_result, map_browser_status, map_lifecycle_result,
-        map_operation_result_with_capture_and_novelty, map_progressive_result,
-        map_temporal_bundle_result, map_temporal_context_result,
-        map_temporal_range_resolution_result, map_temporal_video_result, split_response_request,
-        visible_error, visible_error_with_capture,
+        map_operation_result_with_novelty, map_progressive_result, map_temporal_bundle_result,
+        map_temporal_context_result, map_temporal_range_resolution_result,
+        map_temporal_video_result, split_response_request, visible_error,
+        visible_error_with_capture,
     },
     schema::{
         ResolvedRangeHandleArgument, generated_input_schema, operation_input_schema,
@@ -419,6 +419,7 @@ async fn call_temporal_video(
     dependencies: Arc<McpDependencies>,
     name: &'static str,
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    let sessions = context.service.sessions();
     let budget = RequestBudget::new(context.request_context.ct.clone());
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
@@ -474,12 +475,15 @@ async fn call_temporal_video(
         )
         .await;
     match result {
-        Ok(result) => map_temporal_video_result(name, result)
-            .map(|mapped| mapped.with_range_handle(handle))
-            .map_err(|_| {
-                rmcp::ErrorData::internal_error("temporal video response mapping failed", None)
-            })
-            .and_then(into_call_tool_result),
+        Ok(result) => {
+            let health = capture_health(sessions).await;
+            map_temporal_video_result(name, result)
+                .map(|mapped| mapped.with_range_handle(handle))
+                .map_err(|_| {
+                    rmcp::ErrorData::internal_error("temporal video response mapping failed", None)
+                })
+                .and_then(|mapped| into_call_tool_result(mapped, &health))
+        }
         Err(error) => Ok(call_error_result(name, error)),
     }
 }
@@ -513,6 +517,7 @@ async fn call_bundle(
     dependencies: Arc<McpDependencies>,
     name: &'static str,
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    let sessions = context.service.sessions();
     let budget = RequestBudget::new(context.request_context.ct.clone());
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
@@ -545,6 +550,7 @@ async fn call_bundle(
                 Ok(handle) => handle,
                 Err(error) => return Ok(call_error_result(name, error)),
             };
+            let health = capture_health(sessions).await;
             map_temporal_bundle_result(
                 name,
                 bundle,
@@ -558,7 +564,7 @@ async fn call_bundle(
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("temporal bundle response mapping failed", None)
             })
-            .and_then(into_call_tool_result)
+            .and_then(|mapped| into_call_tool_result(mapped, &health))
         }
         Err(error) => Ok(call_error_result(name, error)),
     }
@@ -569,6 +575,7 @@ async fn call_resolve_temporal_range(
     dependencies: Arc<McpDependencies>,
     name: &'static str,
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    let sessions = context.service.sessions();
     let budget = RequestBudget::new(context.request_context.ct.clone());
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
@@ -600,12 +607,13 @@ async fn call_resolve_temporal_range(
                 Ok(handle) => handle,
                 Err(error) => return Ok(call_error_result(name, error)),
             };
+            let health = capture_health(sessions).await;
             map_temporal_range_resolution_result(name, result, preference)
                 .map(|mapped| mapped.with_range_handle(handle))
                 .map_err(|_| {
                     rmcp::ErrorData::internal_error("temporal range response mapping failed", None)
                 })
-                .and_then(into_call_tool_result)
+                .and_then(|mapped| into_call_tool_result(mapped, &health))
         }
         Err(error) => Ok(call_error_result(name, error)),
     }
@@ -618,6 +626,7 @@ async fn call_progressive(
     kind: ProgressiveEvidenceOperationKind,
     name: &'static str,
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    let sessions = context.service.sessions();
     let budget = RequestBudget::new(context.request_context.ct.clone());
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
@@ -678,18 +687,23 @@ async fn call_progressive(
         ))
         .await;
     match result {
-        Ok(result) => map_progressive_result(
-            name,
-            result,
-            dependencies.progressive_evidence.as_ref(),
-            budget.deadline,
-            cancellation,
-            preference,
-        )
-        .await
-        .map(|mapped| mapped.with_range_handle(handle))
-        .map_err(|_| rmcp::ErrorData::internal_error("progressive response mapping failed", None))
-        .and_then(into_call_tool_result),
+        Ok(result) => {
+            let health = capture_health(sessions).await;
+            map_progressive_result(
+                name,
+                result,
+                dependencies.progressive_evidence.as_ref(),
+                budget.deadline,
+                cancellation,
+                preference,
+            )
+            .await
+            .map(|mapped| mapped.with_range_handle(handle))
+            .map_err(|_| {
+                rmcp::ErrorData::internal_error("progressive response mapping failed", None)
+            })
+            .and_then(|mapped| into_call_tool_result(mapped, &health))
+        }
         Err(error) => Ok(call_error_result(name, error)),
     }
 }
@@ -700,6 +714,7 @@ async fn call_context(
     kind: TemporalContextOperationKind,
     name: &'static str,
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+    let sessions = context.service.sessions();
     let budget = RequestBudget::new(context.request_context.ct.clone());
     if let Err(error) = budget.check() {
         return Ok(call_error_result(name, error));
@@ -746,12 +761,15 @@ async fn call_context(
         )
         .await;
     match result {
-        Ok(value) => map_temporal_context_result(name, value, preference)
-            .map(|mapped| mapped.with_range_handle(handle))
-            .map_err(|_| {
-                rmcp::ErrorData::internal_error("browser event response mapping failed", None)
-            })
-            .and_then(into_call_tool_result),
+        Ok(value) => {
+            let health = capture_health(sessions).await;
+            map_temporal_context_result(name, value, preference)
+                .map(|mapped| mapped.with_range_handle(handle))
+                .map_err(|_| {
+                    rmcp::ErrorData::internal_error("browser event response mapping failed", None)
+                })
+                .and_then(|mapped| into_call_tool_result(mapped, &health))
+        }
         Err(error) => Ok(call_error_result(name, error)),
     }
 }
@@ -917,17 +935,11 @@ async fn call_operation(
                 .sessions()
                 .observe_post_action(&executed.result)
                 .await;
-            map_operation_result_with_capture_and_novelty(
-                name,
-                executed.result,
-                &executed.capture_statuses,
-                preference,
-                novelty,
-            )
-            .map_err(|_| {
-                rmcp::ErrorData::internal_error("browser tool response mapping failed", None)
-            })
-            .and_then(into_call_tool_result)
+            map_operation_result_with_novelty(name, executed.result, preference, novelty)
+                .map_err(|_| {
+                    rmcp::ErrorData::internal_error("browser tool response mapping failed", None)
+                })
+                .and_then(|mapped| into_call_tool_result(mapped, &executed.capture_statuses))
         }
         Err(error) => {
             let capture_statuses = context
@@ -946,6 +958,15 @@ async fn call_lifecycle(
     tool: LifecycleTool,
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
     let arguments = context.arguments.unwrap_or_default();
+    let sessions = context.service.sessions();
+    // Capture health is read before the transition for `stop`, because the session that owned the
+    // failing writer is gone by the time the outcome is mapped, and after the transition for every
+    // other lifecycle tool, so a freshly started session cannot report a green light on a writer
+    // that is already terminal.
+    let pre_transition_health = match tool.kind {
+        LifecycleKind::Stop => capture_health(sessions).await,
+        _ => Vec::new(),
+    };
     let result = match tool.kind {
         LifecycleKind::Start => match parse_arguments::<LaunchBrowser>(arguments) {
             Ok(request) => context
@@ -978,15 +999,18 @@ async fn call_lifecycle(
                 }
                 Err(error) => return Ok(visible_error(tool.name, error)),
             };
-            return match context.service.sessions().status().await {
-                Ok(status) => map_browser_status(tool.name, status, response)
-                    .map_err(|_| {
-                        rmcp::ErrorData::internal_error(
-                            "browser status response mapping failed",
-                            None,
-                        )
-                    })
-                    .and_then(into_call_tool_result),
+            return match sessions.status().await {
+                Ok(status) => {
+                    let health = capture_health(sessions).await;
+                    map_browser_status(tool.name, status, response)
+                        .map_err(|_| {
+                            rmcp::ErrorData::internal_error(
+                                "browser status response mapping failed",
+                                None,
+                            )
+                        })
+                        .and_then(|mapped| into_call_tool_result(mapped, &health))
+                }
                 Err(error) => Ok(visible_error(tool.name, error)),
             };
         }
@@ -1003,14 +1027,26 @@ async fn call_lifecycle(
             .await
             .and_then(serializable),
     };
+    let health = match tool.kind {
+        LifecycleKind::Stop => pre_transition_health,
+        _ => capture_health(sessions).await,
+    };
     match result {
         Ok(value) => map_lifecycle_result(tool.name, value)
             .map_err(|_| {
                 rmcp::ErrorData::internal_error("lifecycle tool response mapping failed", None)
             })
-            .and_then(into_call_tool_result),
-        Err(error) => Ok(visible_error(tool.name, error)),
+            .and_then(|mapped| into_call_tool_result(mapped, &health)),
+        Err(error) => Ok(visible_error_with_capture(tool.name, error, &health)),
     }
+}
+
+/// Reads current capture health for the shared response exit. An absent session is not a capture
+/// failure, so it contributes no warning.
+async fn capture_health(
+    sessions: &BrowserSessionOwner,
+) -> Vec<krometrail_core::TargetCaptureStatus> {
+    sessions.capture_statuses().await.unwrap_or_default()
 }
 
 fn tagged_request(

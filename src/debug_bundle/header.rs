@@ -243,13 +243,13 @@ mod tests {
         ArtifactOutcome::Available {
             epoch_index,
             generator_index: 0,
-            artifact: ArtifactHandle {
+            artifact: Box::new(ArtifactHandle {
                 artifact_id: *manifest.artifact_id(),
                 cache: ArtifactCacheDisposition::Generated,
                 media_type: NonEmptyText::new("image/png").unwrap(),
                 encoded_byte_len: 1,
                 manifest,
-            },
+            }),
         }
     }
 

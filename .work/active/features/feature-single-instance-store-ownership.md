@@ -107,6 +107,100 @@ are already derivable from `segment_id` + `state`, so storing `relative_path`
 duplicates truth and is the thing that makes a wrong deletion expressible.
 Prefer deriving over validating.
 
+## Architectural choice
+
+**Per-instance isolation, not a shared-directory guard.** Each process owns
+`<data_dir>/instances/<uuid>/` and holds an `flock` advisory lock on it for its
+whole lifetime. The proven interleaving is not defended against — it is made
+unrepresentable, because no process can name another's storage.
+
+The originally proposed single-directory lock was rejected: it makes a second
+process *fail*, which is a worse agent experience than letting it run in its own
+root, and it leaves every cross-instance mutation path intact for any future
+caller that bypasses the lock.
+
+## Design decisions
+
+- **`flock`, not a pid/lockfile.** Released automatically on process exit
+  including a crash, so a stale lock can never permanently brick startup. A pid
+  file would need liveness probing and staleness heuristics, both of which can be
+  wrong. Non-Unix falls back to layout-only isolation (`instance.rs`), since the
+  standard library cannot express a deny-share open; Linux and macOS are the
+  supported production hosts.
+- **Acquiring the lock *is* the liveness test.** `acquire_existing` returns
+  `Ok(None)` when a root is live and `Ok(Some(ownership))` when it is not. There
+  is no window where a caller has decided a root is abandoned but does not yet
+  own it, so a reclaimer always acts as that root's legitimate owner. This is why
+  reclamation does not violate the "only mutate your own root" invariant: the
+  invariant applies to *live* roots, and acquisition transfers ownership.
+- **Instance-scoped reads; no federation.** *Accepted regression:* after an MCP
+  process restart, evidence recorded by a previous process is no longer
+  queryable. Rationale: all eleven read ports are served by one `SqliteIndex`, so
+  cross-instance reads would mean an N-way union across ~69 query methods with
+  merge-ordering semantics and a concurrent-reclaim-mid-read hazard. Against that
+  cost, the practical loss is small — an agent almost never holds the
+  session/target/artifact IDs needed to address a dead process's evidence, since
+  those only ever arrive in that process's own responses. **This makes age-out
+  correctness higher-stakes: reclaim is now the only thing that reaches old
+  data.** Because nothing reads a root it does not own, reclaiming a dead root
+  cannot race a reader, which removes the hazard entirely.
+- **Legacy flat store is cleared, not migrated.** Per Current Contract
+  Discipline. Clearing is allowlist-scoped
+  (`RECORDING_CACHE_FILES` / `RECORDING_CACHE_DIRECTORIES`): an unexpected member
+  is left in place rather than swept away. `clear_legacy_flat_store` and
+  `reclaim_instance_root` share `remove_recording_cache`, since both are "remove
+  a recording cache that nothing live owns".
+- **Direction 3 taken in full: `relative_path` removed from the source of
+  truth.** Filenames derive from `segment_id` + `state` via `segment_file_name`.
+  The fallback (`AND state='sealed'` only) was not needed. `session_segments`
+  *also* gained the state filter, so the guard and the derivation reinforce each
+  other: even if a future query forgets the filter, `segment_object` derives the
+  sealed name and cannot emit a `.open` path.
+- **Seal ENOENT is `WriterUsable`, never `WriterTerminal`.** Both callers already
+  `remove` the entry from `open_segments` before calling `seal_segment`
+  (`writer.rs:318`, `:367`), so per-segment scoping needed no bookkeeping — only
+  the correct recoverability classification. A sealed file whose header carries a
+  *different* segment id is explicitly not a reconciliation.
+- **Recovery ordering enforced, not documented.** `recover()` now runs before
+  `SegmentWriter::open`, and `RecordingStore` fails construction if any `open`
+  segment row remains — recovery seals every one it finds, so a surviving `open`
+  row proves recovery was skipped.
+
+## Implementation Units
+
+1. `crates/krometrail-store/src/instance.rs` (new) — ownership, allowlisted
+   recording-cache removal, legacy detection/clear, sibling scan.
+2. `crates/krometrail-store/src/segments/writer.rs` — idempotent seal,
+   `segment_file_name`, `relative_path` removed from `SegmentRegistration`.
+3. Schema v8 — `segments.relative_path` dropped; derivation sites updated in
+   `index/{schema,segments,frames,reconcile,retention}.rs`, `recovery.rs`.
+4. `src/app.rs` — instance acquisition, legacy clear, dead-root reclaim,
+   recovery-before-writer ordering.
+5. `crates/krometrail-store/src/budget_registry.rs` — shared total-budget ledger
+   built on the same ownership primitive (see
+   `feature-retention-lifecycle-and-trimming` for the allocation policy).
+
+## Testing
+
+- `tests/instance_ownership.rs` — legacy clear preserves browser profiles,
+  diagnostics, downloads, plugin state, and config byte-for-byte; live roots are
+  unclaimable; abandoned roots are reclaimable; unrecognised members survive.
+- `segments::writer::tests` — the proven interleaving (already-published segment
+  reconciles and the writer survives), vanished segment fails per-segment, and a
+  foreign sealed publication is rejected.
+- `tests/rust-runtime-smoke.rs` — end-to-end through the real binary: flat store
+  cleared, one instance root at schema 8, browser profile intact.
+
+## Risks
+
+- **Accepted data loss on first run after upgrade.** The 9.6 GB flat store is
+  cleared. User-confirmed.
+- **Instance roots accumulate if reclamation fails.** Reclaim is best effort and
+  never blocks startup, so repeated failures leak roots. Bounded by the shared
+  budget once the registry lands.
+- **`flock` semantics on network filesystems** are unreliable. A data directory
+  on NFS/SMB would weaken isolation to layout-only. Not currently detected.
+
 ## Acceptance
 
 - A second process against a live data directory fails fast with a clear error
