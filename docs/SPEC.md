@@ -228,6 +228,23 @@ case. Presets do not imply user-agent emulation; custom metrics and clear retain
 - upload a file;
 - accept or dismiss a browser dialog.
 
+#### File upload path authority
+
+File upload carries the local operator's own filesystem authority. Krometrail
+canonicalizes each operator-supplied path, resolving symlinks, requires the
+result to be a regular readable file, and passes that canonical path to the
+browser. There is no configured upload root and no containment check.
+
+This is deliberate. Krometrail is a local single-user tool whose caller already
+holds the operator's filesystem access, and upload paths are always supplied
+explicitly by the caller — a web page cannot choose or influence which path is
+uploaded. A containment root would remove the legitimate ability to upload from
+arbitrary local paths while adding no boundary the caller could not already
+cross directly.
+
+Krometrail therefore claims no containment guarantee for upload. Callers are
+responsible for the paths they supply.
+
 ### Waiting
 
 - wait for elapsed time;
