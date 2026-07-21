@@ -248,3 +248,22 @@ caller that bypasses the lock.
 - ENOENT at seal is per-segment and recoverable; the writer survives.
 - No deletion path can name a `.open` file.
 - Regression coverage drives the proven two-process interleaving.
+
+## Second cross-model review round: exclusive root creation
+
+`acquire_new` claims a fresh root by UUID name and documents that claim as
+exclusive *by name* — the only ownership question a host without locking can
+still answer. It used `ensure_private_directory`, which is `create_dir_all` and
+succeeds on a directory that already exists, so the claim rested on UUID
+collision probability rather than on construction.
+
+Fixed with `permissions::create_private_directory_exclusive`
+(`crates/krometrail-store/src/permissions.rs`), used by
+`InstanceOwnership::acquire_new` (`crates/krometrail-store/src/instance.rs`). The
+parent chain is still created on demand; only the leaf is created with
+`std::fs::create_dir`, which fails with `AlreadyExists` if anything already holds
+the name. Owner-only permissions are applied exactly as before on Unix.
+
+Regression: `an_exclusive_private_directory_refuses_a_path_that_already_exists`
+and `an_exclusive_private_directory_still_creates_missing_parents` in the
+`permissions` unit tests.

@@ -138,12 +138,18 @@ impl InstanceOwnership {
     /// A fresh root is named by a random UUID, so exclusivity here follows from
     /// the name even where the platform cannot take a lock. This is the one
     /// ownership question a non-Unix host may still answer affirmatively.
+    ///
+    /// The claim is therefore made with an exclusive create rather than a
+    /// create-if-missing: an existing directory means something else already
+    /// holds this name, and on a host with no locking that is the *only* signal
+    /// there is. Establishing the claim by construction, rather than by trusting
+    /// UUID collision probability, is what makes "exclusive by name" a fact.
     pub fn acquire_new(data_directory: &Path) -> krometrail_core::Result<Self> {
         let instances = data_directory.join(INSTANCES_DIRECTORY);
         permissions::ensure_private_directory(&instances)
             .map_err(|_| persistence_error("could not create the instance directory"))?;
         let root = instances.join(Uuid::new_v4().to_string());
-        permissions::ensure_private_directory(&root)
+        permissions::create_private_directory_exclusive(&root)
             .map_err(|_| persistence_error("could not create the instance root"))?;
         let lock = open_lock_file(&root)?;
         if OWNERSHIP_IS_ENFORCED && !try_lock_exclusive(&lock)? {

@@ -895,7 +895,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             ));
         }
         let mut previous: Option<u64> = None;
-        for index in indices {
+        for (position, index) in indices.iter().enumerate() {
             let ParameterValue::Unsigned(index) = index else {
                 return Err(VisionError::new(
                     ErrorCode::InvalidManifest,
@@ -918,6 +918,21 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
                 ));
             }
             previous = Some(*index);
+            // Shape alone is not identity. A well-formed, in-range, strictly
+            // increasing index list can still name frames the analysis never
+            // examined — source [f0,f1,f2,f3] analyzed [f0,f2] disclosed as
+            // [0,1] passes every check above while naming f0 and f1. Each index
+            // must therefore resolve, through the manifest's own source order,
+            // to exactly the analyzed frame it claims to identify.
+            let resolved = usize::try_from(*index)
+                .ok()
+                .and_then(|index| self.source_frame_ids.get(index));
+            if resolved != self.analyzed_frame_ids.get(position) {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling source index does not identify the analyzed frame",
+                ));
+            }
         }
         // An unrecognised member would be an undocumented claim about the
         // analysis riding along inside the block agents trust for exactly this.

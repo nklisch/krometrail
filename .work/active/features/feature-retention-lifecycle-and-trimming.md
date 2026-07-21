@@ -305,3 +305,36 @@ policy directly, including that balanced instances sum exactly to the total.
   walk.
 - Trimming can reclaim during a live session and is observable to the agent.
 - `open_segment_count` accounting reflects reality.
+
+## Second cross-model review round: shared-budget bound
+
+The shared-budget overshoot bound was stated but not enforced. The share cache
+was invalidated by bytes already written, and the check ran *before* the append,
+while `EncodedFrame` carries no payload-size limit. Two consequences, both real:
+
+- a single frame larger than the drift allowance was admitted against a grant
+  that never accounted for it;
+- the ledger was only ever told what an instance held *before* its write, so two
+  instances starting together each sized themselves against a peer the ledger
+  reported as empty.
+
+Fixed in `crates/krometrail-store/src/recording.rs`. `budget_share` now takes the
+pending write size. It enters the staleness test (`observed + pending` is what is
+compared against the last published figure) and it is *reserved* in the ledger at
+publish time, so a concurrent peer sees the committed bytes. `trim_locked` takes
+the already-computed share rather than recomputing it, so a large append still
+costs one registry transaction.
+
+The generous `total - other_live_usage` grant is kept; it was not the cause. The
+equal-share floor is likewise kept, and its overshoot is a genuinely separate
+term rather than a widening of the drift bound. The two are now stated
+separately in `docs/SPEC.md`:
+
+    total + (N-1)/N x total   (equal-share floor, transient)
+          + N x total/32      (accounting staleness)
+
+Regression: `one_oversized_frame_cannot_escape_the_shared_bound` in
+`crates/krometrail-store/tests/shared_budget.rs`. Two instances, one 6 MB frame
+each, 8 MB total. Pre-fix the combined footprint reached 12,804,238 bytes against
+a bound of 8,500,000; post-fix the second instance is refused at the equal-share
+floor and the combined footprint stays inside the bound.

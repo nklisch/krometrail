@@ -321,3 +321,56 @@ async fn instances_that_never_flush_still_share_one_total_budget() {
          per-instance drift allowance (bound {bound})"
     );
 }
+
+/// One append, one frame, one bound.
+///
+/// The drift allowance bounds how far an instance may grow *between* accounting
+/// transactions, but a frame carries no size limit of its own. If the share is
+/// judged before the append without regard for the bytes about to be written,
+/// a single frame larger than the allowance escapes the bound entirely — and
+/// because the ledger is only told what the instance held *before* the write,
+/// two instances starting together each measure themselves against a peer the
+/// ledger still reports as empty. Many small frames cannot show this; exactly
+/// one oversized frame each can.
+#[tokio::test]
+async fn one_oversized_frame_cannot_escape_the_shared_bound() {
+    let total = 8_000_000_u64;
+    let live = 2;
+    // Comfortably larger than the drift allowance (total / 32) and larger than
+    // an equal share, so admitting it against a stale grant is unmistakable.
+    let oversized = 6_000_000_usize;
+
+    let data = TempDir::new().unwrap();
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+
+    let mut admitted = 0;
+    for (slot, (instance, session)) in [(&first, 1_u128), (&second, 2_u128)].iter().enumerate() {
+        let value = frame(
+            *session,
+            session + 1_000,
+            session * 1_000 + 1,
+            u64::try_from(slot).unwrap() + 1,
+            oversized,
+        );
+        // No flush: the append path alone must decide, exactly as a live session does.
+        if instance.store.append_frame(value).await.is_ok() {
+            admitted += 1;
+        }
+    }
+
+    assert!(
+        admitted >= 1,
+        "shared accounting must not refuse every instance an oversized frame that \
+         fits inside the total budget"
+    );
+
+    let combined = instance_root_bytes(first._ownership.root())
+        + instance_root_bytes(second._ownership.root());
+    let bound = total + live * (total / SHARE_DRIFT_DIVISOR);
+    assert!(
+        combined <= bound,
+        "one oversized frame per instance pushed the combined footprint to {combined}, \
+         past the total {total} plus the per-instance drift allowance (bound {bound})"
+    );
+}

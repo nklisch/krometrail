@@ -144,28 +144,32 @@ fn redact_fragments(input: &str) -> (String, u16) {
     let mut output = String::with_capacity(input.len().min(MAX_REDACTED_TEXT_BYTES));
     let mut count = 0u16;
     let mut redact_next_value = false;
-    // Set when a structured token ended inside an unterminated quoted secret.
-    // The replacement has already been emitted, so every following token is
-    // dropped until the closing quote - otherwise a value containing spaces
-    // ({"token":"secret value with spaces"}) leaks everything after the first
-    // whitespace token.
-    let mut inside_quoted_secret = false;
+    // Set when a structured token ended inside an unterminated quoted secret,
+    // carrying the quote character that must close it. The replacement has
+    // already been emitted, so every following token is dropped until that quote
+    // - otherwise a value containing spaces ({"token":"secret value with
+    // spaces"}) leaks everything after the first whitespace token. Single quotes
+    // count: a console log is not obliged to be JSON.
+    let mut inside_quoted_secret: Option<char> = None;
+    // Escape state for the scan above, carried across tokens because a quoted
+    // secret spans the whitespace between them.
+    let mut continuation_escaped = false;
 
     for (index, segment) in segments.iter().enumerate() {
         let token_len = segment.trim_end_matches(char::is_whitespace).len();
         let (token, whitespace) = segment.split_at(token_len);
         if token.is_empty() {
-            if !inside_quoted_secret {
+            if inside_quoted_secret.is_none() {
                 output.push_str(whitespace);
             }
             continue;
         }
 
-        if inside_quoted_secret {
-            if let Some(closing) = token.find('"') {
+        if let Some(quote) = inside_quoted_secret {
+            if let Some(closing) = find_unescaped_quote(token, quote, &mut continuation_escaped) {
                 output.push_str(&token[closing..]);
                 output.push_str(whitespace);
-                inside_quoted_secret = false;
+                inside_quoted_secret = None;
             }
             continue;
         }
@@ -199,8 +203,9 @@ fn redact_fragments(input: &str) -> (String, u16) {
             // to structured tokens that carry no nested secret.
             output.push_str(&structured.text);
             count = count.saturating_add(structured.count);
-            if structured.value_continues {
-                inside_quoted_secret = true;
+            if let Some(quote) = structured.continuation {
+                inside_quoted_secret = Some(quote);
+                continuation_escaped = false;
                 continue;
             }
         } else if let Some(separator) = token.find(['=', ':']) {
@@ -267,9 +272,9 @@ const STRUCTURAL_DELIMITERS: [char; 5] = ['{', '}', '[', ']', ','];
 struct StructuredRedaction {
     text: String,
     count: u16,
-    /// True when the token ends inside an unterminated sensitive value, so the
-    /// remainder continues in the following whitespace-separated token.
-    value_continues: bool,
+    /// Set when the token ends inside an unterminated sensitive value, carrying
+    /// the quote the remainder must be dropped up to.
+    continuation: Option<char>,
 }
 
 /// Redact sensitive values nested inside a single structured token. Returns
@@ -284,35 +289,124 @@ fn redact_structured_token(token: &str) -> Option<StructuredRedaction> {
     let mut text = String::with_capacity(token.len());
     let mut count = 0u16;
     let mut fragment_start = 0;
-    let mut value_continues = false;
+    let mut continuation = None;
+    let mut depth = 0_usize;
+    // Set while consuming a nested value that has already been replaced whole,
+    // holding the nesting depth it opened at. Nothing inside it is emitted.
+    let mut redacted_value_depth: Option<usize> = None;
 
     for (index, character) in token.char_indices() {
-        if STRUCTURAL_DELIMITERS.contains(&character) {
-            let fragment = redact_key_value_fragment(&token[fragment_start..index]);
-            text.push_str(&fragment.text);
-            count = count.saturating_add(fragment.count);
-            text.push(character);
-            fragment_start = index + character.len_utf8();
-            value_continues = false;
+        if let Some(opened_at) = redacted_value_depth {
+            match character {
+                '{' | '[' => depth = depth.saturating_add(1),
+                '}' | ']' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == opened_at {
+                        // This delimiter closes the structure that was replaced,
+                        // so it is consumed with it and the emitted brackets stay
+                        // balanced.
+                        redacted_value_depth = None;
+                        fragment_start = index + character.len_utf8();
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if !STRUCTURAL_DELIMITERS.contains(&character) {
+            continue;
+        }
+        let fragment_text = &token[fragment_start..index];
+        // A sensitive key whose value is the structure opening here: the whole
+        // nested value is the secret. Descending into it instead would judge
+        // `{"outer":{"token":{"inner":"secret"}}}` on the inner key alone - which
+        // is not sensitive - and emit the secret verbatim.
+        if matches!(character, '{' | '[')
+            && opens_sensitive_value(fragment_text)
+            // Re-running the redactor over its own output must be a no-op, and
+            // `[redacted]` opens with a structural delimiter like any array
+            // would. Without this the placeholder would itself be treated as a
+            // nested value and redacted again on every pass.
+            && !is_redacted_placeholder(&token[index..])
+        {
+            text.push_str(fragment_text);
+            text.push_str(REDACTED_VALUE);
+            count = count.saturating_add(1);
+            redacted_value_depth = Some(depth);
+            depth = depth.saturating_add(1);
+            continue;
+        }
+        let fragment = redact_key_value_fragment(fragment_text);
+        text.push_str(&fragment.text);
+        count = count.saturating_add(fragment.count);
+        text.push(character);
+        fragment_start = index + character.len_utf8();
+        match character {
+            '{' | '[' => depth = depth.saturating_add(1),
+            '}' | ']' => depth = depth.saturating_sub(1),
+            _ => {}
         }
     }
-    let fragment = redact_key_value_fragment(&token[fragment_start..]);
-    text.push_str(&fragment.text);
-    count = count.saturating_add(fragment.count);
-    value_continues = value_continues || fragment.value_continues;
+    if redacted_value_depth.is_some() {
+        // The token ended inside a nested value that was replaced whole, so the
+        // remainder runs on into the following tokens and must be dropped there.
+        continuation = Some('"');
+    } else {
+        let fragment = redact_key_value_fragment(&token[fragment_start..]);
+        text.push_str(&fragment.text);
+        count = count.saturating_add(fragment.count);
+        continuation = continuation.or(fragment.continuation);
+    }
 
     (count > 0).then_some(StructuredRedaction {
         text,
         count,
-        value_continues,
+        continuation,
     })
+}
+
+/// True when this fragment is a sensitive key whose value has not started yet,
+/// so whatever structure follows *is* the value.
+fn opens_sensitive_value(fragment: &str) -> bool {
+    let Some(separator) = fragment.find(['=', ':']) else {
+        return false;
+    };
+    fragment[separator + 1..].trim().is_empty()
+        && is_sensitive_key(&normalize_key(&fragment[..separator]))
+}
+
+/// Byte index of the first quote that actually closes a quoted value.
+///
+/// Escape state is threaded through the caller because a quoted value spans the
+/// whitespace between tokens: `{"token":"one \" two"}` splits into three tokens,
+/// and treating the escaped quote in the middle one as the terminator would
+/// release the rest of the secret.
+fn find_unescaped_quote(token: &str, quote: char, escaped: &mut bool) -> Option<usize> {
+    for (index, character) in token.char_indices() {
+        if *escaped {
+            *escaped = false;
+            continue;
+        }
+        if character == '\\' {
+            *escaped = true;
+        } else if character == quote {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// True when a quoted value closes inside the text given.
+fn quoted_value_is_terminated(value: &str, quote: char) -> bool {
+    let mut escaped = false;
+    find_unescaped_quote(&value[quote.len_utf8()..], quote, &mut escaped).is_some()
 }
 
 /// Outcome of rewriting one `key:value` fragment.
 struct FragmentRedaction {
     text: String,
     count: u16,
-    value_continues: bool,
+    continuation: Option<char>,
 }
 
 impl FragmentRedaction {
@@ -320,7 +414,7 @@ impl FragmentRedaction {
         Self {
             text: fragment.to_owned(),
             count: 0,
-            value_continues: false,
+            continuation: None,
         }
     }
 }
@@ -354,12 +448,14 @@ fn redact_key_value_fragment(fragment: &str) -> FragmentRedaction {
     FragmentRedaction {
         text,
         count: 1,
-        // A quoted value with no closing quote runs past this whitespace
-        // token, so the remainder must also be redacted by the caller.
-        value_continues: sensitive_key
-            && value.starts_with('"')
-            && !value.ends_with('"')
-            && value.len() > 1,
+        // A quoted value with no closing quote runs past this whitespace token,
+        // so the remainder must also be dropped by the caller. Either quote
+        // style opens one, and only an *unescaped* quote closes it.
+        continuation: sensitive_key
+            .then(|| value.chars().next())
+            .flatten()
+            .filter(|quote| matches!(quote, '"' | '\''))
+            .filter(|quote| !quoted_value_is_terminated(value, *quote)),
     }
 }
 
@@ -369,12 +465,47 @@ fn trim_token(value: &str) -> &str {
     })
 }
 
+/// Reduces a key to its comparable letters and digits.
+///
+/// Escape sequences are decoded first. A JSON producer is free to write
+/// `"token"`, and a normalizer that only filtered characters would compare
+/// `toku0065n` against the sensitive-key set and find no match - so the secret
+/// would be emitted verbatim purely because of how its key was spelled.
 fn normalize_key(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .flat_map(char::to_lowercase)
-        .collect()
+    let mut normalized = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        let decoded = if character == '\\' {
+            decode_escape(&mut characters)
+        } else {
+            Some(character)
+        };
+        if let Some(decoded) = decoded
+            && decoded.is_ascii_alphanumeric()
+        {
+            normalized.extend(decoded.to_lowercase());
+        }
+    }
+    normalized
+}
+
+/// Decodes one escape sequence, its leading backslash already consumed.
+///
+/// `None` means the escape contributes nothing to a key name. The named
+/// single-character escapes are listed explicitly so that `\n` yields a newline
+/// (dropped) rather than a literal `n` that could invent a key.
+fn decode_escape(characters: &mut std::str::Chars<'_>) -> Option<char> {
+    match characters.next()? {
+        'u' => {
+            let mut code = 0_u32;
+            for _ in 0..4 {
+                code = code * 16 + characters.next()?.to_digit(16)?;
+            }
+            char::from_u32(code)
+        }
+        'n' | 't' | 'r' | 'b' | 'f' | '"' | '\'' | '\\' | '/' => None,
+        other => Some(other),
+    }
 }
 
 fn is_sensitive_key(value: &str) -> bool {
@@ -423,15 +554,38 @@ fn looks_like_absolute_path(value: &str) -> bool {
         return true;
     }
     // A Windows drive designator is `X:`, but the single-letter test alone
-    // redacts ordinary prose such as `A:todo`. Require the remainder to look
-    // like a path - either a separator is present (C:\dir, C:/dir, C:foo\bar)
-    // or nothing follows the colon at all.
+    // redacts ordinary prose such as `A:todo`. The remainder has to look like a
+    // location in its own right: a path separator (C:\dir, C:/dir, C:foo\bar), a
+    // filename extension (C:secret.txt), or nothing at all (C:).
     let bytes = value.as_bytes();
     if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
         return false;
     }
     let remainder = &value[2..];
-    remainder.is_empty() || remainder.contains(['/', '\\'])
+    remainder.is_empty()
+        || remainder.contains(['/', '\\'])
+        || ends_with_filename_extension(remainder)
+}
+
+/// True when the text ends in something shaped like a filename extension: a
+/// non-empty stem, a dot, then a short suffix carrying at least one letter.
+///
+/// This is the discriminator that keeps both directions honest. `C:secret.txt`
+/// is a real drive-relative path and must be redacted; `A:todo` and `v:1.0` are
+/// prose and a version, and redacting them would train readers to ignore
+/// `[redacted-path]`.
+fn ends_with_filename_extension(value: &str) -> bool {
+    let Some((stem, extension)) = value.rsplit_once('.') else {
+        return false;
+    };
+    !stem.is_empty()
+        && (1..=5).contains(&extension.len())
+        && extension
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+        && extension
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -1028,6 +1182,73 @@ mod tests {
                 redacted.text()
             );
             assert!(redacted.redaction_count() > 0, "no redaction for {input}");
+        }
+    }
+
+    /// Five ways a secret used to survive the redactor. Each entry is a distinct
+    /// escape route, so each is asserted independently rather than as a corpus:
+    /// a nested value, an escaped key, a single-quoted value with spaces, and an
+    /// escaped quote inside a value.
+    #[test]
+    fn secrets_do_not_escape_through_nesting_escaping_or_quoting() {
+        let cases = [
+            // A sensitive key whose value is an object: the key governs the whole
+            // nested value, not just a scalar.
+            (
+                r#"{"outer":{"token":{"inner":"LEAK"}}}"#,
+                "a nested object under a sensitive key",
+            ),
+            // The key is spelled with a unicode escape. Normalization has to
+            // decode before it compares.
+            (
+                r#"{"tok\u0065n":"LEAK"}"#,
+                "a sensitive key spelled with a unicode escape",
+            ),
+            // Single quotes are legal in console output, and the value contains a
+            // space, so the continuation scan must recognise them.
+            (r"{'token':'secret LEAK'}", "a single-quoted spaced value"),
+            // The escaped quote is not the terminator; treating it as one
+            // releases the rest of the value.
+            (r#"{"token":"one \" LEAK"}"#, "an escaped quote in a value"),
+        ];
+        for (input, description) in cases {
+            let redacted = EventRedactor.text(input);
+            assert!(
+                !redacted.text().contains("LEAK"),
+                "{description} leaked: {input} -> {}",
+                redacted.text()
+            );
+            assert!(redacted.redaction_count() > 0, "no redaction for {input}");
+        }
+    }
+
+    /// Windows drive-relative paths and ordinary colon-separated prose share a
+    /// prefix shape, so the discriminator has to be checked in both directions.
+    /// Redacting `A:todo` is not a safe default: it teaches readers that
+    /// `[redacted-path]` means nothing.
+    #[test]
+    fn windows_drive_paths_redact_without_swallowing_colon_separated_prose() {
+        for (input, forbidden) in [
+            ("C:secret.txt", "secret"),
+            (r"C:foo\bar", "foo"),
+            (r"D:notes\private.md", "private"),
+        ] {
+            let redacted = EventRedactor.text(input);
+            assert!(
+                !redacted.text().contains(forbidden),
+                "windows path leaked: {input} -> {}",
+                redacted.text()
+            );
+            assert!(redacted.redaction_count() > 0, "no redaction for {input}");
+        }
+        for input in ["A:todo", "note:something", "status:ok", "v:1.0"] {
+            let redacted = EventRedactor.text(input);
+            assert_eq!(
+                redacted.text(),
+                input,
+                "ordinary text was redacted as a path: {input}"
+            );
+            assert_eq!(redacted.redaction_count(), 0);
         }
     }
 

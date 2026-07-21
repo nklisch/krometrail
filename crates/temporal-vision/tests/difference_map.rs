@@ -345,7 +345,7 @@ fn a_manifest_may_not_be_deserialized_with_a_contradictory_sampling_disclosure()
         apply: fn(&mut serde_json::Value),
         expected: &'static str,
     }
-    let tamperings: [Tampering; 8] = [
+    let tamperings: [Tampering; 9] = [
         Tampering {
             name: "analyzed count",
             apply: |block| block["analyzed_frame_count"]["value"] = serde_json::json!(1),
@@ -387,6 +387,17 @@ fn a_manifest_may_not_be_deserialized_with_a_contradictory_sampling_disclosure()
                 block["analyzed_source_indices"]["value"][1]["value"] = serde_json::json!(0);
             },
             expected: "strictly increasing",
+        },
+        Tampering {
+            // The shape-only failure: [0, 1, 5, 8] is the right length, in range,
+            // and strictly increasing, so every structural check passes — but
+            // source position 1 is a frame the analysis dropped, so the
+            // disclosure names a frame that never contributed to the artifact.
+            name: "shape-valid indices naming unanalyzed frames",
+            apply: |block| {
+                block["analyzed_source_indices"]["value"][1]["value"] = serde_json::json!(1);
+            },
+            expected: "does not identify the analyzed frame",
         },
         Tampering {
             name: "invented mode",

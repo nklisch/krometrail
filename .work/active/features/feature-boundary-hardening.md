@@ -126,3 +126,40 @@ evidence was already in the brief.
   bounded console evidence, not a guarantee; a sufficiently unusual encoding can
   still pass through. The corpus is the contract, so extend it when a new shape
   is observed rather than assuming coverage.
+
+## Second cross-model review round: five redaction leaks
+
+Five inputs reached the redactor and came out carrying their secret. All five are
+now regressions in `crates/krometrail-core/src/browser/privacy.rs`
+(`secrets_do_not_escape_through_nesting_escaping_or_quoting` and
+`windows_drive_paths_redact_without_swallowing_colon_separated_prose`), each
+confirmed to leak against the previous implementation.
+
+1. **Nested values under a sensitive key.** `{"outer":{"token":{"inner":"LEAK"}}}`
+   descended into the nested object and judged it on the inner key, which is not
+   sensitive. `redact_structured_token` is now depth-aware: a sensitive key whose
+   value has not started yet governs the whole structure that follows, which is
+   replaced entire and consumed with its closing delimiter so brackets stay
+   balanced.
+2. **Escaped keys.** `normalize_key` filtered characters without decoding, so a
+   key spelled `"tok\u0065n"` normalized to `toku0065n` and missed the sensitive
+   set. It now decodes escapes first; named single-character escapes decode to
+   their real characters rather than contributing a stray letter.
+3. **Single-quoted spaced values.** `{'token':'secret value'}` leaked everything
+   after the first space, because only double quotes opened a continuation. The
+   continuation now carries the quote character, either style.
+4. **Escaped embedded quotes.** `{"token":"one \" two"}` ended the continuation at
+   the escaped quote. `find_unescaped_quote` threads escape state across tokens,
+   because a quoted value spans the whitespace between them.
+5. **Windows path regression.** Narrowing the drive-designator heuristic to
+   require a separator stopped `A:todo` being redacted but also stopped
+   `C:secret.txt`. The discriminator is now a filename-extension signal in
+   addition to a separator: a non-empty stem, a dot, and a short suffix carrying
+   at least one letter. Both directions are asserted — `C:secret.txt` and
+   `C:foo\bar` redact; `A:todo`, `note:something`, `status:ok`, and `v:1.0` do
+   not.
+
+One interaction worth naming: `[redacted]` opens with a structural delimiter, so
+the new nested-value branch had to be guarded against treating the redactor's own
+output as a nested value. Re-running the redactor over its output is a no-op, and
+`RedactedText::new` depends on that.

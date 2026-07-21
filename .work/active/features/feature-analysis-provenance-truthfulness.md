@@ -244,3 +244,24 @@ touch. The first leaves one workspace test red until applied.
 - No manifest claims a sampling mode that was not applied.
 - An explicit frame reference survives `uniform_bounded` sampling.
 - Regression coverage for each of the three.
+
+## Second cross-model review round: disclosure index correlation
+
+`analyzed_source_indices` was validated for shape only — size, range, strict
+ordering, mode, spacing, unknown fields — and never against `analyzed_frame_ids`.
+A disclosure could therefore be structurally perfect and still name frames the
+analysis never examined: source `[f0,f1,f2,f3]`, analyzed `[f0,f2]`, disclosed as
+`[0,1]` passed every check while identifying `f0` and `f1`.
+
+Fixed in `crates/temporal-vision/src/provenance.rs`
+(`validate_analysis_sampling_disclosure`). Each index must now resolve, through
+the manifest's own `source_frame_ids`, to exactly the corresponding entry of
+`analyzed_frame_ids`; a mismatch fails with "analysis sampling source index does
+not identify the analyzed frame". The check runs after the range and ordering
+checks so their existing diagnostics are unchanged.
+
+Regression: a ninth entry in the tampering table of
+`a_manifest_may_not_be_deserialized_with_a_contradictory_sampling_disclosure`
+(`crates/temporal-vision/tests/difference_map.rs`) rewrites `[0,3,5,8]` to
+`[0,1,5,8]` — right length, in range, strictly increasing, and naming a dropped
+frame. Pre-fix the tampered manifest deserialized successfully.

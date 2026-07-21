@@ -593,9 +593,11 @@ impl RecordingStore {
         let snapshot = self.refresh_usage()?;
         let total = snapshot.usage.total_bytes()?;
         // One decision basis for the whole append: the share is judged against
-        // the usage this append actually observed, so growth since the last
-        // accounting transaction invalidates it rather than being spent unseen.
-        let effective = self.effective_budget_at(total);
+        // the usage this append actually observed *plus* the bytes it is about
+        // to write. A frame carries no size limit of its own, so judging only
+        // what is already on disk would let a single frame larger than the drift
+        // allowance be admitted against a grant that never accounted for it.
+        let effective = self.effective_budget_for_append(total, required);
         if total
             .checked_add(required)
             .is_some_and(|needed| needed <= effective)
@@ -604,7 +606,7 @@ impl RecordingStore {
             // rather than climbing to the budget wall and staying there. Reclaim
             // already-sealed evidence back to the high-water mark, and age out
             // expired evidence even below it.
-            self.trim_locked(total).await?;
+            self.trim_locked(total, effective).await?;
             return Ok(());
         }
         self.flush_all().await?;
@@ -638,10 +640,12 @@ impl RecordingStore {
     /// A walk that reclaims nothing sets an exhaustion latch, so a store whose
     /// remaining evidence is entirely pinned does not re-walk on every frame.
     /// Any later reclamation clears the latch.
-    async fn trim_locked(&self, total_bytes: u64) -> krometrail_core::Result<()> {
-        let high_water = self
-            .retention
-            .trim_high_water_bytes(self.effective_budget_at(total_bytes));
+    async fn trim_locked(
+        &self,
+        total_bytes: u64,
+        effective_budget: u64,
+    ) -> krometrail_core::Result<()> {
+        let high_water = self.retention.trim_high_water_bytes(effective_budget);
         let expired_pending = match self.expiry_cutoff()? {
             Some(cutoff) => self.index.expired_object_count(cutoff)? != 0,
             None => false,
@@ -747,21 +751,43 @@ impl RecordingStore {
     ///
     /// The registry transaction is throttled off the per-frame path: it takes a
     /// file lock, and putting that on every append would be both slow and a
-    /// contention point. The throttle is bounded in *both* dimensions that can
-    /// invalidate a share — elapsed time and this instance's own growth — so a
-    /// fast writer cannot spend an entire budget against a stale grant.
+    /// contention point. The throttle is bounded in *three* dimensions that can
+    /// invalidate a share — elapsed time, this instance's own growth since it
+    /// published, and the size of the write being judged right now — so neither a
+    /// fast writer nor a single large write can spend a budget against a stale
+    /// grant.
     ///
     /// Callers that already hold a usage total must use `effective_budget_at`;
     /// this variant has to re-read usage to know whether the share is still
     /// valid, so it exists only for paths where no total is at hand.
     fn effective_budget(&self) -> u64 {
-        self.budget_share(false, None)
+        self.budget_share(false, None, 0)
     }
 
     /// This instance's byte allowance, judged against a usage total the caller
     /// already computed.
     fn effective_budget_at(&self, observed_usage: u64) -> u64 {
-        self.budget_share(false, Some(observed_usage))
+        self.budget_share(false, Some(observed_usage), 0)
+    }
+
+    /// This instance's byte allowance for a write of `pending_bytes`.
+    ///
+    /// The pending bytes enter the decision twice, and both matter:
+    ///
+    /// - they count toward staleness, so a write larger than the drift allowance
+    ///   forces a fresh accounting transaction instead of being admitted against
+    ///   a grant computed without it;
+    /// - they are *reserved* in the ledger, so peers deciding concurrently see
+    ///   the bytes this instance has committed to rather than only what it held
+    ///   before the write. Without the reservation, two instances starting
+    ///   together each measure themselves against a peer the ledger reports as
+    ///   empty and both admit a write the total cannot hold.
+    ///
+    /// A reservation for a write that is then refused leaves the ledger briefly
+    /// overstating this instance. That direction is safe — it tightens this
+    /// instance's own grant and its peers' — and the next transaction corrects it.
+    fn effective_budget_for_append(&self, observed_usage: u64, pending_bytes: u64) -> u64 {
+        self.budget_share(false, Some(observed_usage), pending_bytes)
     }
 
     /// Publishes usage and recomputes the share, ignoring the throttle.
@@ -773,10 +799,10 @@ impl RecordingStore {
     /// Publishing on flush ties the ledger to the cadence the store already uses
     /// to make evidence durable.
     fn republish_budget_share(&self) -> u64 {
-        self.budget_share(true, None)
+        self.budget_share(true, None, 0)
     }
 
-    fn budget_share(&self, force: bool, observed_usage: Option<u64>) -> u64 {
+    fn budget_share(&self, force: bool, observed_usage: Option<u64>, pending_bytes: u64) -> u64 {
         let configured = self.retention.budget().get();
         let Some(registry) = self.budget_registry.as_ref() else {
             return configured;
@@ -793,13 +819,17 @@ impl RecordingStore {
                 && now.duration_since(cached.at) < BUDGET_SHARE_REFRESH
             {
                 // A share stays valid only while this instance still resembles
-                // the instance its peers were told about. Growing past the drift
-                // allowance means the ledger now understates this instance, so
-                // both its own grant and every peer's are being computed from a
-                // figure this store knows to be wrong.
+                // the instance its peers were told about. The figure compared is
+                // what this instance will hold once the pending write lands, so
+                // growth past the drift allowance — whether it accumulated across
+                // many small appends or arrives as one large one — means the
+                // ledger now understates this instance, and both its own grant
+                // and every peer's are being computed from a figure this store
+                // knows to be wrong.
                 let usage = my_usage.unwrap_or_else(|| self.observed_usage());
                 my_usage = Some(usage);
-                if usage.abs_diff(cached.published_usage) < drift_allowance {
+                let projected = usage.saturating_add(pending_bytes);
+                if projected.abs_diff(cached.published_usage) < drift_allowance {
                     return cached.effective;
                 }
             }
@@ -807,8 +837,9 @@ impl RecordingStore {
         // Publishing needs this instance's own usage; the accounting rows are
         // already maintained, so this is a read rather than a checkpoint.
         let my_usage = my_usage.unwrap_or_else(|| self.observed_usage());
+        let published_usage = my_usage.saturating_add(pending_bytes);
         let effective = registry
-            .publish(my_usage, configured)
+            .publish(published_usage, configured)
             .map_or(configured, |share| share.effective_budget);
         *self
             .budget_share
@@ -816,7 +847,7 @@ impl RecordingStore {
             .expect("budget share lock poisoned") = Some(BudgetShareCache {
             at: now,
             effective,
-            published_usage: my_usage,
+            published_usage,
         });
         effective
     }
