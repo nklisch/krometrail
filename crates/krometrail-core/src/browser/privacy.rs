@@ -173,6 +173,16 @@ fn redact_fragments(input: &str) -> (String, u16) {
         if matches!(lower.as_str(), "bearer" | "basic") {
             output.push_str(token);
             redact_next_value = true;
+        } else if let Some(structured) = redact_structured_token(token) {
+            // A compact structured fragment such as {"outer":{"token":"secret"}}
+            // is a single whitespace token, so the single-separator scan below
+            // would only inspect the outermost key and emit the nested secret
+            // verbatim. This branch is taken only when a nested sensitive key
+            // was actually redacted, so URL and path handling below still apply
+            // to structured tokens that carry no nested secret.
+            output.push_str(&structured.text);
+            count = count.saturating_add(structured.count);
+            redact_next_value = structured.value_continues;
         } else if let Some(separator) = token.find(['=', ':']) {
             let key = normalize_key(&token[..separator]);
             if is_sensitive_key(&key) {
@@ -229,6 +239,110 @@ fn is_redacted_placeholder(value: &str) -> bool {
     })
 }
 
+/// Structural delimiters that separate key/value pairs inside a compact
+/// structured fragment carrying no whitespace.
+const STRUCTURAL_DELIMITERS: [char; 5] = ['{', '}', '[', ']', ','];
+
+/// Outcome of rewriting one structured token.
+struct StructuredRedaction {
+    text: String,
+    count: u16,
+    /// True when the token ends inside an unterminated sensitive value, so the
+    /// remainder continues in the following whitespace-separated token.
+    value_continues: bool,
+}
+
+/// Redact sensitive values nested inside a single structured token. Returns
+/// `None` when nothing was redacted, so the caller's existing URL and
+/// absolute-path handling still applies unchanged to structured tokens that
+/// carry nothing sensitive.
+fn redact_structured_token(token: &str) -> Option<StructuredRedaction> {
+    if !token.contains(STRUCTURAL_DELIMITERS) || !token.contains(['=', ':']) {
+        return None;
+    }
+
+    let mut text = String::with_capacity(token.len());
+    let mut count = 0u16;
+    let mut fragment_start = 0;
+    let mut value_continues = false;
+
+    for (index, character) in token.char_indices() {
+        if STRUCTURAL_DELIMITERS.contains(&character) {
+            let fragment = redact_key_value_fragment(&token[fragment_start..index]);
+            text.push_str(&fragment.text);
+            count = count.saturating_add(fragment.count);
+            text.push(character);
+            fragment_start = index + character.len_utf8();
+            value_continues = false;
+        }
+    }
+    let fragment = redact_key_value_fragment(&token[fragment_start..]);
+    text.push_str(&fragment.text);
+    count = count.saturating_add(fragment.count);
+    value_continues = value_continues || fragment.value_continues;
+
+    (count > 0).then_some(StructuredRedaction {
+        text,
+        count,
+        value_continues,
+    })
+}
+
+/// Outcome of rewriting one `key:value` fragment.
+struct FragmentRedaction {
+    text: String,
+    count: u16,
+    value_continues: bool,
+}
+
+impl FragmentRedaction {
+    fn unchanged(fragment: &str) -> Self {
+        Self {
+            text: fragment.to_owned(),
+            count: 0,
+            value_continues: false,
+        }
+    }
+}
+
+/// Redact one `key:value` or `key=value` fragment. A sensitive key redacts its
+/// value outright; any other key still has its value checked for a URL or
+/// absolute path, so nested locations are covered as well as nested secrets.
+fn redact_key_value_fragment(fragment: &str) -> FragmentRedaction {
+    let Some(separator) = fragment.find(['=', ':']) else {
+        return FragmentRedaction::unchanged(fragment);
+    };
+    let value = &fragment[separator + 1..];
+    if value.is_empty() || is_redacted_placeholder(value) {
+        return FragmentRedaction::unchanged(fragment);
+    }
+
+    let sensitive_key = is_sensitive_key(&normalize_key(&fragment[..separator]));
+    let replacement = if sensitive_key {
+        REDACTED_VALUE
+    } else if looks_like_url(value) {
+        REDACTED_URL
+    } else if looks_like_absolute_path(value) {
+        REDACTED_PATH
+    } else {
+        return FragmentRedaction::unchanged(fragment);
+    };
+
+    let mut text = String::with_capacity(separator + 1 + replacement.len());
+    text.push_str(&fragment[..=separator]);
+    text.push_str(replacement);
+    FragmentRedaction {
+        text,
+        count: 1,
+        // A quoted value with no closing quote runs past this whitespace
+        // token, so the remainder must also be redacted by the caller.
+        value_continues: sensitive_key
+            && value.starts_with('"')
+            && !value.ends_with('"')
+            && value.len() > 1,
+    }
+}
+
 fn trim_token(value: &str) -> &str {
     value.trim_matches(|character: char| {
         character.is_ascii_punctuation() && !matches!(character, '=' | ':' | '/' | '\\' | '-' | '_')
@@ -268,11 +382,16 @@ fn looks_like_url(value: &str) -> bool {
 
 fn looks_like_absolute_path(value: &str) -> bool {
     let value = trim_token(value);
-    value.starts_with('/')
-        || value.starts_with("\\\\")
-        || (value.len() >= 3
-            && value.as_bytes()[1] == b':'
-            && matches!(value.as_bytes()[2], b'/' | b'\\'))
+    // A single leading backslash covers both UNC (\\server\share) and the
+    // rooted drive-relative form (\Users\alice\file) that Chrome can emit.
+    if value.starts_with('/') || value.starts_with('\\') {
+        return true;
+    }
+    // Any `X:` prefix is a Windows drive designator, whether it is absolute
+    // (C:\dir, C:/dir) or drive-relative (C:file). The single-letter
+    // constraint keeps ordinary `key:value` text out of this branch.
+    let bytes = value.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -755,6 +874,87 @@ mod tests {
         assert!(redacted.truncated());
         assert!(redacted.text().len() <= MAX_REDACTED_TEXT_BYTES);
         assert!(redacted.text().is_char_boundary(redacted.text().len()));
+    }
+
+    #[test]
+    fn nested_structured_secrets_are_redacted_without_whitespace_separation() {
+        // A compact structured fragment is one whitespace token, so the
+        // single-separator scan only ever inspected the outermost key.
+        let cases = [
+            (r#"{"outer":{"token":"secret-value"}}"#, "secret-value"),
+            (r#"{"a":{"b":{"password":"deep-secret"}}}"#, "deep-secret"),
+            (r#"[{"apikey":"leaked-key"}]"#, "leaked-key"),
+            (r#"{"ok":1,"secret":"tail-secret"}"#, "tail-secret"),
+            (r#"{"cookie":"sid=abc123"}"#, "abc123"),
+            (r#"{"authorization":"Bearer xyz.789"}"#, "xyz.789"),
+        ];
+        for (input, forbidden) in cases {
+            let redacted = EventRedactor.text(input);
+            assert!(
+                !redacted.text().contains(forbidden),
+                "nested secret survived redaction: {input} -> {}",
+                redacted.text()
+            );
+            assert!(
+                redacted.redaction_count() > 0,
+                "no redaction counted for {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn structured_tokens_without_nested_secrets_keep_url_and_path_redaction() {
+        // The structured branch must not shadow the existing URL/path handling
+        // when it has nothing of its own to redact.
+        for input in [
+            r#"{"url":"https://user:pass@example.test/private"}"#,
+            r#"{"path":"/home/alice/private.txt"}"#,
+        ] {
+            let redacted = EventRedactor.text(input);
+            assert!(redacted.redaction_count() > 0, "not redacted: {input}");
+            for forbidden in ["private", "alice", "pass"] {
+                assert!(
+                    !redacted.text().contains(forbidden),
+                    "{forbidden} survived in {input} -> {}",
+                    redacted.text()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn windows_drive_relative_and_rooted_paths_are_redacted() {
+        let cases = [
+            (r"C:foo\bar\secret.txt", "secret"),
+            (r"\Users\alice\file.txt", "alice"),
+            (r"D:private\notes.md", "private"),
+            (r"\\server\share\alice\secret.txt", "alice"),
+            (r"C:\Users\alice\file.txt", "alice"),
+        ];
+        for (input, forbidden) in cases {
+            let redacted = EventRedactor.text(input);
+            assert!(
+                !redacted.text().contains(forbidden),
+                "windows path leaked: {input} -> {}",
+                redacted.text()
+            );
+            assert!(redacted.redaction_count() > 0, "no redaction for {input}");
+        }
+    }
+
+    #[test]
+    fn ordinary_key_value_text_is_not_mistaken_for_a_windows_path() {
+        // The single-letter drive constraint keeps ordinary prose out of the
+        // path branch; only `X:` prefixes are treated as drive designators.
+        for input in ["note:something", "status:ok", "level:info"] {
+            let redacted = EventRedactor.text(input);
+            assert_eq!(
+                redacted.text(),
+                input,
+                "ordinary text was redacted as a path: {input}"
+            );
+            assert_eq!(redacted.redaction_count(), 0);
+        }
     }
 
     #[test]
