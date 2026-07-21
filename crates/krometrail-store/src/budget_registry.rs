@@ -108,12 +108,23 @@ impl BudgetRegistry {
         }
         file.instances = live;
 
-        // A failed write costs accuracy, not liveness: this instance still gets a
-        // share computed from what it just read.
-        let _ = self.write(&file);
+        // A write that fails costs liveness nothing — this instance keeps
+        // recording — but it does cost this instance the right to a *shared*
+        // grant. `total - other_live_usage` is only safe because the peers it
+        // discounts can see the bytes this instance just reserved; if the
+        // reservation was never recorded they cannot, and two instances in this
+        // state would each admit a large append against the same unclaimed
+        // capacity and jointly exceed the total. So an unrecorded reservation
+        // falls back to self-only enforcement.
+        let recorded = self.write(&file).is_some();
+        let effective_budget = if recorded {
+            effective_budget(total_budget, other_live_usage, live_instances)
+        } else {
+            self_only_budget(total_budget, live_instances)
+        };
 
         Some(BudgetShare {
-            effective_budget: effective_budget(total_budget, other_live_usage, live_instances),
+            effective_budget,
             other_live_usage,
             live_instances,
         })
@@ -190,15 +201,34 @@ impl BudgetRegistry {
 ///
 /// The floor is what allows the sum to exceed the total: an instance already
 /// holding more than its share is not forced to give it back, because isolation
-/// forbids one instance from reclaiming another's data. Overshoot is bounded by
-/// `(live - 1) * total / live` and is transient — the over-sized instance trims
-/// on its own append path, its evidence ages out, and when it exits its root
-/// becomes reclaimable and its bytes stop counting immediately.
+/// forbids one instance from reclaiming another's data.
+///
+/// That overshoot has no useful closed form, and in particular it is *not*
+/// `(live - 1) * total / live`. Instances that joined earlier were granted their
+/// share of a smaller live set and keep it, so sequential joins accumulate:
+/// filling one at a time reaches `total * (1 + 1/2 + ... + 1/live)`, which is
+/// already `11/6` of the total at three instances. What bounds it is time rather
+/// than arithmetic — the over-sized instance trims to its current share on its
+/// own next append, its evidence ages out, and when it exits its root becomes
+/// reclaimable and its bytes stop counting immediately. `docs/SPEC.md` carries
+/// the full statement.
 fn effective_budget(total_budget: u64, other_live_usage: u64, live_instances: u64) -> u64 {
     let equal_share = total_budget / live_instances.max(1);
     total_budget
         .saturating_sub(other_live_usage)
         .max(equal_share)
+}
+
+/// The budget an instance may enforce when its own usage did not reach the
+/// ledger.
+///
+/// This is the equal share and nothing more. The generous `total - others` term
+/// depends on peers being able to read this instance's published bytes, which is
+/// exactly what a failed write denies them, so it is dropped. A lone instance is
+/// unaffected — its equal share *is* the configured total — which keeps the
+/// guarantee that degraded accounting never blocks capture.
+fn self_only_budget(total_budget: u64, live_instances: u64) -> u64 {
+    total_budget / live_instances.max(1)
 }
 
 /// Exclusive hold on the registry, released on drop.
@@ -249,6 +279,32 @@ mod tests {
     #[test]
     fn a_lone_instance_gets_the_whole_budget() {
         assert_eq!(effective_budget(10_000, 0, 1), 10_000);
+    }
+
+    #[test]
+    fn an_unrecorded_reservation_falls_back_to_the_equal_share() {
+        // The generous term is only sound when peers can read the bytes this
+        // instance published. A failed write denies them that, so it is dropped.
+        assert_eq!(self_only_budget(10_000, 2), 5_000);
+        assert_eq!(effective_budget(10_000, 0, 2), 10_000);
+        // A lone instance is unaffected, so degraded accounting still never
+        // narrows a single process below its configured budget.
+        assert_eq!(self_only_budget(10_000, 1), 10_000);
+    }
+
+    /// The overshoot is *not* `(live - 1) * total / live`: instances that joined
+    /// earlier keep the share of a smaller live set, so sequential joins
+    /// accumulate past that formula from three instances onward.
+    #[test]
+    fn sequential_joins_exceed_the_equal_share_overshoot_formula() {
+        let total = 6_000_u64;
+        let mut combined = 0_u64;
+        for live in 1..=3 {
+            combined += effective_budget(total, combined, live);
+        }
+        // 6000 + 3000 + 2000: the harmonic sum, not total + (2/3) * total.
+        assert_eq!(combined, 11_000);
+        assert!(combined > total + (3 - 1) * total / 3);
     }
 
     #[test]

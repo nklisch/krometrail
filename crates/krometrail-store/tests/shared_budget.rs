@@ -374,3 +374,58 @@ async fn one_oversized_frame_cannot_escape_the_shared_bound() {
          past the total {total} plus the per-instance drift allowance (bound {bound})"
     );
 }
+
+/// A ledger write that fails leaves peers unable to see this instance's
+/// reservation, so the generous `total - other_live_usage` grant is no longer
+/// safe to act on: two instances in this state would each admit a large append
+/// against the same unclaimed capacity and jointly exceed the total.
+#[tokio::test]
+async fn an_unrecorded_reservation_does_not_buy_a_shared_grant() {
+    let data = TempDir::new().unwrap();
+    let total = 1_000_000_u64;
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+
+    let first_registry = BudgetRegistry::open(data.path(), first._ownership.root()).unwrap();
+    let second_registry = BudgetRegistry::open(data.path(), second._ownership.root()).unwrap();
+
+    // Both instances live and idle: a recorded reservation earns the whole
+    // total, because an idle peer holds nothing.
+    first_registry.publish(0, total).unwrap();
+    let recorded = second_registry.publish(0, total).unwrap();
+    assert_eq!(recorded.live_instances, 2);
+    assert_eq!(recorded.effective_budget, total);
+
+    // Block the atomic-write target with a directory, so the reservation can
+    // never be recorded.
+    let instance_id = second
+        ._ownership
+        .root()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    fs::create_dir_all(
+        data.path()
+            .join("instances")
+            .join(format!(".budget-registry.tmp-{instance_id}")),
+    )
+    .unwrap();
+
+    let degraded = second_registry
+        .publish(900_000, total)
+        .expect("an unwritable ledger must degrade, not stall capture");
+    assert_eq!(
+        degraded.effective_budget,
+        total / 2,
+        "a reservation that was never recorded must fall back to self-only enforcement"
+    );
+
+    // The reservation really is invisible to the peer, which is why the grant
+    // has to be conservative rather than merely inaccurate.
+    assert_eq!(
+        first_registry.publish(0, total).unwrap().other_live_usage,
+        0
+    );
+}

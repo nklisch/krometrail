@@ -8,7 +8,7 @@ depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-20
-updated: 2026-07-20
+updated: 2026-07-21
 ---
 
 # Retention lifecycle, age-out, and in-session trimming
@@ -287,9 +287,11 @@ policy directly, including that balanced instances sum exactly to the total.
   and a step forwards expires evidence early.
 - **Artifact grace is best effort**, not a guarantee; under sustained pressure a
   fresh artifact link can still die. The override is logged.
-- **Shared-budget overshoot is real but bounded.** An instance that grew while
-  alone keeps its bytes until it trims, ages out, or exits. Worst case is
-  `(live - 1) * total / live` above the configured total.
+- **Shared-budget overshoot is real, transient, and has no useful closed form.**
+  An instance that grew while the live set was smaller keeps its bytes until it
+  trims, ages out, or exits. Sequential joins accumulate to `total x H_N`
+  (harmonic), which is why the earlier `(live - 1) * total / live` claim was
+  withdrawn — see the third review round.
 - **Registry liveness probing acquires peer locks.** Cheap and non-blocking, but
   it means an accounting pass briefly claims and releases each dead peer's lock.
   Harmless — reclaim re-acquires — but it is a side effect of a read-shaped call.
@@ -338,3 +340,77 @@ Regression: `one_oversized_frame_cannot_escape_the_shared_bound` in
 each, 8 MB total. Pre-fix the combined footprint reached 12,804,238 bytes against
 a bound of 8,500,000; post-fix the second instance is refused at the equal-share
 floor and the combined footprint stays inside the bound.
+
+**Superseded below.** The two-term closed form recorded here is wrong for
+arbitrary join order; see the third review round.
+
+## Third cross-model review round: unrecorded reservations and an unsound bound
+
+### A ledger write failure still granted a share
+
+`budget_registry.rs` discarded the result of `self.write(&file)` and returned the
+generous `total - other_live_usage` grant regardless. The comment called that
+"accuracy, not liveness" — but the generous term is only sound *because* the peers
+it discounts can read the bytes this instance just reserved. A failed write denies
+them exactly that. Two instances in this state each measure themselves against a
+peer the ledger reports as empty and each admit a large append against the same
+unclaimed capacity, so the combined footprint exceeds the total by construction.
+The module header already claimed a failed write degrades to per-instance
+enforcement; the code did not do it.
+
+Fixed: `publish` now checks whether the write succeeded and falls back to
+`self_only_budget` — the equal share and nothing more — when it did not. The
+generous term is dropped; the floor is kept, because for a lone instance the equal
+share *is* the configured total, which preserves the standing guarantee that
+degraded accounting never blocks capture. Degrade, do not stall.
+
+Regression: `an_unrecorded_reservation_does_not_buy_a_shared_grant` in
+`crates/krometrail-store/tests/shared_budget.rs`. Two live instances, 1,000,000
+total. The write is made to fail deterministically by occupying the atomic-write
+temp path (`.budget-registry.tmp-<uuid>`) with a directory, so no permission
+juggling is involved and it behaves the same on every host. Pre-fix the second
+instance was granted the whole 1,000,000 against a reservation nobody recorded;
+post-fix it is held to 500,000. Quoted failure against the pre-fix build:
+
+    assertion `left == right` failed: a reservation that was never recorded
+    must fall back to self-only enforcement
+      left: 1000000
+     right: 500000
+
+### The documented bound did not survive sequential joins
+
+The closed form `total + (N-1)/N x total + N x total/32` is only correct for a
+*fixed* live set. It breaks when instances join over time, because each earlier
+instance was granted its share of a **smaller** live set and keeps it. Walking the
+reviewer's counter-example with total `T`:
+
+| step | live set | grant | why | combined |
+| --- | --- | --- | --- | --- |
+| `A` starts alone, fills | 1 | `T` | no peers | `T` |
+| `B` joins, fills | 2 | `T/2` | `T - T = 0`, so the equal-share floor wins | `3T/2` |
+| `C` joins, fills | 3 | `T/3` | `T - 3T/2 = 0`, floor wins again | `11T/6` |
+
+`11T/6 = 1.833T`, and the documented bound at `N = 3` is
+`T + (2/3)T + 3T/32 = 1.760T`. Violated. Every step is exactly what the allocation
+policy promises, so this is a documentation defect, not a code defect. Extending
+the construction gives `T x (1 + 1/2 + ... + 1/N)` — the harmonic sum, which grows
+without limit, though only logarithmically (~`2.9T` at ten instances). Checked
+numerically: the formula first fails at `N = 3` and diverges from there.
+
+**Deliberately not fixed by loosening the formula.** No `(N-1)/N`-shaped bound
+survives the counter-example, and inventing a looser closed form to fit the code
+would be the same mistake again. `docs/SPEC.md` now states the honest thing: the
+combined footprint *converges* to the configured total; the instantaneous figure
+may exceed it while a growing set of instances is settling, by an amount governed
+by join order rather than a fixed multiple; and every source of excess is transient
+under three named mechanisms — trimming to the current share on the over-sized
+instance's own next append, age-out (which applies regardless of budget, so an
+idle instance's evidence still expires), and exit (bytes stop counting immediately,
+the root is reclaimed by the next instance to start). The staleness term is
+unaffected and is still a real bound: `total/32` per live instance.
+
+The construction is recorded as a construction, not as a proven supremum — it is a
+lower bound on the worst case, and that is enough to disqualify the old formula.
+The wrong bound is also removed from the `effective_budget` doc comment, and
+`sequential_joins_exceed_the_equal_share_overshoot_formula` pins it as a unit test
+so the formula cannot quietly return.

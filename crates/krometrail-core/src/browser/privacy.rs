@@ -125,7 +125,7 @@ impl EventRedactor {
         let (mut text, redaction_count) = redact_fragments(input);
         let truncated = text.len() > max_bytes;
         if truncated {
-            truncate_utf8(&mut text, max_bytes);
+            truncate_to_redaction_stable(&mut text, max_bytes);
         }
         RedactedText::from_redactor(text, truncated, redaction_count)
     }
@@ -137,6 +137,32 @@ fn truncate_utf8(value: &mut String, max_bytes: usize) {
         end -= 1;
     }
     value.truncate(end);
+}
+
+/// Truncates to the longest prefix within `max_bytes` that the redactor leaves
+/// alone.
+///
+/// Truncation runs after redaction, so a plain byte cut can split a token the
+/// redactor judged as a whole and leave behind a fragment a later pass judges
+/// differently — `Bearer [` is the short case: the placeholder's opening bracket
+/// survives the cut and the next pass reads it as an unredacted value. The
+/// emitted text has to satisfy `RedactedText::new`, because that is what
+/// `Deserialize` calls when the persisted event is read back, so a cut that
+/// leaves the text unstable would make retained evidence unreadable. Shrinking
+/// one character at a time terminates: the empty string is always stable.
+fn truncate_to_redaction_stable(value: &mut String, max_bytes: usize) {
+    truncate_utf8(value, max_bytes);
+    while !value.is_empty() {
+        let (again, count) = redact_fragments(value);
+        if count == 0 && again == *value {
+            return;
+        }
+        let mut end = value.len() - 1;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
+    }
 }
 
 fn redact_fragments(input: &str) -> (String, u16) {
@@ -167,7 +193,12 @@ fn redact_fragments(input: &str) -> (String, u16) {
 
         if let Some(quote) = inside_quoted_secret {
             if let Some(closing) = find_unescaped_quote(token, quote, &mut continuation_escaped) {
-                output.push_str(&token[closing..]);
+                // The closing quote is consumed with the value it closes. Its
+                // opening partner was swallowed by the replacement, so emitting
+                // it would leave an orphaned quote that a later pass reads as
+                // trailing content and strips — which would make this pass's
+                // output an unstable, unreadable value.
+                output.push_str(&token[closing + quote.len_utf8()..]);
                 output.push_str(whitespace);
                 inside_quoted_secret = None;
             }
@@ -294,8 +325,14 @@ fn redact_structured_token(token: &str) -> Option<StructuredRedaction> {
     // Set while consuming a nested value that has already been replaced whole,
     // holding the nesting depth it opened at. Nothing inside it is emitted.
     let mut redacted_value_depth: Option<usize> = None;
+    // Byte index the scan resumes at after text that has already been emitted
+    // verbatim.
+    let mut resume_at = 0_usize;
 
     for (index, character) in token.char_indices() {
+        if index < resume_at {
+            continue;
+        }
         if let Some(opened_at) = redacted_value_depth {
             match character {
                 '{' | '[' => depth = depth.saturating_add(1),
@@ -321,14 +358,29 @@ fn redact_structured_token(token: &str) -> Option<StructuredRedaction> {
         // nested value is the secret. Descending into it instead would judge
         // `{"outer":{"token":{"inner":"secret"}}}` on the inner key alone - which
         // is not sensitive - and emit the secret verbatim.
-        if matches!(character, '{' | '[')
-            && opens_sensitive_value(fragment_text)
+        if matches!(character, '{' | '[') && opens_sensitive_value(fragment_text) {
             // Re-running the redactor over its own output must be a no-op, and
             // `[redacted]` opens with a structural delimiter like any array
-            // would. Without this the placeholder would itself be treated as a
-            // nested value and redacted again on every pass.
-            && !is_redacted_placeholder(&token[index..])
-        {
+            // would. Without this branch the placeholder would be treated as a
+            // fresh nested value and redacted again on every pass — reporting a
+            // redaction while changing nothing, which is exactly what
+            // `RedactedText::new` refuses.
+            if let Some(rest) = token[index..].strip_prefix(REDACTED_VALUE) {
+                text.push_str(fragment_text);
+                text.push_str(REDACTED_VALUE);
+                // Anything between the placeholder and the next structural
+                // delimiter is not part of it. It sits where the value's own
+                // bytes would sit, so it is dropped and counted rather than
+                // emitted — otherwise text carrying a literal `[redacted]`
+                // prefix could smuggle a secret straight through.
+                let trailing = rest.find(STRUCTURAL_DELIMITERS).unwrap_or(rest.len());
+                if trailing > 0 {
+                    count = count.saturating_add(1);
+                }
+                resume_at = index + REDACTED_VALUE.len() + trailing;
+                fragment_start = resume_at;
+                continue;
+            }
             text.push_str(fragment_text);
             text.push_str(REDACTED_VALUE);
             count = count.saturating_add(1);
@@ -472,28 +524,56 @@ fn trim_token(value: &str) -> &str {
 /// `toku0065n` against the sensitive-key set and find no match - so the secret
 /// would be emitted verbatim purely because of how its key was spelled.
 fn normalize_key(value: &str) -> String {
-    let mut normalized = String::with_capacity(value.len());
+    let mut decoded = value.to_owned();
+    // Decode to a fixed point rather than exactly once. A producer that escapes
+    // its own escapes writes `tok\\u0065n`; one pass turns that into the literal
+    // text `e`, whose letters then compare as `toku0065n` and miss the
+    // sensitive set entirely. The loop is bounded, and the only error it can
+    // introduce is over-normalizing a key — which redacts a value that did not
+    // need it. That is the safe direction for a redactor, which is why looping
+    // is preferred here over rejecting keys that still carry escape syntax.
+    for _ in 0..MAX_KEY_DECODE_PASSES {
+        let next = decode_escapes(&decoded);
+        if next == decoded {
+            break;
+        }
+        decoded = next;
+    }
+    decoded
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Decoding passes `normalize_key` will run before giving up. Every real key
+/// settles in one or two; the bound only exists so pathological input cannot
+/// spin.
+const MAX_KEY_DECODE_PASSES: usize = 4;
+
+/// Decodes every escape sequence in `value` once.
+fn decode_escapes(value: &str) -> String {
+    let mut decoded = String::with_capacity(value.len());
     let mut characters = value.chars();
     while let Some(character) = characters.next() {
-        let decoded = if character == '\\' {
-            decode_escape(&mut characters)
+        if character == '\\' {
+            if let Some(escaped) = decode_escape(&mut characters) {
+                decoded.push(escaped);
+            }
         } else {
-            Some(character)
-        };
-        if let Some(decoded) = decoded
-            && decoded.is_ascii_alphanumeric()
-        {
-            normalized.extend(decoded.to_lowercase());
+            decoded.push(character);
         }
     }
-    normalized
+    decoded
 }
 
 /// Decodes one escape sequence, its leading backslash already consumed.
 ///
 /// `None` means the escape contributes nothing to a key name. The named
 /// single-character escapes are listed explicitly so that `\n` yields a newline
-/// (dropped) rather than a literal `n` that could invent a key.
+/// (dropped) rather than a literal `n` that could invent a key. `\\` is the
+/// exception: it denotes a real backslash, and yielding it is what lets a
+/// second decoding pass see the escape that was hiding behind it.
 fn decode_escape(characters: &mut std::str::Chars<'_>) -> Option<char> {
     match characters.next()? {
         'u' => {
@@ -503,7 +583,8 @@ fn decode_escape(characters: &mut std::str::Chars<'_>) -> Option<char> {
             }
             char::from_u32(code)
         }
-        'n' | 't' | 'r' | 'b' | 'f' | '"' | '\'' | '\\' | '/' => None,
+        '\\' => Some('\\'),
+        'n' | 't' | 'r' | 'b' | 'f' | '"' | '\'' | '/' => None,
         other => Some(other),
     }
 }
@@ -565,6 +646,7 @@ fn looks_like_absolute_path(value: &str) -> bool {
     remainder.is_empty()
         || remainder.contains(['/', '\\'])
         || ends_with_filename_extension(remainder)
+        || is_dotfile_name(remainder)
 }
 
 /// True when the text ends in something shaped like a filename extension: a
@@ -584,6 +666,26 @@ fn ends_with_filename_extension(value: &str) -> bool {
             .chars()
             .all(|character| character.is_ascii_alphanumeric())
         && extension
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
+}
+
+/// True when the text is a leading-dot filename such as `.bashrc` or `.config`.
+///
+/// `ends_with_filename_extension` requires a non-empty stem, so a dotfile has no
+/// extension by that test and `C:.bashrc` — a real drive-relative path to a
+/// user's shell configuration — was emitted verbatim. Requiring at least one
+/// letter after the dot keeps `v:1.0`-shaped prose out: that has no leading dot
+/// at all, and `C:.5` would be a number, not a name.
+fn is_dotfile_name(value: &str) -> bool {
+    let Some(name) = value.strip_prefix('.') else {
+        return false;
+    };
+    !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+        })
+        && name
             .chars()
             .any(|character| character.is_ascii_alphabetic())
 }
@@ -1035,6 +1137,136 @@ fn is_allowlisted_extension(extension: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Every input the redactor is known to be exercised with, in one place.
+    ///
+    /// This is the corpus the idempotence property runs over. Entries are added
+    /// here rather than only inside the test that motivated them so a new escape
+    /// route is automatically checked for stability as well as for leakage.
+    const REDACTION_CORPUS: &[&str] = &[
+        // Flat key/value, credential, and location shapes.
+        "password=hunter2",
+        "Authorization: Bearer abc.def",
+        "cookie=sessionid=secret-cookie",
+        "token = private-token",
+        "at /home/alice/project/secret.rs:12",
+        r"at C:\\Users\\alice\\project\\secret.rs:12",
+        "file:///Users/alice/private.txt",
+        "https://user:pass@example.test/private?q=token#fragment",
+        "access-token=abc123",
+        "safe text",
+        "",
+        "   ",
+        // Compact structured fragments.
+        r#"{"outer":{"token":"secret-value"}}"#,
+        r#"{"a":{"b":{"password":"deep-secret"}}}"#,
+        r#"[{"apikey":"leaked-key"}]"#,
+        r#"{"ok":1,"secret":"tail-secret"}"#,
+        r#"{"cookie":"sid=abc123"}"#,
+        r#"{"authorization":"Bearer xyz.789"}"#,
+        r#"{"token":"secret value with spaces"}"#,
+        r#"{"password":"a b c"} trailing"#,
+        r#"{"access_token":"abc123"}"#,
+        r#"{"refresh_token":"abc123"}"#,
+        r#"{"client_secret":"abc123"}"#,
+        r#"{"privateKey":"abc123"}"#,
+        r#"{"url":"https://user:pass@example.test/private"}"#,
+        r#"{"path":"/home/alice/private.txt"}"#,
+        r#"{"outer":{"token":{"inner":"LEAK"}}}"#,
+        r#"{"token":"LEAK"}"#,
+        r"{'token':'secret LEAK'}",
+        r#"{"token":"one \" LEAK"}"#,
+        // Windows locations and the colon-separated prose they must not swallow.
+        r"C:foo\bar\secret.txt",
+        r"\Users\alice\file.txt",
+        r"D:private\notes.md",
+        r"\\server\share\alice\secret.txt",
+        r"C:\Users\alice\file.txt",
+        "C:secret.txt",
+        r"C:foo\bar",
+        r"D:notes\private.md",
+        "C:.bashrc",
+        r"C:.config\x",
+        "C:.config/x",
+        "C:.5",
+        r#"{"tok\\u0065n":"LEAK"}"#,
+        "A:todo",
+        "note:something",
+        "status:ok",
+        "v:1.0",
+        "level:info",
+        "B:note",
+        // Text that already carries the redactor's own placeholders. These are
+        // the shapes that broke idempotence: a placeholder followed by ordinary
+        // characters used to be reported as a redaction without changing the
+        // text, so the value failed `RedactedText::new` on the way back in.
+        "token:[redacted]-ok",
+        "token: [redacted]-ok",
+        r#"{"token":[redacted],"a":"ok"}"#,
+        r#"{"token":[redacted]}"#,
+        r#"{"a":1,"token":[redacted]MYSECRET}"#,
+        "token:[redacted]",
+        "[redacted]",
+        "[redacted-url]",
+        "[redacted-path]",
+        r#"{"url":[redacted-url]}"#,
+    ];
+
+    /// The redactor must be a projection: redacting already-redacted text is a
+    /// no-op that reports nothing.
+    ///
+    /// This is not a stylistic property. `EventRedactor` builds `RedactedText`
+    /// through `from_redactor`, which skips validation, but the `Deserialize`
+    /// impl goes through `RedactedText::new` — and `new` rejects any text the
+    /// redactor would still change or still count. A non-idempotent redactor
+    /// therefore writes browser events that can never be read back, so retained
+    /// evidence becomes permanently unreadable. Idempotence is what keeps the
+    /// persisted form legible.
+    #[test]
+    fn redaction_is_idempotent_so_persisted_evidence_stays_readable() {
+        for input in REDACTION_CORPUS {
+            let (once, first_count) = redact_fragments(input);
+            let (twice, second_count) = redact_fragments(&once);
+            assert_eq!(
+                twice, once,
+                "second redaction pass changed the text: {input:?} -> {once:?} -> {twice:?}"
+            );
+            assert_eq!(
+                second_count, 0,
+                "second redaction pass reported {second_count} redaction(s) without changing \
+                 {once:?} (from {input:?})"
+            );
+            assert!(
+                RedactedText::new(once.clone(), false, first_count).is_ok(),
+                "redactor output is rejected by its own validator: {input:?} -> {once:?}"
+            );
+        }
+    }
+
+    /// Truncation happens after redaction, so it can split a token the redactor
+    /// judged whole and leave a fragment a later pass would judge differently.
+    /// The emitted text still has to satisfy `RedactedText::new`, for the same
+    /// deserialization reason as the property above.
+    #[test]
+    fn truncated_redactor_output_is_still_accepted_by_its_own_validator() {
+        for input in REDACTION_CORPUS {
+            let padded = format!("{}{input}", "x".repeat(64));
+            for limit in 1..padded.len().min(96) {
+                let redacted = EventRedactor.redact(&padded, limit);
+                assert!(
+                    RedactedText::new(
+                        redacted.text().to_owned(),
+                        redacted.truncated(),
+                        redacted.redaction_count(),
+                    )
+                    .is_ok(),
+                    "truncating to {limit} produced text its own validator rejects: \
+                     {input:?} -> {:?}",
+                    redacted.text()
+                );
+            }
+        }
+    }
+
     #[test]
     fn redaction_corpus_removes_secrets_paths_and_urls_with_utf8_safe_bounds() {
         let cases = [
@@ -1204,6 +1436,13 @@ mod tests {
                 r#"{"tok\u0065n":"LEAK"}"#,
                 "a sensitive key spelled with a unicode escape",
             ),
+            // The escape is itself escaped. One decoding pass leaves a residual
+            // escape that reads as literal letters, so normalization has to
+            // decode to a fixed point rather than exactly once.
+            (
+                r#"{"tok\\u0065n":"LEAK"}"#,
+                "a sensitive key spelled with a doubly escaped unicode escape",
+            ),
             // Single quotes are legal in console output, and the value contains a
             // space, so the continuation scan must recognise them.
             (r"{'token':'secret LEAK'}", "a single-quoted spaced value"),
@@ -1232,6 +1471,12 @@ mod tests {
             ("C:secret.txt", "secret"),
             (r"C:foo\bar", "foo"),
             (r"D:notes\private.md", "private"),
+            // Dotfiles have no stem, so the filename-extension discriminator
+            // alone missed them and a drive-relative path to a user's shell
+            // configuration was emitted verbatim.
+            ("C:.bashrc", "bashrc"),
+            (r"C:.config\x", "config"),
+            ("C:.config/x", "config"),
         ] {
             let redacted = EventRedactor.text(input);
             assert!(
@@ -1241,7 +1486,7 @@ mod tests {
             );
             assert!(redacted.redaction_count() > 0, "no redaction for {input}");
         }
-        for input in ["A:todo", "note:something", "status:ok", "v:1.0"] {
+        for input in ["A:todo", "note:something", "status:ok", "v:1.0", "C:.5"] {
             let redacted = EventRedactor.text(input);
             assert_eq!(
                 redacted.text(),
