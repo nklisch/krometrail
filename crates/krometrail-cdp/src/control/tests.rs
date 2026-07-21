@@ -570,6 +570,55 @@ mod interactions {
         assert_eq!(types, ["mouseMoved", "mousePressed", "mouseReleased"]);
     }
 
+    /// Replace-mode clearing is a selection followed by a separate Backspace, so it is not atomic:
+    /// a dialog (or any focus steal) opening between the two leaves the selection made and the
+    /// deletion swallowed. That asymmetry is deliberate — pointer dispatch cannot be made atomic
+    /// either — and is made safe by re-reading the field afterwards instead of trusting the
+    /// dispatch. This pins the consequence: a clear that did not take effect is an explicit
+    /// actionable failure, and the new value is never appended onto surviving contents.
+    #[tokio::test]
+    async fn fill_replace_fails_actionably_when_clearing_is_swallowed() {
+        let transport = RecordingTransport::default();
+        let bound = bound();
+        let cancel = OperationCancellation::default();
+        let fill = FillRequest::new(
+            PageSelection::Target(target()),
+            InteractionLocator::Element(krometrail_core::ElementLocator::CssSelector(
+                krometrail_core::NonEmptyText::new("#input").unwrap(),
+            )),
+            "replacement",
+            FillMode::Replace,
+            false,
+        )
+        .unwrap();
+        transport.push(
+            "DOM.resolveNode",
+            Ok(json!({"object":{"objectId":"editable"}})),
+        );
+        // The selection lands...
+        transport.push(
+            "Runtime.callFunctionOn",
+            Ok(json!({"result":{"value":true}})),
+        );
+        // ...but the field still holds its contents when re-read, exactly as it would if a dialog
+        // had consumed the Backspace.
+        transport.push("Runtime.callFunctionOn", Ok(json!({"result":{"value":7}})));
+
+        let error = keyboard::fill(&transport, &bound, &fill, &element(), &cancel, 0)
+            .await
+            .expect_err("a swallowed clear must not be reported as a successful replace");
+
+        assert!(
+            error.message.as_str().contains("could not be cleared"),
+            "the failure must name the unclearable field, got: {}",
+            error.message.as_str()
+        );
+        assert!(
+            transport.calls("Input.insertText").is_empty(),
+            "replace must not append onto contents it failed to clear"
+        );
+    }
+
     #[tokio::test]
     async fn fill_key_chords_and_select_share_verified_backend_target() {
         let transport = RecordingTransport::default();

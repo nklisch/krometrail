@@ -1526,6 +1526,246 @@ mod tests {
         server_task.await.unwrap();
     }
 
+    /// Blocks its first operation until the request's own cancellation signal fires, then reports
+    /// exactly what the port observed. Later operations answer immediately so an independent
+    /// request can be checked against the same session.
+    struct CancellationSession {
+        status: BrowserStatus,
+        execute_calls: AtomicUsize,
+        blocked_entered: Notify,
+        first_context_cancellable: AtomicBool,
+        first_observed_cancellation: AtomicBool,
+        later_context_cancelled: AtomicBool,
+    }
+
+    impl BrowserSessionPort for CancellationSession {
+        fn session_origin(&self) -> SessionOrigin {
+            SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0))
+        }
+
+        fn status(&self) -> PortFuture<'_, krometrail_core::Result<BrowserStatus>> {
+            Box::pin(std::future::ready(Ok(self.status.clone())))
+        }
+
+        fn subscribe(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Box<dyn BrowserSessionEvents>>> {
+            Box::pin(std::future::ready(Ok(
+                Box::new(ProtocolEvents) as Box<dyn BrowserSessionEvents>
+            )))
+        }
+
+        fn read_managed_download(
+            &self,
+            _request: krometrail_core::ReadManagedDownloadRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::ManagedDownloadRead>> {
+            Box::pin(std::future::ready(Err(KrometrailError::new(
+                ErrorCode::NotFound,
+                NonEmptyText::new("cancellation fixture has no managed downloads").unwrap(),
+            ))))
+        }
+
+        fn execute(
+            &self,
+            request: BrowserOperationRequest,
+            context: BrowserOperationContext,
+        ) -> PortFuture<'_, krometrail_core::Result<BrowserOperationResult>> {
+            assert!(
+                matches!(request, BrowserOperationRequest::ListPages(_)),
+                "cancellation test dispatched an unexpected operation"
+            );
+            if self.execute_calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                // A concurrent request carries its own token; cancelling the first must not
+                // reach into this one.
+                self.later_context_cancelled
+                    .store(context.is_cancelled(), Ordering::SeqCst);
+                return Box::pin(std::future::ready(Ok(BrowserOperationResult::ListPages(
+                    Box::default(),
+                ))));
+            }
+            self.first_context_cancellable
+                .store(context.cancellation().is_some(), Ordering::SeqCst);
+            Box::pin(async move {
+                let signal = context
+                    .cancellation()
+                    .cloned()
+                    .expect("a browser operation must carry its request's cancellation signal");
+                self.blocked_entered.notify_one();
+                // Park here until the client's `notifications/cancelled` propagates all the way
+                // down: rmcp request token -> McpCancellation -> BrowserOperationContext.
+                signal.cancelled().await;
+                self.first_observed_cancellation
+                    .store(true, Ordering::SeqCst);
+                Err(KrometrailError::new(
+                    ErrorCode::Cancelled,
+                    NonEmptyText::new("browser operation observed MCP cancellation").unwrap(),
+                ))
+            })
+        }
+
+        fn stop(&self) -> PortFuture<'_, krometrail_core::Result<BrowserStopOutcome>> {
+            Box::pin(std::future::ready(Ok(BrowserStopOutcome::new(
+                krometrail_core::BrowserClosure::Detached,
+                krometrail_core::ShutdownQuality::Clean,
+                None,
+                None,
+                None,
+            )
+            .unwrap())))
+        }
+    }
+
+    struct CancellationConnector {
+        session: Arc<CancellationSession>,
+    }
+
+    impl BrowserConnector for CancellationConnector {
+        fn installations(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Vec<BrowserInstallation>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+        fn managed_profiles(
+            &self,
+        ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::ManagedProfileSummary>>>
+        {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+        fn connect(
+            &self,
+            _request: BrowserConnectRequest,
+        ) -> PortFuture<'_, krometrail_core::Result<Arc<dyn BrowserSessionPort>>> {
+            Box::pin(std::future::ready(Ok(
+                Arc::clone(&self.session) as Arc<dyn BrowserSessionPort>
+            )))
+        }
+    }
+
+    /// Cancellation is only useful if it survives every layer between the wire and the browser
+    /// port. Unit-testing `McpCancellation` in isolation would keep passing even if the router
+    /// stopped attaching the request's token, so this drives a real `notifications/cancelled`
+    /// through the rmcp service while an operation is genuinely in flight.
+    #[tokio::test]
+    async fn client_cancellation_reaches_the_browser_port_and_spares_other_requests() {
+        let session = Arc::new(CancellationSession {
+            status: protocol_status(),
+            execute_calls: AtomicUsize::new(0),
+            blocked_entered: Notify::new(),
+            first_context_cancellable: AtomicBool::new(false),
+            first_observed_cancellation: AtomicBool::new(false),
+            later_context_cancelled: AtomicBool::new(true),
+        });
+        let service = build_service(
+            dependencies(Arc::new(CancellationConnector {
+                session: Arc::clone(&session),
+            })),
+            McpConfig::new(vec![CapabilityId::Control]).unwrap(),
+        )
+        .unwrap();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let server_task = tokio::spawn(async move {
+            let running = service.server.serve(server_io).await.unwrap();
+            let _ = running.waiting().await;
+        });
+        let (read, mut write) = tokio::io::split(client_io);
+        let mut read = BufReader::new(read);
+        send_json(
+            &mut write,
+            json!({
+                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
+                    "protocolVersion":"2025-06-18","capabilities":{},
+                    "clientInfo":{"name":"cancellation-protocol-test","version":"1"}
+                }
+            }),
+        )
+        .await;
+        let _ = read_json(&mut read).await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .await;
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                   "params":{"name":"start_browser","arguments":{}}}),
+        )
+        .await;
+        assert_eq!(read_json(&mut read).await["result"]["isError"], false);
+
+        // Request 3 blocks inside the port until it is cancelled.
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call",
+                   "params":{"name":"list_pages","arguments":{}}}),
+        )
+        .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            session.blocked_entered.notified(),
+        )
+        .await
+        .expect("the browser port must be entered before cancellation is sent");
+        assert!(
+            session.first_context_cancellable.load(Ordering::SeqCst),
+            "the router must hand the browser port a cancellation-bearing context"
+        );
+
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled",
+                   "params":{"requestId":3,"reason":"regression: cross-layer cancellation"}}),
+        )
+        .await;
+
+        // Request 4 is independent and must complete normally while request 3 is cancelled.
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call",
+                   "params":{"name":"list_pages","arguments":{}}}),
+        )
+        .await;
+        // Both requests answer, and completion order is not guaranteed, so index by id.
+        let mut responses = std::collections::BTreeMap::new();
+        for _ in 0..2 {
+            let response =
+                tokio::time::timeout(std::time::Duration::from_secs(5), read_json(&mut read))
+                    .await
+                    .expect("an unrelated request must not be blocked by a cancelled one");
+            responses.insert(response["id"].as_u64().unwrap(), response);
+        }
+
+        // The cancelled operation is reported to the caller as a cancellation rather than
+        // silently abandoned or mapped to a generic internal failure.
+        let cancelled = &responses[&3];
+        assert_eq!(cancelled["result"]["isError"], true);
+        assert_eq!(
+            cancelled["result"]["structuredContent"]["error"]["code"],
+            "cancelled"
+        );
+
+        let unaffected = &responses[&4];
+        assert_eq!(unaffected["result"]["isError"], false);
+        assert_eq!(
+            unaffected["result"]["structuredContent"]["status"],
+            "succeeded"
+        );
+
+        assert!(
+            session.first_observed_cancellation.load(Ordering::SeqCst),
+            "the client's cancellation must reach the in-flight browser operation"
+        );
+        assert!(
+            !session.later_context_cancelled.load(Ordering::SeqCst),
+            "cancelling one request must not cancel another request's context"
+        );
+        assert_eq!(session.execute_calls.load(Ordering::SeqCst), 2);
+
+        drop(write);
+        drop(read);
+        let _ = server_task.await;
+    }
+
     #[test]
     fn lifecycle_routes_publish_one_generated_stride_contract() {
         let service = build_service(

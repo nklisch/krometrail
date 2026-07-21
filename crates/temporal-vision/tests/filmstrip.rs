@@ -237,10 +237,16 @@ fn generator_renders_traceable_padding_locator_gaps_and_deterministic_manifest()
         ]
     );
     assert_eq!(first.manifest().source_frame_count(), 5);
-    // Every source frame was analyzed; three were rendered as tiles. The two
-    // unrendered frames are `analyzed - selected`, not omitted evidence.
-    assert_eq!(first.manifest().analyzed_frame_count(), 5);
-    assert_eq!(first.manifest().omitted_frame_count(), 0);
+    // A filmstrip examines the frames it renders. Frames 1 and 3 back no tile
+    // and are referenced nowhere in the output, so they contributed nothing and
+    // are omitted evidence — not `analyzed - selected`.
+    assert_eq!(first.manifest().analyzed_frame_count(), 3);
+    assert_eq!(first.manifest().omitted_frame_count(), 2);
+    assert_eq!(
+        first.manifest().analyzed_frame_ids(),
+        first.manifest().selected_frame_ids(),
+        "every analyzed frame of a filmstrip is a rendered or referenced one"
+    );
     assert_eq!(
         first.manifest().artifact_kind(),
         ArtifactKind::RegionFilmstrip
@@ -367,10 +373,12 @@ fn generator_renders_traceable_padding_locator_gaps_and_deterministic_manifest()
             FrameId("f4".into())
         ]
     );
-    assert_eq!(explicit_locator.manifest().analyzed_frame_count(), 5);
-    assert_eq!(explicit_locator.manifest().omitted_frame_count(), 0);
-    // The parameter block reports the strip-local count of analyzed-but-unrendered
-    // frames, which is `analyzed - selected` and not the manifest omission count.
+    // The explicit locator is referenced by the output even though it backs no
+    // tile, so it counts as analyzed. Only f3 contributed nothing.
+    assert_eq!(explicit_locator.manifest().analyzed_frame_count(), 4);
+    assert_eq!(explicit_locator.manifest().omitted_frame_count(), 1);
+    // The parameter block and the manifest now count the same population: a
+    // filmstrip's omitted frames are the source frames it never looked at.
     assert_eq!(
         explicit_locator
             .manifest()

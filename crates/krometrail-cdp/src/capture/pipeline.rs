@@ -798,12 +798,19 @@ pub(super) async fn start_target(
         target_id: target.target_id,
         attachment_generation: target.attachment_generation,
     };
-    {
+    // Admission counts registered streams and in-flight reservations together, and takes the
+    // reservation in the same critical section. Checking `streams` alone would let every
+    // concurrent start pass before any of them had inserted anything.
+    let mut admission = {
         let streams = coordinator
             .streams
             .lock()
             .expect("capture registry lock poisoned");
-        if streams.contains_key(&key) {
+        let mut pending = coordinator
+            .pending_starts
+            .lock()
+            .expect("capture admission lock poisoned");
+        if streams.contains_key(&key) || pending.contains(&key) {
             return Err(CaptureError::InvalidConfig(
                 "capture generation is already active",
             ));
@@ -821,10 +828,16 @@ pub(super) async fn start_target(
                 )
             })
             .count();
-        if active >= coordinator.config.max_active_streams.get() {
+        if active + pending.len() >= coordinator.config.max_active_streams.get() {
             return Err(CaptureError::InvalidConfig("active stream limit reached"));
         }
-    }
+        pending.insert(key);
+        StreamAdmission {
+            coordinator,
+            key,
+            committed: false,
+        }
+    };
     // Install the new generation fence before subscriptions or task creation. A late callback
     // from the old attachment may still complete its acknowledgement, but it cannot allocate an
     // ordinal once this generation is accepted.
@@ -887,12 +900,51 @@ pub(super) async fn start_target(
         return Err(error.into());
     }
     runtime.transition(Transition::StartedVisible);
-    coordinator
-        .streams
-        .lock()
-        .expect("capture registry lock poisoned")
-        .insert(key, runtime);
+    {
+        let mut streams = coordinator
+            .streams
+            .lock()
+            .expect("capture registry lock poisoned");
+        // Hand the slot from the reservation to the registry without reopening the window: the
+        // stream is counted by one side or the other at every instant.
+        admission.commit();
+        streams.insert(key, runtime);
+    }
     Ok(())
+}
+
+/// Holds one slot against the active-stream cap from admission until the stream is registered.
+/// Dropping it without `commit` releases the slot, so every early return and panic between the
+/// two frees the reservation rather than permanently shrinking the cap.
+struct StreamAdmission<'a> {
+    coordinator: &'a CaptureCoordinator,
+    key: StreamKey,
+    committed: bool,
+}
+
+impl StreamAdmission<'_> {
+    /// Called while the caller already holds the `streams` lock, so it must not take it again.
+    fn commit(&mut self) {
+        self.coordinator
+            .pending_starts
+            .lock()
+            .expect("capture admission lock poisoned")
+            .remove(&self.key);
+        self.committed = true;
+    }
+}
+
+impl Drop for StreamAdmission<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        self.coordinator
+            .pending_starts
+            .lock()
+            .expect("capture admission lock poisoned")
+            .remove(&self.key);
+    }
 }
 
 async fn frame_reader(
@@ -1129,10 +1181,13 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
             },
             Err(_) => {
                 runtime.complete_processing();
+                // Reader-side and worker-side rejection both discard exactly one frame, so both
+                // report a count of one. Leaving this side uncounted made an identical loss look
+                // like an unquantified gap purely because of where the rejection was detected.
                 if let Some(gap) = runtime.declare_gap(
                     CaptureGapReason::FrameRejected,
                     raw.session_time,
-                    None,
+                    Some(1),
                     Some("encoded frame rejected"),
                 ) {
                     if runtime.dependencies.sink.append_gap(gap).await.is_err() {
@@ -1607,20 +1662,32 @@ impl GapLedger {
     }
 }
 
+/// Sums the counts that are known. Only some gap reasons count discrete frames at all — a hidden
+/// target or a stopped capture spans time without any countable dropped frame — so an absent count
+/// means "contributes nothing", not "unknown total". Treating a mixed merge as unknown would throw
+/// away the one hard number in the pair and under-report loss to the agent reading the evidence.
+fn aggregate_estimated_frames(
+    first: Option<std::num::NonZeroU64>,
+    second: Option<std::num::NonZeroU64>,
+) -> Option<std::num::NonZeroU64> {
+    match (first, second) {
+        (Some(left), Some(right)) => {
+            std::num::NonZeroU64::new(left.get().saturating_add(right.get()))
+        }
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
+}
+
 // When a bounded ledger is full, preserving an explicit broader gap is safer than dropping a
-// reason entirely. The first reason remains the conservative classification and the count stays
-// exact, while the detail makes the coalescing visible to downstream readers.
+// reason entirely. The first reason remains the conservative classification and every known count
+// is carried forward, while the detail makes the coalescing visible to downstream readers.
 fn conservative_merge_gaps(first: &CaptureGap, second: &CaptureGap) -> CaptureGap {
     merge_gaps(first, second).unwrap_or_else(|| {
-        let estimated = match (
+        let estimated = aggregate_estimated_frames(
             first.estimated_missing_frames(),
             second.estimated_missing_frames(),
-        ) {
-            (Some(left), Some(right)) => {
-                std::num::NonZeroU64::new(left.get().saturating_add(right.get()))
-            }
-            _ => None,
-        };
+        );
         CaptureGap::new(
             first.id(),
             first.session_id(),
@@ -1646,15 +1713,10 @@ fn merge_gaps(first: &CaptureGap, second: &CaptureGap) -> Option<CaptureGap> {
     {
         return None;
     }
-    let estimated = match (
+    let estimated = aggregate_estimated_frames(
         first.estimated_missing_frames(),
         second.estimated_missing_frames(),
-    ) {
-        (Some(left), Some(right)) => Some(std::num::NonZeroU64::new(
-            left.get().checked_add(right.get())?,
-        )?),
-        _ => None,
-    };
+    );
     CaptureGap::new(
         first.id(),
         first.session_id(),
@@ -1784,12 +1846,4 @@ pub(super) fn geometry_for_test(
         .lock()
         .expect("capture geometry lock poisoned");
     Some((authority.established, authority.transition.is_some()))
-}
-
-// Keep the transport future and sink future on the same bounded worker path. This helper exists
-// solely to make the ordering test's blocked sink explicit without introducing another queue.
-#[allow(dead_code)]
-fn _assert_send_sync() {
-    fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<StreamRuntime>();
 }

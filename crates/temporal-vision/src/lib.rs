@@ -150,7 +150,7 @@ pub use normalize::{
 pub use provenance::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,
     GeneratorDescriptor, NormalizationKind, NormalizationStep, OutputHash, ParameterValue,
-    Parameters, generator_descriptor,
+    Parameters, SequenceConsumption, generator_descriptor,
 };
 pub use render::{
     ArtifactLabels, RenderLimits, StoryboardArtifacts, StoryboardParameters, generate_storyboard,

@@ -1,10 +1,16 @@
 //! Owned child/process-group lifecycle.
 
 use std::{
+    io,
     process::{Child, Command},
     time::Duration,
 };
 use thiserror::Error;
+
+/// Reported by a child that observed its launcher die inside the fork/exec window. It never
+/// reaches an agent: the launcher that would have read it is already gone.
+#[cfg(target_os = "linux")]
+const EXIT_ORPHANED_BEFORE_EXEC: libc::c_int = 127;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SanitizedProcessExit {
@@ -267,11 +273,39 @@ impl ManagedChromeProcess {
             // umask is inherited by Chrome helpers so profile files created after launch remain
             // owner-only rather than depending on the caller's umask.
             command.process_group(0);
+            // Captured in the parent so the child can detect a parent that died inside the
+            // fork/exec window, where no death signal would ever be delivered.
+            #[cfg(target_os = "linux")]
+            let launcher_pid = std::process::id();
             unsafe {
-                command.pre_exec(|| {
-                    // SAFETY: `umask` is async-signal-safe and the callback runs between fork and
-                    // exec, where no Rust allocation or locking is performed.
+                command.pre_exec(move || {
+                    // SAFETY: every call below is async-signal-safe and the callback runs between
+                    // fork and exec, where no Rust allocation or locking is performed.
                     libc::umask(0o077);
+                    #[cfg(target_os = "linux")]
+                    {
+                        // Every other teardown path — `terminate`, `force_kill_now`, and `Drop` —
+                        // requires this process to still be running its own code. A SIGKILLed or
+                        // crashed launcher runs none of them, and the browser is then reparented
+                        // to init and survives indefinitely holding its profile directory. The
+                        // kernel-owned parent-death signal is the only mechanism that does not
+                        // depend on the launcher's cooperation, so it backstops the process-group
+                        // kill rather than replacing it.
+                        //
+                        // PDEATHSIG is scoped to the *thread* that forked. The product forks from
+                        // the main thread's current-thread Tokio runtime, so the parent thread and
+                        // the process share a lifetime and the signal fires exactly when the
+                        // launcher dies.
+                        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        // Close the window where the launcher exited after fork but before the
+                        // prctl above: the death signal for that exit is already gone, so the
+                        // reparented child must terminate itself instead of leaking.
+                        if libc::getppid() != launcher_pid as libc::pid_t {
+                            libc::_exit(EXIT_ORPHANED_BEFORE_EXEC);
+                        }
+                    }
                     Ok(())
                 });
             }

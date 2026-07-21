@@ -58,6 +58,15 @@ async fn opt_in_managed_session_stops_without_retaining_temporary_profile() {
         "managed Chrome still references unique profile root before cleanup: {references:?}"
     );
     assert!(!root.join("tmp").exists() || fs::read_dir(root.join("tmp")).unwrap().next().is_none());
+    // Release the session before the root guard so the assertion below observes a browser that
+    // has already let go of the profile. Relying on declaration order would silently invert if
+    // the bindings were ever reordered.
+    drop(session);
+    drop(root_guard);
+    assert!(
+        !root.exists(),
+        "unique profile root survived the test that owns it"
+    );
 }
 
 #[tokio::test]
@@ -149,6 +158,14 @@ async fn opt_in_managed_launch_attach_targets_and_external_survival() {
         "managed Chrome still references unique profile root before cleanup: {references:?}"
     );
     assert!(!root.join("tmp").exists() || root.join("tmp").read_dir().unwrap().next().is_none());
+    // `launched` is already released above; drop the guard explicitly so the root's removal is
+    // asserted rather than left to end-of-scope ordering.
+    drop(session);
+    drop(root_guard);
+    assert!(
+        !root.exists(),
+        "unique profile root survived the test that owns it"
+    );
 }
 
 async fn wait_for_page_targets(transport: &dyn CdpTransport, minimum: usize) {

@@ -266,6 +266,20 @@ impl Parameters {
     }
 }
 
+/// The only sampling scheme this crate produces. A disclosure naming anything
+/// else is not describing an artifact these generators made.
+pub(crate) const ANALYSIS_SAMPLING_MODE: &str = "uniform_bounded";
+pub(crate) const ANALYSIS_SAMPLING_SPACING: &str = "uniform";
+/// The complete field set of a sampling disclosure, so an extra member is
+/// rejected rather than silently carried as an unvalidated claim.
+const ANALYSIS_SAMPLING_FIELDS: [&str; 5] = [
+    "analyzed_frame_count",
+    "analyzed_source_indices",
+    "mode",
+    "source_frame_count",
+    "spacing",
+];
+
 pub(crate) fn analysis_sampling_parameters<F, M, G, P>(
     source: &FrameSequence<F, M, G, P>,
 ) -> Result<Option<ParameterValue>>
@@ -325,9 +339,12 @@ where
             ),
             (
                 "mode".into(),
-                ParameterValue::Text("uniform_bounded".into()),
+                ParameterValue::Text(ANALYSIS_SAMPLING_MODE.into()),
             ),
-            ("spacing".into(), ParameterValue::Text("uniform".into())),
+            (
+                "spacing".into(),
+                ParameterValue::Text(ANALYSIS_SAMPLING_SPACING.into()),
+            ),
         ]
         .into_iter()
         .collect(),
@@ -471,6 +488,33 @@ impl<'de> Deserialize<'de> for OutputHash {
     }
 }
 
+/// How a generator consumes the sequence it was handed.
+///
+/// This is the one thing a generator must declare that the manifest cannot work
+/// out for itself, and it is deliberately a two-value choice rather than a
+/// per-generator hook: the declaration says *which shape* the generator has, and
+/// the manifest derives every frame population from it. A generator cannot get
+/// the counts wrong, only the shape — and the shape is checked, because
+/// `SelectedFramesOnly` must name frames the sequence actually contains.
+///
+/// Getting this wrong in the permissive direction is what makes a filmstrip
+/// claim it analyzed five frames when three tiles were rendered and the other
+/// two were never looked at.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SequenceConsumption {
+    /// Every decoded frame contributed to the result.
+    ///
+    /// True of difference maps and motion history, which measure across the whole
+    /// decoded sequence, and of storyboards, whose selection is derived by reading
+    /// every frame.
+    EveryDecodedFrame,
+    /// Only the frames the output renders or references contributed.
+    ///
+    /// True of a filmstrip: its tiles are chosen by position in the sequence, and
+    /// a frame that backs no tile is decoded but never examined.
+    SelectedFramesOnly,
+}
+
 /// Reproducible machine-readable provenance for one generated artifact.
 ///
 /// Three frame populations are distinguished, narrowest last:
@@ -533,6 +577,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             sequence.mask().cloned(),
             selected_frame_ids,
             None,
+            SequenceConsumption::EveryDecodedFrame,
             normalization,
             parameters,
             output_dimensions,
@@ -564,6 +609,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             sequence.mask().cloned(),
             selected_frame_ids,
             Some(Box::new(storyboard_selection)),
+            SequenceConsumption::EveryDecodedFrame,
             normalization,
             parameters,
             output_dimensions,
@@ -581,6 +627,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         region: Option<FrameRegion>,
         mask: Option<BinaryMask>,
         selected_frame_ids: Vec<F>,
+        consumption: SequenceConsumption,
         normalization: Vec<NormalizationStep>,
         parameters: Parameters,
         output_dimensions: PixelDimensions,
@@ -596,6 +643,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             mask,
             selected_frame_ids,
             None,
+            consumption,
             normalization,
             parameters,
             output_dimensions,
@@ -614,21 +662,33 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         mask: Option<BinaryMask>,
         selected_frame_ids: Vec<F>,
         storyboard_selection: Option<Box<StoryboardSelection<F>>>,
+        consumption: SequenceConsumption,
         normalization: Vec<NormalizationStep>,
         parameters: Parameters,
         output_dimensions: PixelDimensions,
         output_hash: OutputHash,
     ) -> Result<Self> {
         let source_frame_ids: Box<[F]> = sequence.source_frame_ids().to_vec().into_boxed_slice();
-        // The decoded frames are exactly the frames that contributed to this artifact.
-        // Every count below derives from this one population so that the manifest and
-        // any sampling disclosure it carries cannot describe different evidence.
+        // Decoding a frame is not the same as consuming it. Which of the two the
+        // generator did is the declaration it makes; the population itself is
+        // derived here, in one place, so that the manifest counts and any sampling
+        // disclosure they carry cannot describe different evidence.
         let analyzed_frame_ids: Box<[F]> = sequence
             .frames()
             .iter()
             .map(|frame| frame.id().clone())
+            .filter(|id| match consumption {
+                SequenceConsumption::EveryDecodedFrame => true,
+                SequenceConsumption::SelectedFramesOnly => selected_frame_ids.contains(id),
+            })
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        if analyzed_frame_ids.len() < selected_frame_ids.len() {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "manifest selected frames are not all present in the decoded sequence",
+            ));
+        }
         let source_frame_count = u64::try_from(source_frame_ids.len()).map_err(|_| {
             VisionError::new(
                 ErrorCode::InvalidManifest,
@@ -793,6 +853,81 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
                 ErrorCode::InvalidManifest,
                 "an undecimated manifest must not claim an analysis sampling mode",
             ));
+        }
+        // The counts are the smallest part of the claim. `mode` and `spacing` say
+        // *how* frames were chosen, and `analyzed_source_indices` says *which* —
+        // that is the part a reader would use to re-derive the analysis. Checking
+        // only the counts would let a disclosure agree about how many frames were
+        // examined while lying about every one of them.
+        for (name, expected) in [
+            ("mode", ANALYSIS_SAMPLING_MODE),
+            ("spacing", ANALYSIS_SAMPLING_SPACING),
+        ] {
+            let ParameterValue::Text(text) = values.get(name).ok_or_else(|| {
+                VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling disclosure is missing a required field",
+                )
+            })?
+            else {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling mode and spacing must be text",
+                ));
+            };
+            if text.as_ref() != expected {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling disclosure names a sampling scheme this crate does not produce",
+                ));
+            }
+        }
+        let Some(ParameterValue::List(indices)) = values.get("analyzed_source_indices") else {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "analysis sampling disclosure must list its analyzed source indices",
+            ));
+        };
+        if indices.len() as u64 != self.analyzed_frame_count {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "analysis sampling disclosure contradicts the manifest frame counts",
+            ));
+        }
+        let mut previous: Option<u64> = None;
+        for index in indices {
+            let ParameterValue::Unsigned(index) = index else {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling source indices must be unsigned",
+                ));
+            };
+            if *index >= self.source_frame_count {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling source index lies outside the manifest source frames",
+                ));
+            }
+            // Strictly increasing: sampling selects a subset of the source order,
+            // so a repeat or a reversal describes a selection that cannot have
+            // happened.
+            if previous.is_some_and(|previous| previous >= *index) {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling source indices must be strictly increasing",
+                ));
+            }
+            previous = Some(*index);
+        }
+        // An unrecognised member would be an undocumented claim about the
+        // analysis riding along inside the block agents trust for exactly this.
+        for name in values.keys() {
+            if !ANALYSIS_SAMPLING_FIELDS.contains(&name.as_ref()) {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "analysis sampling disclosure carries an unrecognised field",
+                ));
+            }
         }
         Ok(())
     }

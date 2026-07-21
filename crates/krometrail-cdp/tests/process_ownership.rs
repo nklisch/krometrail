@@ -102,6 +102,55 @@ async fn natural_leader_exit_cleans_descendants_before_reporting_completion() {
     );
 }
 
+/// `Z` for a reaped-but-unwaited zombie, `None` once the pid is gone entirely. A plain
+/// `kill(pid, 0)` cannot be used here: the leaked guard below never waits, so a dead child
+/// lingers as a zombie that still answers signal-zero probes.
+#[cfg(target_os = "linux")]
+fn process_state(pid: u32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` is parenthesized and may itself contain spaces, so fields are read after its close.
+    let tail = stat.rsplit_once(')')?.1;
+    tail.split_whitespace().next()?.chars().next()
+}
+
+/// The evaluation harness leaked Chrome processes for days because a SIGKILLed launcher runs no
+/// `Drop`, no `terminate`, and no process-group kill. PDEATHSIG is delivered on death of the
+/// *forking thread*, so a dedicated thread that spawns and then exits while leaking the guard
+/// reproduces that path exactly: teardown code never executes, and only the kernel can still
+/// reap the browser.
+#[cfg(target_os = "linux")]
+#[test]
+fn managed_child_dies_when_its_launcher_never_runs_teardown() {
+    let pid = std::thread::spawn(|| {
+        let mut command = long_running_command();
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let process = ManagedChromeProcess::spawn(&mut command).unwrap();
+        let pid = process.child_id();
+        // Settle past fork/exec, then require a live child. Without this the test could pass
+        // vacuously on a child that never started or exited for an unrelated reason.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            matches!(process_state(pid), Some(state) if state != 'Z'),
+            "child must be alive while its launcher thread still is"
+        );
+        // Leak the guard: no Drop, no kill, no group signal — the orphan path.
+        std::mem::forget(process);
+        pid
+    })
+    .join()
+    .unwrap();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        // The command traps SIGTERM and sleeps 30s, so anything but SIGKILL leaves it running.
+        if matches!(process_state(pid), Some('Z') | None) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("browser survived a launcher that ran no teardown; parent-death signal not armed");
+}
+
 #[tokio::test]
 async fn natural_child_death_is_distinct_from_transport_data() {
     let mut command = if cfg!(windows) {

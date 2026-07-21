@@ -2538,6 +2538,71 @@ fn gap_ledger_coalesces_without_growing_with_loss_count() {
     assert_eq!(total, 3);
 }
 
+/// Coalescing used to return an unknown total whenever either side lacked a count, so merging a
+/// counted loss with a duration-shaped reason (a hidden target, a stopped capture) silently
+/// erased the one number the agent could act on. Known counts must survive the merge.
+#[test]
+fn coalescing_mixed_count_bearing_reasons_keeps_every_known_loss() {
+    let session = SessionId::from_uuid(uuid::Uuid::from_u128(1));
+    let target = TargetId::from_uuid(uuid::Uuid::from_u128(2));
+    let make_gap = |id: u128, at: u64, reason: CaptureGapReason, count: Option<u64>| {
+        krometrail_core::CaptureGap::new(
+            krometrail_core::GapId::from_uuid(uuid::Uuid::from_u128(id)),
+            session,
+            target,
+            krometrail_core::SessionRange::new(
+                krometrail_core::SessionTime::from_nanos(at),
+                krometrail_core::SessionTime::from_nanos(at),
+            )
+            .unwrap(),
+            krometrail_core::ObservedTime::from_nanos(at),
+            reason,
+            count.and_then(std::num::NonZeroU64::new),
+            None,
+        )
+        .unwrap()
+    };
+
+    // Capacity one forces every push to coalesce into the single retained gap.
+    let mut ledger = pipeline::GapLedger::new(1);
+    ledger.push(make_gap(
+        1,
+        1,
+        CaptureGapReason::IngestionQueueSaturated,
+        Some(4),
+    ));
+    // A different, countless reason must not erase the four frames already known lost.
+    ledger.push(make_gap(2, 2, CaptureGapReason::TargetHidden, None));
+    assert_eq!(
+        ledger
+            .pending
+            .back()
+            .unwrap()
+            .estimated_missing_frames()
+            .map(std::num::NonZeroU64::get),
+        Some(4),
+        "a countless reason must not erase a known loss count"
+    );
+
+    // The same rule applies within one reason, where the sum is the exact total.
+    ledger.push(make_gap(
+        3,
+        3,
+        CaptureGapReason::IngestionQueueSaturated,
+        Some(2),
+    ));
+    assert_eq!(
+        ledger
+            .pending
+            .back()
+            .unwrap()
+            .estimated_missing_frames()
+            .map(std::num::NonZeroU64::get),
+        Some(6),
+        "known counts must accumulate across coalesced gaps"
+    );
+}
+
 #[tokio::test]
 async fn ack_latency_uses_receipt_sample_and_excludes_wait_and_post_ack_work() {
     let ack_completed = Arc::new(AtomicBool::new(false));
@@ -3010,4 +3075,96 @@ async fn session_shutdown_clears_ordinal_registry() {
             tokio::time::Instant::now() + std::time::Duration::from_secs(1),
         )
         .await;
+}
+
+/// Never produces an event; these streams exist only to be counted against the cap.
+struct IdleEvents;
+
+impl TransportEvents for IdleEvents {
+    fn next(&mut self) -> TransportFuture<'_, Result<Option<NamedEvent>, TransportError>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+/// Yields during subscription so several `start_target` calls are genuinely in flight at once.
+/// A transport that resolved immediately would let each start run to completion before the next
+/// began, which is precisely the interleaving the cap has to survive.
+struct SlowSubscribeTransport;
+
+impl CdpTransport for SlowSubscribeTransport {
+    fn send_raw(
+        &self,
+        _scope: &CommandScope,
+        _method: &str,
+        _params: serde_json::Value,
+    ) -> TransportFuture<'_, Result<serde_json::Value, TransportError>> {
+        Box::pin(std::future::ready(Ok(serde_json::json!({}))))
+    }
+
+    fn subscribe_named(
+        &self,
+        _scope: &CommandScope,
+        _method: &str,
+    ) -> TransportFuture<'_, Result<Box<dyn TransportEvents>, TransportError>> {
+        Box::pin(async move {
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            Ok(Box::new(IdleEvents) as Box<dyn TransportEvents>)
+        })
+    }
+
+    fn close_reason(&self) -> Option<TransportClose> {
+        None
+    }
+
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+/// Admission used to read `streams` and then release the lock across every subscription await
+/// before inserting anything, so concurrent starts all measured the same empty registry and the
+/// cap was overshot by however many happened to race.
+#[tokio::test]
+async fn concurrent_starts_cannot_exceed_the_active_stream_cap() {
+    let cap = 2;
+    let attempts = 6;
+    let coordinator = coordinator(
+        CaptureConfig {
+            max_active_streams: NonZeroUsize::new(cap).unwrap(),
+            ..CaptureConfig::default()
+        },
+        Arc::new(TestClock::new()),
+        Arc::new(TestIds::new()),
+        Arc::new(TestSink::new(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(Vec::new())),
+        )),
+        Arc::new(TestObserver::default()),
+    );
+    let transport = Arc::new(SlowSubscribeTransport) as Arc<dyn CdpTransport>;
+
+    let outcomes = futures_util::future::join_all((0..attempts).map(|index| {
+        let transport = Arc::clone(&transport);
+        coordinator.start_target(
+            target_with(
+                100 + u128::try_from(index).unwrap(),
+                &format!("transport-session-{index}"),
+                1,
+            ),
+            transport,
+        )
+    }))
+    .await;
+
+    let admitted = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+    assert_eq!(
+        admitted, cap,
+        "the cap must hold across concurrent starts; {admitted} of {attempts} were admitted"
+    );
+    assert!(
+        outcomes.iter().filter(|outcome| outcome.is_err()).count() == attempts - cap,
+        "every start beyond the cap must be refused rather than silently admitted"
+    );
 }

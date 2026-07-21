@@ -133,10 +133,9 @@ reshaping the walk.
     term lets a busy instance use everything idle peers are not using; the floor
     stops a busy instance being starved by peers that grew first. The floor is
     also what permits the sum to exceed the total, because isolation forbids one
-    instance from reclaiming another's data. **Overshoot is bounded by
-    `(live - 1) * total / live`** and is transient: the over-sized instance trims
-    on its own append path, its evidence ages out, and on exit its bytes stop
-    counting immediately.
+    instance from reclaiming another's data. An instance already over its share
+    trims back to it on its own next append, so the combined footprint *settles*
+    at the total.
   - *Liveness reuses `acquire_existing`* — the same primitive that decides
     reclaimability — so "who counts toward the total" and "whose root may be
     reclaimed" can never disagree. A dead instance's bytes stop counting exactly
@@ -150,12 +149,32 @@ reshaping the walk.
     Writes are temp-file-plus-rename, so a death mid-write leaves the previous
     ledger intact. An undecidable liveness probe counts the peer as live, which
     tightens this instance rather than letting the total silently overshoot.
-  - *Publish cadence:* throttled to `BUDGET_SHARE_REFRESH` (2 s) on the append
-    path, but forced at every `enforce_locked` (flush). The eager publish is
-    load-bearing — with throttling alone, a fast-filling instance kept
-    advertising its start-of-session usage and peers sized their shares against a
-    stale near-zero figure, letting the combined footprint drift well past the
-    total. Caught by `concurrent_instances_share_one_total_budget`.
+  - *Publish cadence:* invalidated on **both** elapsed time and bytes written —
+    `BUDGET_SHARE_REFRESH` (2 s) or growth past `total / 32` since the last
+    publish, whichever comes first. Also forced at every `enforce_locked` (flush).
+  - **Real overshoot bound, and why the documented one was wrong.** *Revised
+    after cross-model review.* The claimed `(live - 1) * total / live` bound
+    assumed instances republish often enough for peers to see them. Time alone
+    does not guarantee that: `flush` runs at session *stop*, so a live session's
+    only budget check is the append path, and a capture pipeline can write far
+    more than a share inside a two-second window. Measured on the pre-fix build,
+    two instances growing without an intervening flush reached **3 394 431 bytes
+    against a 2 000 000 total** — 1.7x, past the documented bound. Making the
+    share expire on bytes as well as on time ties staleness to the quantity the
+    bound is expressed in: the same scenario now settles at 2 041 968 bytes, an
+    overshoot of 41 968 against a 62 500 drift allowance. **The bound as stated
+    now:** the combined footprint settles at the total, and may instantaneously
+    exceed it by at most `total / 32` per live instance before the next
+    accounting transaction pulls it back. Recorded in `docs/SPEC.md`.
+  - *Test shape.* `concurrent_instances_share_one_total_budget` filled instances
+    one after another, so the first saw an empty ledger exactly once and every
+    later one saw a settled ledger — it could not observe concurrency at all. It
+    now interleaves round-robin (and passes before and after, which is itself the
+    finding: interleaving *with* a flush per frame converges either way). The test
+    that actually discriminates is
+    `instances_that_never_flush_still_share_one_total_budget`, which reproduces
+    the real capture shape — growth with no durability boundary — and fails on the
+    pre-fix build with the numbers above.
 - **`status()` left the mutation gate.** It is a read, and serialising it behind
   the gate made it wait out whatever eviction was running — the opposite of what
   an agent checking a store under pressure needs. It uses
@@ -240,9 +259,19 @@ wall-clock older. Verified to **fail** against the previous `rowid` query and pa
 against the wall-clock ordering, so it distinguishes the two implementations
 rather than passing incidentally.
 
+`tests/artifact_store.rs::derived_artifacts_are_evicted_before_the_frames_they_derive_from`
+proves the tier ordering rather than its aftermath. The pre-existing
+`source_segment_eviction_removes_linked_artifact_before_frames` applied pressure
+large enough to evict both and then asserted only that both were gone — which is
+equally consistent with the segment going first and the artifact being
+*invalidated* as collateral, since `artifact()` reports that as `None` too.
+Confirmed by mutation: with the artifact tier disabled in `reclaim_once`, the old
+test still passes and the new one fails. The new test applies exactly enough
+pressure that losing the artifact suffices, then asserts the source frames
+survive.
+
 `tests/shared_budget.rs`: three concurrent instances sharing one total budget use
-strictly less than three unshared instances and stay inside the documented
-overshoot bound; a dead instance's bytes stop counting and the survivor regains
+strictly less than three unshared instances and stay inside the total; a dead instance's bytes stop counting and the survivor regains
 the whole budget; a corrupt ledger degrades without blocking capture and is
 repaired by the next transaction; registry bookkeeping files are never mistaken
 for instance roots. Unit tests in `budget_registry.rs` cover the allocation

@@ -85,18 +85,48 @@ fn open_instance(data: &TempDir, total_budget: u64, registry: bool) -> Instance 
 
 async fn fill(instance: &Instance, session: u128, frames: u64, bytes: usize) {
     for ordinal in 1..=frames {
-        let value = frame(
-            session,
-            session + 1_000,
-            session * 1_000 + u128::from(ordinal),
-            ordinal,
-            bytes,
-        );
-        // Budget exhaustion is an expected outcome once the share is consumed.
-        if instance.store.append_frame(value.clone()).await.is_err() {
+        if !append_one(instance, session, ordinal, bytes).await {
             break;
         }
-        let _ = instance.store.flush(value.metadata().session_id()).await;
+    }
+}
+
+/// Appends and flushes one frame, reporting whether the instance accepted it.
+async fn append_one(instance: &Instance, session: u128, ordinal: u64, bytes: usize) -> bool {
+    let value = frame(
+        session,
+        session + 1_000,
+        session * 1_000 + u128::from(ordinal),
+        ordinal,
+        bytes,
+    );
+    // Budget exhaustion is an expected outcome once the share is consumed.
+    if instance.store.append_frame(value.clone()).await.is_err() {
+        return false;
+    }
+    let _ = instance.store.flush(value.metadata().session_id()).await;
+    true
+}
+
+/// Grows every instance at the same time, one frame each per round.
+///
+/// This is the shape the shared budget actually has to survive: no instance
+/// reaches its ceiling before the others start, so each one's view of "what my
+/// peers are using" is being invalidated by the others as it decides. Filling
+/// instances one after another cannot observe that — the first instance sees an
+/// empty ledger exactly once and every later instance sees a settled one.
+async fn fill_concurrently(instances: &[(&Instance, u128)], frames: u64, bytes: usize) {
+    let mut active: Vec<bool> = vec![true; instances.len()];
+    for ordinal in 1..=frames {
+        for (slot, (instance, session)) in instances.iter().enumerate() {
+            if !active[slot] {
+                continue;
+            }
+            active[slot] = append_one(instance, *session, ordinal, bytes).await;
+        }
+        if !active.iter().any(|live| *live) {
+            break;
+        }
     }
 }
 
@@ -122,18 +152,14 @@ async fn concurrent_instances_share_one_total_budget() {
     let first = open_instance(&shared, total, true);
     let second = open_instance(&shared, total, true);
     let third = open_instance(&shared, total, true);
-    fill(&first, 1, 40, 40_000).await;
-    fill(&second, 2, 40, 40_000).await;
-    fill(&third, 3, 40, 40_000).await;
+    fill_concurrently(&[(&first, 1), (&second, 2), (&third, 3)], 60, 40_000).await;
     let shared_total = usage(&first).await + usage(&second).await + usage(&third).await;
 
     let isolated = TempDir::new().unwrap();
     let alone = open_instance(&isolated, total, false);
     let other = open_instance(&isolated, total, false);
     let another = open_instance(&isolated, total, false);
-    fill(&alone, 1, 40, 40_000).await;
-    fill(&other, 2, 40, 40_000).await;
-    fill(&another, 3, 40, 40_000).await;
+    fill_concurrently(&[(&alone, 1), (&other, 2), (&another, 3)], 60, 40_000).await;
     let unshared_total = usage(&alone).await + usage(&other).await + usage(&another).await;
 
     assert!(
@@ -141,11 +167,11 @@ async fn concurrent_instances_share_one_total_budget() {
         "shared accounting must bound the combined footprint: shared {shared_total} \
          unshared {unshared_total}"
     );
-    // Each instance floors at an equal share, so the bound is the total plus the
-    // overshoot that floor permits, not an unbounded multiple.
+    // The bound the product promises: the combined footprint of concurrently
+    // growing instances stays inside one total budget.
     assert!(
-        shared_total <= total + 2 * (total / 3),
-        "combined usage {shared_total} exceeded the documented overshoot bound"
+        shared_total <= total,
+        "combined usage {shared_total} exceeded the total budget {total}"
     );
 }
 
@@ -226,5 +252,72 @@ async fn registry_files_are_not_treated_as_instance_roots() {
     assert!(
         siblings.is_empty(),
         "registry bookkeeping files must never be reclaimed as instance roots: {siblings:?}"
+    );
+}
+/// Bytes an instance actually occupies on disk.
+///
+/// Deliberately not `RetentionStatus`: a store mid-session holds open segments
+/// that the status surface refuses to summarise, and the question this test asks
+/// — how much disk do these processes jointly hold right now — is answered by
+/// the filesystem, not by the accounting rows.
+fn instance_root_bytes(path: &std::path::Path) -> u64 {
+    let mut total = 0;
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let metadata = entry.metadata().expect("instance root entry is readable");
+        total += if metadata.is_dir() {
+            instance_root_bytes(&entry.path())
+        } else {
+            metadata.len()
+        };
+    }
+    total
+}
+
+/// The overshoot bound: growth between accounting transactions is capped by a
+/// fraction of the total, not by the capture write rate.
+///
+/// Mirrors `BUDGET_SHARE_REFRESH_DIVISOR` in the store.
+const SHARE_DRIFT_DIVISOR: u64 = 32;
+
+/// Instances grow without ever reaching a durability boundary.
+///
+/// This is the shape real capture has: `flush` runs when a session stops, so a
+/// live session's only budget check is the append path. If that path reuses a
+/// share computed while the ledger still showed this instance empty, two
+/// instances that start together each spend the *whole* total before either one
+/// tells the other anything. Recorded on the pre-fix build: 3_394_431 bytes
+/// against a 2_000_000 total.
+#[tokio::test]
+async fn instances_that_never_flush_still_share_one_total_budget() {
+    let total = 2_000_000_u64;
+    let live = 2;
+    let data = TempDir::new().unwrap();
+    let first = open_instance(&data, total, true);
+    let second = open_instance(&data, total, true);
+
+    for ordinal in 1..=100_u64 {
+        for (instance, session) in [(&first, 1_u128), (&second, 2_u128)] {
+            let value = frame(
+                session,
+                session + 1_000,
+                session * 1_000 + u128::from(ordinal),
+                ordinal,
+                40_000,
+            );
+            // No flush: budget pressure must be resolved by the append path alone.
+            let _ = instance.store.append_frame(value).await;
+        }
+    }
+
+    let combined = instance_root_bytes(first._ownership.root())
+        + instance_root_bytes(second._ownership.root());
+    let bound = total + live * (total / SHARE_DRIFT_DIVISOR);
+    assert!(
+        combined <= bound,
+        "combined footprint {combined} exceeded the total {total} by more than the \
+         per-instance drift allowance (bound {bound})"
     );
 }

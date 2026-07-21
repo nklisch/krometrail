@@ -200,6 +200,12 @@ pub(crate) struct CaptureCoordinator {
     dependencies: CaptureDependencies,
     observer: Arc<dyn CaptureObserver>,
     streams: Mutex<std::collections::HashMap<StreamKey, Arc<pipeline::StreamRuntime>>>,
+    /// Keys admitted against the cap but not yet registered in `streams`. A start does subscription
+    /// and task setup across several awaits before it can insert a runtime, so without a
+    /// reservation every concurrent start reads the same pre-insertion `streams` and the cap is
+    /// overshot. Only ever locked while `streams` is already held, which fixes the lock order and
+    /// makes admission a single atomic step.
+    pending_starts: Mutex<std::collections::HashSet<StreamKey>>,
     ordinals: Arc<pipeline::OrdinalRegistry>,
 }
 
@@ -241,6 +247,7 @@ impl CaptureCoordinator {
             dependencies,
             observer,
             streams: Mutex::new(std::collections::HashMap::new()),
+            pending_starts: Mutex::new(std::collections::HashSet::new()),
             ordinals: Arc::new(pipeline::OrdinalRegistry::default()),
         })
     }

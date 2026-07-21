@@ -124,9 +124,31 @@ caller that bypasses the lock.
 - **`flock`, not a pid/lockfile.** Released automatically on process exit
   including a crash, so a stale lock can never permanently brick startup. A pid
   file would need liveness probing and staleness heuristics, both of which can be
-  wrong. Non-Unix falls back to layout-only isolation (`instance.rs`), since the
-  standard library cannot express a deny-share open; Linux and macOS are the
-  supported production hosts.
+  wrong.
+- **Non-Unix fails closed, it does not fall back.** *Revised after cross-model
+  review.* The original "layout-only isolation" note left `try_lock_exclusive`
+  returning `Ok(true)` on non-Unix, which made every root look claimable — and
+  claimable is a licence to delete. Since we ship `krometrail-windows-x64.exe`,
+  that was silent data loss on a supported download, not an academic gap on an
+  unsupported platform. `try_lock_exclusive` now returns `Ok(false)` there and
+  `OWNERSHIP_IS_ENFORCED` names the distinction: sibling enumeration returns
+  nothing, `acquire_existing` never claims, `is_live` reads every root as live,
+  and startup logs `retention.instance_ownership_unenforced`. `acquire_new` is
+  the one question a lockless host may still answer, because a fresh UUID root is
+  exclusive by name. Cost: roots accumulate and instances do not share a total.
+  Both cost disk. Guessing costs another process's evidence.
+- **A path is not a handle for a destructive operation.** *Added after
+  cross-model review.* Enumeration classified a root and reclamation deleted from
+  it later, with only the path carried between the two. Replacing that path with a
+  symlink, or renaming it aside and putting a fresh directory there, aimed every
+  allowlisted removal at a directory this process never inspected — the allowlist
+  constrains *which names* are removed and says nothing about *which directory*
+  they resolve in. `sibling_instance_roots` now returns
+  `InstanceRootCandidate`s pinned to the `(dev, ino)` of the directory that was
+  classified; `claim()` re-reads that identity under the held lock and refuses a
+  mismatch; and `reclaim_instance_root` re-checks it immediately before each
+  removal. A root that cannot be pinned is never a candidate at all, which is also
+  what disables reclamation on non-Unix.
 - **Acquiring the lock *is* the liveness test.** `acquire_existing` returns
   `Ok(None)` when a root is live and `Ok(Some(ownership))` when it is not. There
   is no window where a caller has decided a root is abandoned but does not yet
@@ -161,6 +183,17 @@ caller that bypasses the lock.
   (`writer.rs:318`, `:367`), so per-segment scoping needed no bookkeeping — only
   the correct recoverability classification. A sealed file whose header carries a
   *different* segment id is explicitly not a reconciliation.
+- **Reconciliation requires proof of completeness, not a matching header.**
+  *Revised after cross-model review.* Validating only the header meant a
+  header-only file, or an open segment renamed into the sealed namespace before
+  its footer was written, was accepted and registered as durable — the store
+  vouching for records it could not prove existed, in a product whose entire value
+  is trustworthy evidence. `sealed_publication_is_complete` now requires the file
+  to be at least header-plus-footer long, its header to decode and name this
+  segment, and its final `SEALED_FOOTER_LEN` bytes to decode as a CRC-valid footer
+  naming the same segment. The footer is written, flushed, and fsynced last, so a
+  valid footer at the tail proves every record before it was written. Failing that
+  proof is a per-segment `WriterUsable` error, as before.
 - **Recovery ordering enforced, not documented.** `recover()` now runs before
   `SegmentWriter::open`, and `RecordingStore` fails construction if any `open`
   segment row remains — recovery seals every one it finds, so a surviving `open`
@@ -184,10 +217,16 @@ caller that bypasses the lock.
 
 - `tests/instance_ownership.rs` — legacy clear preserves browser profiles,
   diagnostics, downloads, plugin state, and config byte-for-byte; live roots are
-  unclaimable; abandoned roots are reclaimable; unrecognised members survive.
+  unclaimable; abandoned roots are reclaimable; unrecognised members survive;
+  a root is claimable exactly where `OWNERSHIP_IS_ENFORCED` (so the Windows
+  contract is asserted on whichever platform runs the suite); and a root swapped
+  for a symlink or a fresh directory after discovery is refused both at claim time
+  and under an already-held lock.
 - `segments::writer::tests` — the proven interleaving (already-published segment
-  reconciles and the writer survives), vanished segment fails per-segment, and a
-  foreign sealed publication is rejected.
+  reconciles and the writer survives, driven through the *real* `recover()` so the
+  publication genuinely carries a footer), vanished segment fails per-segment, an
+  incomplete publication (header-only, and open-renamed-before-footer) is rejected
+  per segment, and a foreign sealed publication is rejected.
 - `tests/rust-runtime-smoke.rs` — end-to-end through the real binary: flat store
   cleared, one instance root at schema 8, browser profile intact.
 

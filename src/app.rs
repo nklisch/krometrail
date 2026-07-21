@@ -365,6 +365,20 @@ fn open_storage_with_budget(
     let ownership = InstanceOwnership::acquire_new(data_directory)?;
     let instance_root = ownership.root().to_path_buf();
 
+    // Say so, loudly, where ownership cannot be proved. Isolation still holds —
+    // this process writes only its own root — but nothing here can tell a dead
+    // root from a live one, so abandoned roots are never reclaimed and shared
+    // budget accounting is unavailable. Both cost disk; the alternative, guessing
+    // that a root is dead, costs another process's evidence.
+    if !krometrail_store::OWNERSHIP_IS_ENFORCED {
+        tracing::warn!(
+            event = "retention.instance_ownership_unenforced",
+            "this platform cannot prove exclusive ownership of an instance root: \
+             abandoned roots will not be reclaimed and instances will not share one \
+             total disk budget"
+        );
+    }
+
     // The pre-isolation flat layout has no supported consumer, so it is cleared
     // rather than migrated. Only recording-cache members are removed; browser
     // profiles, diagnostics, downloads, plugin state, and configuration share
@@ -456,9 +470,10 @@ fn reclaim_abandoned_instances(data_directory: &std::path::Path, owned: &std::pa
             return;
         }
     };
-    for root in roots {
-        match InstanceOwnership::acquire_existing(&root) {
-            // Held by a live process: not ours, not abandoned, leave it alone.
+    for candidate in roots {
+        match candidate.claim() {
+            // Held by a live process, or no longer the directory that was
+            // classified: not ours, not abandoned, leave it alone.
             Ok(None) => {}
             Ok(Some(ownership)) => match krometrail_store::reclaim_instance_root(&ownership) {
                 Ok(bytes) => tracing::info!(
@@ -1020,12 +1035,11 @@ mod tests {
             )
             .unwrap(),
         );
-        let artifact_ptr = Arc::as_ptr(&artifact_generation) as *const ();
-        let _progressive = ProgressiveEvidenceService::new(
+        let progressive = ProgressiveEvidenceService::new(
             Arc::clone(&storage.store) as Arc<dyn ProgressiveEvidenceStore>,
             Arc::clone(&artifact_generation),
         );
-        let _bundle = TemporalDebugBundleService::new(
+        let bundle = TemporalDebugBundleService::new(
             Arc::clone(&storage.temporal_queries),
             bundle_evidence,
             Arc::clone(&artifact_generation),
@@ -1033,11 +1047,15 @@ mod tests {
             BundleWorkLimits::default(),
         )
         .unwrap();
-        // The original Arc and its clones all point to the same artifact service.
-        assert_eq!(
-            artifact_ptr,
-            Arc::as_ptr(&artifact_generation) as *const (),
-            "progressive and bundle paths share one artifact service",
+        // Interrogate what each service retained, not the local Arc it was built from: a
+        // constructor that dropped or substituted the shared generator must fail here.
+        assert!(
+            Arc::ptr_eq(progressive.artifact_generation(), &artifact_generation),
+            "progressive evidence must resolve artifacts through the one artifact service",
+        );
+        assert!(
+            Arc::ptr_eq(bundle.artifact_generation(), &artifact_generation),
+            "debug bundles must resolve artifacts through the one artifact service",
         );
         drop(storage);
         std::fs::remove_dir_all(&root).unwrap();

@@ -334,17 +334,85 @@ fn a_manifest_may_not_be_deserialized_with_a_contradictory_sampling_disclosure()
     serde_json::from_slice::<ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId>>(&encoded)
         .unwrap();
 
-    let mut tampered: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    tampered["parameters"]["analysis_sampling"]["value"]["analyzed_frame_count"]["value"] =
-        serde_json::json!(1);
-    let tampered = serde_json::to_vec(&tampered).unwrap();
-    let error =
-        serde_json::from_slice::<ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId>>(&tampered)
+    // Every field of the disclosure is a claim about the analysis, so every field
+    // has to be defended independently. A validator that only reconciled the
+    // counts would accept a block that agreed about how many frames were examined
+    // while naming the wrong frames, the wrong selection rule, or none at all.
+    /// One independent edit to the disclosure block, and the rejection it must
+    /// provoke.
+    struct Tampering {
+        name: &'static str,
+        apply: fn(&mut serde_json::Value),
+        expected: &'static str,
+    }
+    let tamperings: [Tampering; 8] = [
+        Tampering {
+            name: "analyzed count",
+            apply: |block| block["analyzed_frame_count"]["value"] = serde_json::json!(1),
+            expected: "contradicts the manifest frame counts",
+        },
+        Tampering {
+            name: "source count",
+            apply: |block| block["source_frame_count"]["value"] = serde_json::json!(4),
+            expected: "contradicts the manifest frame counts",
+        },
+        Tampering {
+            name: "removed indices",
+            apply: |block| {
+                block
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("analyzed_source_indices");
+            },
+            expected: "must list its analyzed source indices",
+        },
+        Tampering {
+            name: "short index list",
+            apply: |block| {
+                block["analyzed_source_indices"]["value"] =
+                    serde_json::json!([{"type": "unsigned", "value": 0}]);
+            },
+            expected: "contradicts the manifest frame counts",
+        },
+        Tampering {
+            name: "out-of-range index",
+            apply: |block| {
+                block["analyzed_source_indices"]["value"][3]["value"] = serde_json::json!(99);
+            },
+            expected: "outside the manifest source frames",
+        },
+        Tampering {
+            name: "reordered indices",
+            apply: |block| {
+                block["analyzed_source_indices"]["value"][1]["value"] = serde_json::json!(0);
+            },
+            expected: "strictly increasing",
+        },
+        Tampering {
+            name: "invented mode",
+            apply: |block| block["mode"]["value"] = serde_json::json!("every_other_tuesday"),
+            expected: "sampling scheme this crate does not produce",
+        },
+        Tampering {
+            name: "invented spacing",
+            apply: |block| block["spacing"]["value"] = serde_json::json!("logarithmic"),
+            expected: "sampling scheme this crate does not produce",
+        },
+    ];
+
+    for tampering in tamperings {
+        let mut tampered: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        (tampering.apply)(&mut tampered["parameters"]["analysis_sampling"]["value"]);
+        let bytes = serde_json::to_vec(&tampered).unwrap();
+        let error =
+            serde_json::from_slice::<ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId>>(
+                &bytes,
+            )
             .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("contradicts the manifest frame counts"),
-        "unexpected error: {error}"
-    );
+        assert!(
+            error.to_string().contains(tampering.expected),
+            "tampering with the {} was accepted or rejected for the wrong reason: {error}",
+            tampering.name
+        );
+    }
 }

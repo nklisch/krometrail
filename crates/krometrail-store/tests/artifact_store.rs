@@ -720,6 +720,82 @@ async fn pins_protect_sources_not_regenerable_artifacts() {
     );
 }
 
+/// Derived artifacts are regenerable; source frames are not. Reclaim must
+/// therefore spend the artifact first and only reach for frames when that was
+/// not enough.
+///
+/// Observing this needs *partial* pressure. Under pressure large enough to evict
+/// both, a test can only see that both are gone — and "both gone" is equally
+/// consistent with the segment having been evicted first and the artifact having
+/// been invalidated as collateral, which `artifact()` also reports as `None`.
+/// Applying exactly enough pressure to cost one object makes the choice visible:
+/// the artifact must be the one that goes, and the frames must survive.
+#[tokio::test]
+async fn derived_artifacts_are_evicted_before_the_frames_they_derive_from() {
+    let fixture = fixture_padded(120_000).await;
+    let publication = publication(&fixture, 67, 68);
+    let artifact_id = *publication.manifest.artifact_id();
+    fixture.store.publish_artifact(publication).await.unwrap();
+    let usage = fixture.store.status().await.unwrap().usage;
+    assert!(usage.artifact_bytes > 0);
+
+    const REPLACEMENT_FRAME_BYTES: u64 = 3_000;
+    const RECORD_ENVELOPE_ALLOWANCE: u64 = 4_096;
+    // Room for everything currently retained *except* the artifact, plus exactly
+    // one incoming frame. Losing the artifact is sufficient; losing the source
+    // segment is not required, so a reclaim walk that reached for frames first
+    // would take evidence it never needed to.
+    let budget = DiskBudgetBytes::new(
+        usage.total_bytes().unwrap() - usage.artifact_bytes
+            + REPLACEMENT_FRAME_BYTES
+            + RECORD_ENVELOPE_ALLOWANCE,
+    )
+    .unwrap();
+    drop(fixture.store);
+    let store = open_store_with_budget(fixture.directory.path(), Some(budget));
+    let replacement = EncodedFrame::new(
+        CapturedFrame::new(
+            FrameId::from_uuid(Uuid::from_u128(670)),
+            SessionId::from_uuid(Uuid::from_u128(671)),
+            TargetId::from_uuid(Uuid::from_u128(672)),
+            CaptureOrdinal::new(1).unwrap(),
+            None,
+            ObservedTime::from_nanos(1),
+            SessionTime::from_nanos(1),
+            ImageFormat::Jpeg,
+            CoreDimensions::new(1, 1).unwrap(),
+            CoreDimensions::new(1, 1).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap(),
+        vec![7; REPLACEMENT_FRAME_BYTES as usize],
+    )
+    .unwrap();
+    store.append_frame(replacement).await.unwrap();
+
+    assert!(
+        store.artifact(artifact_id).await.unwrap().is_none(),
+        "the regenerable artifact is the first thing reclaim should spend"
+    );
+    let source = SqliteIndex::open(IndexStoreConfig {
+        database_path: fixture.directory.path().join("index.sqlite3"),
+        segments_directory: fixture.directory.path().join("segments"),
+        busy_timeout: Duration::from_secs(1),
+    })
+    .unwrap();
+    assert_eq!(
+        source
+            .frames_by_id(fixture.frame_ids.clone())
+            .await
+            .unwrap()
+            .len(),
+        fixture.frame_ids.len(),
+        "source frames must survive pressure that the artifact alone could relieve"
+    );
+    assert_eq!(store.status().await.unwrap().usage.artifact_bytes, 0);
+}
+
 #[tokio::test]
 async fn source_segment_eviction_removes_linked_artifact_before_frames() {
     // A padded source segment keeps the eviction decision well clear of SQLite

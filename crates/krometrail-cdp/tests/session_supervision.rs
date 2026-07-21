@@ -964,18 +964,6 @@ async fn opt_in_real_chrome_reconnects_through_a_new_physical_proxy_connection()
     assert!(!root.exists(), "test profile root must be removed");
 }
 
-#[test]
-fn cancellation_input_is_typed_at_the_supervision_boundary() {
-    let input = krometrail_cdp::SupervisorInput::ConnectionLost(krometrail_cdp::TransportClose {
-        reason: krometrail_core::NonEmptyText::new("remote").unwrap(),
-    });
-    assert!(matches!(
-        input,
-        krometrail_cdp::SupervisorInput::ConnectionLost(_)
-    ));
-    let _ = BrowserSessionState::Reconnecting;
-}
-
 #[derive(Default)]
 struct ScriptedReconnectFactory {
     connections: AtomicUsize,

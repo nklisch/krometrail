@@ -40,6 +40,83 @@ const RECORDING_CACHE_FILES: [&str; 4] = [
 ];
 const RECORDING_CACHE_DIRECTORIES: [&str; 3] = ["segments", "artifacts", ".trash"];
 
+/// Whether this platform can *prove* that a root is not held by a live process.
+///
+/// Unix proves it with `flock`. Nothing in the standard library expresses a
+/// deny-share open on Windows, and Krometrail ships a Windows binary, so the
+/// honest answer there is "cannot prove". Every decision that rests on the proof
+/// then has to take the safe branch rather than the convenient one: an
+/// unprovable root is treated as *live*, never as reclaimable. A second Windows
+/// process gets its own root and full isolation; what it does not get is the
+/// right to delete anyone else's evidence.
+pub const OWNERSHIP_IS_ENFORCED: bool = cfg!(unix);
+
+/// The identity of a directory *object*, independent of the path it was found at.
+///
+/// Reclamation classifies a root at enumeration time and deletes from it some
+/// time later. Between those two moments the path can be made to name something
+/// else entirely — replaced with a symlink, or renamed aside with a fresh
+/// directory put in its place. A path is therefore not a safe handle for a
+/// destructive operation; the inode it resolved to is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+/// Reads the identity of `path` without following a final symlink.
+///
+/// `None` means "this is not a directory we can pin", which includes every
+/// non-Unix target. Reclamation refuses to act on an unpinnable root, so the
+/// platform that cannot prove ownership also cannot delete.
+#[cfg(unix)]
+fn directory_identity(path: &Path) -> Option<DirectoryIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::symlink_metadata(path).ok()?;
+    metadata.is_dir().then(|| DirectoryIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(not(unix))]
+fn directory_identity(_path: &Path) -> Option<DirectoryIdentity> {
+    None
+}
+
+/// A sibling instance root found by enumeration, pinned to the directory object
+/// that was classified rather than to the path it was seen at.
+#[derive(Clone, Debug)]
+pub struct InstanceRootCandidate {
+    path: PathBuf,
+    identity: DirectoryIdentity,
+}
+
+impl InstanceRootCandidate {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Takes ownership of this root if nothing live holds it.
+    ///
+    /// `Ok(None)` covers both "a live process holds it" and "the path no longer
+    /// resolves to the directory that was classified". The second case is a
+    /// refusal, not a failure: a root that changed identity under us is exactly
+    /// the case where continuing would delete from somewhere we never inspected.
+    pub fn claim(&self) -> krometrail_core::Result<Option<InstanceOwnership>> {
+        let Some(ownership) = InstanceOwnership::acquire_existing(&self.path)? else {
+            return Ok(None);
+        };
+        // Re-read under the held lock. Everything after this point trusts the
+        // identity recorded on the ownership, not the path.
+        if ownership.identity != Some(self.identity) {
+            return Ok(None);
+        }
+        Ok(Some(ownership))
+    }
+}
+
 /// An owned instance root, held for the lifetime of the process.
 ///
 /// Dropping this releases the advisory lock. The lock is `flock`-based rather
@@ -49,12 +126,18 @@ const RECORDING_CACHE_DIRECTORIES: [&str; 3] = ["segments", "artifacts", ".trash
 #[derive(Debug)]
 pub struct InstanceOwnership {
     root: PathBuf,
+    /// The directory this ownership was taken over, read under the lock.
+    identity: Option<DirectoryIdentity>,
     // Held purely for its lock; closing the handle releases the advisory lock.
     _lock: File,
 }
 
 impl InstanceOwnership {
     /// Claims a fresh instance root under `data_directory`.
+    ///
+    /// A fresh root is named by a random UUID, so exclusivity here follows from
+    /// the name even where the platform cannot take a lock. This is the one
+    /// ownership question a non-Unix host may still answer affirmatively.
     pub fn acquire_new(data_directory: &Path) -> krometrail_core::Result<Self> {
         let instances = data_directory.join(INSTANCES_DIRECTORY);
         permissions::ensure_private_directory(&instances)
@@ -62,36 +145,56 @@ impl InstanceOwnership {
         let root = instances.join(Uuid::new_v4().to_string());
         permissions::ensure_private_directory(&root)
             .map_err(|_| persistence_error("could not create the instance root"))?;
-        Self::acquire_existing(&root)?
-            .ok_or_else(|| persistence_error("a freshly created instance root was already owned"))
+        let lock = open_lock_file(&root)?;
+        if OWNERSHIP_IS_ENFORCED && !try_lock_exclusive(&lock)? {
+            return Err(persistence_error(
+                "a freshly created instance root was already owned",
+            ));
+        }
+        Ok(Self {
+            identity: directory_identity(&root),
+            root,
+            _lock: lock,
+        })
     }
 
     /// Attempts to take ownership of an existing root.
     ///
-    /// Returns `Ok(None)` when another live process holds it. Acquiring the lock
-    /// *is* the liveness test: there is no window in which a caller has decided a
-    /// root is abandoned but does not yet own it, so a reclaimer always acts as
-    /// the root's legitimate owner rather than reaching into someone else's.
+    /// Returns `Ok(None)` when another live process holds it, and also whenever
+    /// this platform cannot prove otherwise. Acquiring the lock *is* the liveness
+    /// test: there is no window in which a caller has decided a root is abandoned
+    /// but does not yet own it, so a reclaimer always acts as the root's
+    /// legitimate owner rather than reaching into someone else's.
     pub fn acquire_existing(root: &Path) -> krometrail_core::Result<Option<Self>> {
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(false).read(true).write(true);
-        permissions::configure_private_file(&mut options);
-        let lock = options
-            .open(root.join(INSTANCE_LOCK_FILE))
-            .map_err(|_| persistence_error("could not open the instance lock"))?;
-        if try_lock_exclusive(&lock)? {
-            Ok(Some(Self {
-                root: root.to_path_buf(),
-                _lock: lock,
-            }))
-        } else {
-            Ok(None)
+        let lock = open_lock_file(root)?;
+        if !try_lock_exclusive(&lock)? {
+            return Ok(None);
         }
+        Ok(Some(Self {
+            root: root.to_path_buf(),
+            identity: directory_identity(root),
+            _lock: lock,
+        }))
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    /// Confirms the root path still resolves to the directory this ownership was
+    /// taken over.
+    fn still_owns_its_root(&self) -> bool {
+        self.identity.is_some() && directory_identity(&self.root) == self.identity
+    }
+}
+
+fn open_lock_file(root: &Path) -> krometrail_core::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    permissions::configure_private_file(&mut options);
+    options
+        .open(root.join(INSTANCE_LOCK_FILE))
+        .map_err(|_| persistence_error("could not open the instance lock"))
 }
 
 /// Removes the recording-cache members of a storage root.
@@ -113,20 +216,54 @@ pub fn remove_recording_cache(root: &Path) -> krometrail_core::Result<()> {
 /// Reclaims one abandoned instance root, returning the bytes recovered.
 ///
 /// The caller must already hold this root's lock. Only the allowlisted cache
-/// members are removed; the root directory itself is then removed when empty, so
-/// an unexpected member keeps the root alive instead of being destroyed with it.
+/// members are removed, so an unexpected member survives rather than being swept
+/// away with the root.
+///
+/// The identity check is not belt-and-braces: the allowlist constrains *which
+/// names* are removed and says nothing about *which directory* those names are
+/// resolved in. Without it, replacing the root path with a symlink between
+/// classification and deletion would aim every allowlisted removal at a
+/// directory this process never inspected. Re-checking before each removal keeps
+/// the window between "this is the directory I locked" and "delete from it" as
+/// short as the filesystem lets it be.
 pub fn reclaim_instance_root(ownership: &InstanceOwnership) -> krometrail_core::Result<u64> {
     let root = ownership.root();
+    if !ownership.still_owns_its_root() {
+        return Err(swapped_root_error());
+    }
     let bytes = recording_cache_bytes(root);
-    remove_recording_cache(root)?;
+    for name in RECORDING_CACHE_FILES {
+        if !ownership.still_owns_its_root() {
+            return Err(swapped_root_error());
+        }
+        remove_file_if_present(&root.join(name))?;
+    }
+    for name in RECORDING_CACHE_DIRECTORIES {
+        if !ownership.still_owns_its_root() {
+            return Err(swapped_root_error());
+        }
+        remove_directory_if_present(&root.join(name))?;
+    }
     Ok(bytes)
 }
 
-/// Lists instance roots other than the one held.
+fn swapped_root_error() -> krometrail_core::KrometrailError {
+    persistence_error("an instance root changed identity before it could be reclaimed")
+}
+
+/// Lists instance roots other than the one held, pinned to the directories that
+/// were classified.
+///
+/// Returns nothing on a platform that cannot prove a root is abandoned: without
+/// that proof there is no such thing as a reclaimable sibling, only roots a live
+/// process might still be writing to.
 pub fn sibling_instance_roots(
     data_directory: &Path,
     owned: &Path,
-) -> krometrail_core::Result<Vec<PathBuf>> {
+) -> krometrail_core::Result<Vec<InstanceRootCandidate>> {
+    if !OWNERSHIP_IS_ENFORCED {
+        return Ok(Vec::new());
+    }
     let instances = data_directory.join(INSTANCES_DIRECTORY);
     let entries = match fs::read_dir(&instances) {
         Ok(entries) => entries,
@@ -147,11 +284,17 @@ pub fn sibling_instance_roots(
         if path == owned {
             continue;
         }
-        if Uuid::parse_str(&entry.file_name().to_string_lossy()).is_ok() {
-            roots.push(path);
+        if Uuid::parse_str(&entry.file_name().to_string_lossy()).is_err() {
+            continue;
         }
+        // Pin the directory that was just classified. A candidate that cannot be
+        // pinned is skipped rather than carried forward as a bare path.
+        let Some(identity) = directory_identity(&path) else {
+            continue;
+        };
+        roots.push(InstanceRootCandidate { path, identity });
     }
-    roots.sort();
+    roots.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(roots)
 }
 
@@ -248,10 +391,14 @@ pub(crate) fn try_lock_exclusive(file: &File) -> krometrail_core::Result<bool> {
 }
 
 // Windows is a best-effort target. The standard library cannot express a
-// deny-share open, so ownership there is advisory-by-layout only: each process
-// still gets its own instance root, which is what prevents the cross-instance
-// mutation this module exists to stop.
+// deny-share open, so no lock can be taken — and "no lock" must read as "not
+// acquired", never as "acquired". Reporting success here would let a second
+// process conclude that a root a live process is writing to is abandoned, and
+// delete its segments and index. Each process still gets its own instance root,
+// which is what prevents the cross-instance mutation this module exists to stop;
+// what is given up is reclamation of old roots and shared budget accounting,
+// both of which cost disk rather than evidence.
 #[cfg(not(unix))]
 pub(crate) fn try_lock_exclusive(_file: &File) -> krometrail_core::Result<bool> {
-    Ok(true)
+    Ok(false)
 }

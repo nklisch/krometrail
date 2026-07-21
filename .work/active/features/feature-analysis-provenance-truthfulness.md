@@ -87,15 +87,36 @@ artifact that examined 93 frames and rendered a reference to 1 reported 473
 omissions.
 
 `analyzed_frame_ids` now names the frames that actually contributed. It is
-derived once, inside `ArtifactManifest::from_sequence_with_trace_and_domain`,
-from the decoded sequence itself — the same frames every generator computes
-over. Every count follows from it:
+derived once, inside `ArtifactManifest::from_sequence_with_trace_and_domain`.
+Every count follows from it:
 
 - `omitted_frame_count = source - analyzed` — frames that contributed nothing.
 - analyzed-but-unrendered = `analyzed - selected`, derivable by any reader.
 
-No generator passes an analyzed set in, so no generator can get it wrong, and
-none is special-cased.
+**Decoding a frame is not consuming it.** *Revised after cross-model review.*
+Deriving the analyzed population from `sequence.frames()` alone was right for
+difference map, motion history, and storyboards — all of which read every frame
+they are handed — and wrong for the region filmstrip, whose tiles are chosen by
+position. With five source frames and a three-tile limit, frames 1 and 3 were
+neither rendered nor referenced anywhere, yet the manifest reported
+`analyzed = 5, omitted = 0` while the filmstrip's *own* `omitted_frame_count`
+parameter reported 2. The manifest contradicted its own parameter block.
+
+The fix keeps the derivation central and adds exactly one declaration per
+generator: `SequenceConsumption::{EveryDecodedFrame, SelectedFramesOnly}`. A
+generator states which *shape* it has; the manifest derives every population from
+that. A generator therefore cannot get the counts wrong, only the shape — and the
+shape is checked, because `SelectedFramesOnly` requires every selected frame to
+be present in the decoded sequence. This is the narrowest declaration that makes
+the truthful answer derivable; the previous no-declaration design bought
+"no generator can get it wrong" by making one generator's answer wrong for
+everyone.
+
+*Reachability, recorded honestly:* through the MCP surface the filmstrip's plan
+is already bounded to `tile_limit` by `bounded_plan`, so decoded == tiles and the
+manifest was accidentally correct. The defect was reachable through the
+`temporal-vision` crate's public API, which is a real boundary with its own
+contract, and its own tests asserted the wrong numbers.
 
 Agreement with the sampling disclosure is enforced rather than coordinated. The
 manifest's own `validate()` — which runs on construction *and* on
@@ -104,6 +125,18 @@ deserialization — rejects any `analysis_sampling` parameter block whose
 counts, and requires the block to exist when an analysis artifact actually
 dropped frames. The tool warning reads that block, so warning and manifest
 cannot diverge without a manifest that will not construct.
+
+**The whole disclosure is validated, not only its counts.** *Revised after
+cross-model review.* Reconciling `source_frame_count` and `analyzed_frame_count`
+left a manifest free to agree about *how many* frames were examined while lying
+about *which* — a missing or arbitrary `analyzed_source_indices`, an invented
+`mode`, an invented `spacing`, or an extra field carrying an unvalidated claim.
+Validation now requires: `mode` and `spacing` to name the one scheme these
+generators produce; `analyzed_source_indices` to be present, as long as the
+analyzed count, strictly increasing, and within the source frames; and the field
+set to be exactly the five documented members. The tampering test exercises each
+of the eight edits independently — the previous single-edit test missed all but
+one of them.
 
 ## Design decisions
 

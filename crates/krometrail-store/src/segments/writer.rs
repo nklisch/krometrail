@@ -15,7 +15,9 @@ use krometrail_core::{
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use super::{SEGMENT_HEADER_LEN, SealedFooter, SegmentHeader, encode_frame_record};
+use super::{
+    SEALED_FOOTER_LEN, SEGMENT_HEADER_LEN, SealedFooter, SegmentHeader, encode_frame_record,
+};
 use crate::{permissions, persistence_error};
 
 pub const OPEN_SEGMENT_EXTENSION: &str = "open";
@@ -593,12 +595,12 @@ fn seal_segment(
         // the entry from `open_segments`, so the writer stays usable either way
         // and `WriterTerminal` would be the wrong classification.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if !sealed_publication_matches(&sealed_path, segment_id) {
+            if !sealed_publication_is_complete(&sealed_path, segment_id) {
                 return Err(store_error(
                     PersistenceOperation::SealedSegmentPublication,
                     PersistenceFailureCategory::NotFound,
                     PersistenceRecoverability::WriterUsable,
-                    "open segment disappeared before publication",
+                    "open segment disappeared before publication and no complete sealed segment stands in its place",
                 ));
             }
             return Ok(registration);
@@ -621,22 +623,53 @@ fn seal_segment(
     Ok(registration)
 }
 
-/// Reports whether `path` is a published segment whose header carries `segment_id`.
+/// Reports whether `path` is a *complete* published segment carrying `segment_id`.
 ///
-/// This is the reconciliation test for an absent open file at seal time. A
-/// matching header proves the segment reached its sealed name intact, so the
-/// seal has already succeeded and re-reporting it as a failure would destroy a
-/// writer over work that is already durable. Anything else — missing, short,
-/// corrupt, or a different segment — is not a reconciliation and must fail.
-fn sealed_publication_matches(path: &Path, segment_id: SegmentId) -> bool {
+/// This is the reconciliation test for an absent open file at seal time, and it
+/// is the only thing standing between "a reconciler already published this" and
+/// "something renamed a half-written file into the sealed namespace". Registering
+/// the latter as durable evidence would be worse than failing the seal: the store
+/// would vouch for a segment whose tail was never written.
+///
+/// Completeness is proved from the format's own guarantees rather than assumed:
+///
+/// - the file is at least a header plus a footer long,
+/// - its header decodes, with a CRC that covers the whole header, and names this
+///   segment, and
+/// - its final `SEALED_FOOTER_LEN` bytes decode as a footer, with a CRC that
+///   covers the whole footer, and name the same segment.
+///
+/// The footer is written, flushed, and fsynced as the last act of sealing, so a
+/// valid footer at the tail is proof that every record before it was written.
+/// Anything else — missing, short, truncated, corrupt, header-only, or a
+/// different segment — is not a reconciliation and must fail per segment.
+fn sealed_publication_is_complete(path: &Path, segment_id: SegmentId) -> bool {
     let Ok(mut file) = File::open(path) else {
         return false;
     };
+    let Ok(metadata) = file.metadata() else {
+        return false;
+    };
+    let minimum = (SEGMENT_HEADER_LEN + SEALED_FOOTER_LEN) as u64;
+    if metadata.len() < minimum {
+        return false;
+    }
     let mut header = [0_u8; SEGMENT_HEADER_LEN];
     if std::io::Read::read_exact(&mut file, &mut header).is_err() {
         return false;
     }
-    SegmentHeader::decode(&header).is_ok_and(|header| header.segment_id == segment_id)
+    if !SegmentHeader::decode(&header).is_ok_and(|header| header.segment_id == segment_id) {
+        return false;
+    }
+    let footer_offset = metadata.len() - SEALED_FOOTER_LEN as u64;
+    if std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(footer_offset)).is_err() {
+        return false;
+    }
+    let mut footer = [0_u8; SEALED_FOOTER_LEN];
+    if std::io::Read::read_exact(&mut file, &mut footer).is_err() {
+        return false;
+    }
+    SealedFooter::decode(&footer).is_ok_and(|footer| footer.segment_id == segment_id)
 }
 
 pub fn open_segment_path(directory: &Path, segment_id: SegmentId) -> PathBuf {
@@ -976,13 +1009,28 @@ mod tests {
             .unwrap()
             .address;
 
-        // Stand in for the intruding process's recovery: publish the live open
-        // segment under its sealed name behind this writer's back.
-        fs::rename(
-            open_segment_path(directory.path(), address.segment_id),
-            sealed_segment_path(directory.path(), address.segment_id),
-        )
+        // The intruding process, played straight: run the real startup recovery
+        // over this writer's live segment directory. It footers, truncates, and
+        // publishes the open segment under its sealed name — a *complete* sealed
+        // segment, which is precisely why the seal that follows is a genuine
+        // reconciliation and not an acceptance of a half-written file.
+        let index = crate::SqliteIndex::open(crate::IndexStoreConfig {
+            database_path: directory.path().join("intruder.sqlite3"),
+            segments_directory: directory.path().to_path_buf(),
+            busy_timeout: Duration::from_secs(1),
+        })
         .unwrap();
+        let report = crate::recovery::recover(&index).unwrap();
+        assert_eq!(report.open_segments_sealed, 1);
+        let published = sealed_segment_path(directory.path(), address.segment_id);
+        assert!(
+            SealedFooter::decode(
+                &fs::read(&published).unwrap()
+                    [fs::metadata(&published).unwrap().len() as usize - SEALED_FOOTER_LEN..]
+            )
+            .is_ok(),
+            "recovery must publish a segment that carries its own footer"
+        );
 
         let registrations = sink.flush_indexable(session_id).await.unwrap();
         assert_eq!(registrations.len(), 1);
@@ -1039,6 +1087,60 @@ mod tests {
             .address;
         sink.flush_indexable(other).await.unwrap();
         assert!(sealed_segment_path(directory.path(), next.segment_id).is_file());
+    }
+
+    /// A file at the sealed name that carries the right header but no footer was
+    /// never finished. Accepting it would register incomplete evidence as
+    /// durable — the store vouching for records it cannot prove were written.
+    ///
+    /// Covers the two shapes this takes on disk: a header-only file, and an open
+    /// segment renamed into the sealed namespace before its footer was written.
+    #[tokio::test]
+    async fn incomplete_sealed_publication_is_not_treated_as_reconciliation() {
+        for truncate_to_header_only in [true, false] {
+            let directory = TempDir::new().unwrap();
+            let sink = SegmentWriter::open(config(&directory)).unwrap();
+            let session_id = SessionId::from_uuid(Uuid::from_u128(70));
+            let address = sink
+                .append_indexable(test_frame(session_id, 1))
+                .await
+                .unwrap()
+                .address;
+
+            // Move the still-open file to the sealed name without footering it.
+            let open = open_segment_path(directory.path(), address.segment_id);
+            let sealed = sealed_segment_path(directory.path(), address.segment_id);
+            let mut bytes = fs::read(&open).unwrap();
+            if truncate_to_header_only {
+                bytes.truncate(SEGMENT_HEADER_LEN);
+            }
+            assert!(bytes.len() >= SEGMENT_HEADER_LEN);
+            fs::remove_file(&open).unwrap();
+            fs::write(&sealed, &bytes).unwrap();
+
+            let error = sink.flush_indexable(session_id).await.unwrap_err();
+            let persistence = error.persistence.as_ref().unwrap();
+            assert_eq!(
+                persistence.operation(),
+                PersistenceOperation::SealedSegmentPublication
+            );
+            assert_eq!(persistence.category(), PersistenceFailureCategory::NotFound);
+            // Per segment, never terminal: one unfinished publication must not
+            // take down capture for every other session.
+            assert_eq!(
+                persistence.recoverability(),
+                PersistenceRecoverability::WriterUsable
+            );
+
+            let other = SessionId::from_uuid(Uuid::from_u128(71));
+            let next = sink
+                .append_indexable(test_frame(other, 2))
+                .await
+                .unwrap()
+                .address;
+            sink.flush_indexable(other).await.unwrap();
+            assert!(sealed_segment_path(directory.path(), next.segment_id).is_file());
+        }
     }
 
     /// A file sitting at the sealed name that belongs to a *different* segment is

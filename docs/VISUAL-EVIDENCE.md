@@ -417,7 +417,11 @@ examined?" and "what does the picture show?" are different questions:
 - `source_frame_ids` — every frame retained in the epoch.
 - `analyzed_frame_ids` — the frames that actually contributed to the result. For
   an analysis artifact this is the sampled set; for a storyboard it is the frames
-  read.
+  read. Decoding a frame is not the same as consuming it: a filmstrip's tiles are
+  chosen by position, so a decoded frame that backs no tile and is referenced
+  nowhere contributed nothing and is counted as omitted, not as analyzed. Each
+  generator declares which of the two shapes it has, and the manifest derives all
+  three populations from that one declaration.
 - `selected_frame_ids` — the frames the output renders or directly references. A
   difference map references one frame while analyzing many.
 
@@ -426,11 +430,14 @@ Frames that were analyzed but not rendered are `analyzed - selected`, derivable
 by any reader. Conflating these two is why a difference map that analyzed 93 of
 474 frames once reported 473 omissions.
 
-An analysis artifact that dropped frames must disclose its sampling, and a
-disclosure whose counts disagree with the manifest is rejected when the manifest
-is constructed and again when it is deserialized. An artifact that analyzed every
-frame emits no sampling block at all, so the block's presence is itself the
-signal that sampling occurred.
+An analysis artifact that dropped frames must disclose its sampling. Every part
+of that disclosure is validated, not only its counts: the sampling mode and
+spacing must name a scheme these generators actually produce, the analyzed source
+indices must be present, strictly increasing, in range, and as many as the
+analyzed count, and no unrecognised field may ride along. Validation runs when the
+manifest is constructed and again when it is deserialized. An artifact that
+analyzed every frame emits no sampling block at all, so the block's presence is
+itself the signal that sampling occurred.
 
 Rendered annotations are derived from the manifest. Machine-readable and visible labels cannot disagree without failing artifact generation.
 

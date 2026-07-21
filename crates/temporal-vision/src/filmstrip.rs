@@ -1038,6 +1038,10 @@ where
         manifest_region,
         parameters.mask.clone(),
         selected_ids,
+        // A filmstrip looks at the frames it renders. Frames between tiles are
+        // decoded by the plan and then never examined, so counting them as
+        // analyzed would overstate what this artifact is evidence of.
+        crate::provenance::SequenceConsumption::SelectedFramesOnly,
         normalization,
         filmstrip_parameters(
             &plan,

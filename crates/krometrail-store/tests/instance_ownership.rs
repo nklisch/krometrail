@@ -1,8 +1,8 @@
 use std::fs;
 
 use krometrail_store::{
-    InstanceOwnership, clear_legacy_flat_store, has_legacy_flat_store, reclaim_instance_root,
-    sibling_instance_roots,
+    InstanceOwnership, OWNERSHIP_IS_ENFORCED, clear_legacy_flat_store, has_legacy_flat_store,
+    reclaim_instance_root, sibling_instance_roots,
 };
 use tempfile::TempDir;
 
@@ -108,9 +108,16 @@ fn releasing_an_instance_makes_its_root_reclaimable() {
 
     let live = InstanceOwnership::acquire_new(directory.path()).unwrap();
     let siblings = sibling_instance_roots(directory.path(), live.root()).unwrap();
-    assert_eq!(siblings, vec![abandoned.clone()]);
+    assert_eq!(
+        siblings
+            .iter()
+            .map(|candidate| candidate.path().to_path_buf())
+            .collect::<Vec<_>>(),
+        vec![abandoned.clone()]
+    );
 
-    let claimed = InstanceOwnership::acquire_existing(&abandoned)
+    let claimed = siblings[0]
+        .claim()
         .unwrap()
         .expect("an abandoned root is claimable");
     let reclaimed = reclaim_instance_root(&claimed).unwrap();
@@ -153,4 +160,103 @@ fn sibling_scan_ignores_non_instance_entries() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// Reclamation deletes, so it may only ever run where ownership can be *proved*.
+///
+/// On Unix the proof is `flock`. Krometrail also ships a Windows binary, and
+/// nothing in the standard library expresses a deny-share open there — so the
+/// answer to "is this root abandoned?" must be "cannot tell", which reads as
+/// "leave it alone". This test states that contract on whichever platform it
+/// runs: a released root is claimable exactly where ownership is enforced, and
+/// nowhere else.
+#[test]
+fn a_root_is_only_ever_claimable_where_ownership_is_provable() {
+    let directory = TempDir::new().unwrap();
+    let owner = InstanceOwnership::acquire_new(directory.path()).unwrap();
+    let root = owner.root().to_path_buf();
+    fs::write(root.join("index.sqlite3"), b"evidence").unwrap();
+    drop(owner);
+
+    let claimable = InstanceOwnership::acquire_existing(&root)
+        .unwrap()
+        .is_some();
+    assert_eq!(
+        claimable, OWNERSHIP_IS_ENFORCED,
+        "a platform that cannot prove a root is dead must never report it as reclaimable"
+    );
+
+    let live = InstanceOwnership::acquire_new(directory.path()).unwrap();
+    let siblings = sibling_instance_roots(directory.path(), live.root()).unwrap();
+    assert_eq!(
+        siblings.is_empty(),
+        !OWNERSHIP_IS_ENFORCED,
+        "unprovable ownership must yield no reclaimable siblings at all"
+    );
+}
+
+/// Discovery classifies a root; reclamation deletes from it some time later.
+/// A path is not a safe handle across that gap — it can be made to name a
+/// different directory in between, and the allowlist does not care which
+/// directory the allowlisted names are resolved in.
+#[cfg(unix)]
+#[test]
+fn a_root_swapped_after_discovery_is_never_reclaimed() {
+    for swap_to_symlink in [true, false] {
+        let directory = TempDir::new().unwrap();
+        let departed = InstanceOwnership::acquire_new(directory.path()).unwrap();
+        let abandoned = departed.root().to_path_buf();
+        fs::write(abandoned.join("index.sqlite3"), b"abandoned index").unwrap();
+        drop(departed);
+
+        let live = InstanceOwnership::acquire_new(directory.path()).unwrap();
+        let candidates = sibling_instance_roots(directory.path(), live.root()).unwrap();
+        assert_eq!(candidates.len(), 1);
+
+        // The swap, after classification and before the claim.
+        let decoy = directory.path().join("decoy");
+        fs::create_dir_all(&decoy).unwrap();
+        fs::write(decoy.join("index.sqlite3"), b"someone else's evidence").unwrap();
+        fs::rename(&abandoned, directory.path().join("moved-aside")).unwrap();
+        if swap_to_symlink {
+            std::os::unix::fs::symlink(&decoy, &abandoned).unwrap();
+        } else {
+            fs::create_dir_all(&abandoned).unwrap();
+        }
+
+        assert!(
+            candidates[0].claim().unwrap().is_none(),
+            "a root that changed identity after discovery must not be claimable"
+        );
+        assert_eq!(
+            fs::read(decoy.join("index.sqlite3")).unwrap(),
+            b"someone else's evidence"
+        );
+    }
+}
+
+/// The same defence, one step later: an ownership already held must stop
+/// deleting the moment its root path stops naming the directory it locked.
+#[cfg(unix)]
+#[test]
+fn reclamation_refuses_a_root_that_changes_identity_under_the_lock() {
+    let directory = TempDir::new().unwrap();
+    let owner = InstanceOwnership::acquire_new(directory.path()).unwrap();
+    let root = owner.root().to_path_buf();
+    fs::create_dir_all(root.join("segments")).unwrap();
+    fs::write(root.join("segments/a.kts"), b"segment").unwrap();
+
+    fs::rename(&root, directory.path().join("moved-aside")).unwrap();
+    let decoy = root;
+    fs::create_dir_all(decoy.join("segments")).unwrap();
+    fs::write(decoy.join("segments/a.kts"), b"someone else's segment").unwrap();
+    fs::write(decoy.join("index.sqlite3"), b"someone else's index").unwrap();
+
+    let error = reclaim_instance_root(&owner).unwrap_err();
+    assert!(error.message.as_str().contains("changed identity"));
+    assert_eq!(
+        fs::read(decoy.join("segments/a.kts")).unwrap(),
+        b"someone else's segment"
+    );
+    assert!(decoy.join("index.sqlite3").is_file());
 }

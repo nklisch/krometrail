@@ -24,6 +24,13 @@ impl ProgressiveEvidenceService {
         Self { store, artifacts }
     }
 
+    /// Composition asserts that progressive and bundle evidence resolve artifacts through one
+    /// shared generator, which is only observable from the service that retained it.
+    #[cfg(test)]
+    pub(crate) const fn artifact_generation(&self) -> &Arc<dyn ArtifactGeneration> {
+        &self.artifacts
+    }
+
     async fn execute_inner(
         &self,
         request: ProgressiveEvidenceRequest,
