@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results
 kind: epic
-stage: drafting
+stage: implementing
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -110,6 +110,89 @@ for cheap change/no-change signaling.
 - `docs/VISION.md` Core Experience: interaction results pair dispatch with
   observed postconditions so effect-verification does not require a separate
   investigation.
+
+## Design decisions
+
+Resolved with judgment under the active autopilot goal (evidence: two read-only
+codebase maps, key seams verified in source):
+
+- **Postconditions live on `InteractionRecord`**: the record is persisted as
+  opaque `record_json`, so postcondition facts reach the retained timeline
+  automatically with no store migration; the response projects the same record.
+  Least irreversible placement, one authority.
+- **Pre-state rides the existing actionability pre-flight**: the
+  `resolve_backend_node` `callFunctionOn` already computes per-target state and
+  discards it; widening its payload and `ResolvedNode` yields
+  checked/expanded/selected/value pre-state at near-zero cost. The only
+  net-new pre-dispatch read is bounded page identity (URL). No full pre-action
+  snapshot — that would violate response/observation economy.
+- **Postcondition facts follow the `SanitizedParameters` privacy discipline**:
+  booleans, bounded enums, lengths, opaque ids; never raw values or page
+  content.
+- **Expectations extend the existing operation registry** (`ActionDefinition`
+  table), keyed by action kind and target role — registry-declared-surfaces,
+  no parallel table.
+- **Download cursor aligns to the page-cursor "never absent" contract**: the
+  page cursor is seeded so it always exists; the download cursor is `Option`
+  and absent until an event is recorded — the exact unusable state finding #9
+  hit. One contract, absent-cursor special case deleted.
+- **Visual-completeness v1 surfaces observed compositor-signal state only**
+  (the double-rAF wait outcome, currently tracing-only) via the existing
+  `EncodedScreenshot` warning surface; no pixel analysis on the immediate path
+  — temporal-vision remains the analysis authority.
+
+## Decomposition
+
+Split by capability layer with facts before interpretation: one foundation
+feature establishes the postcondition block on the record, one extends it with
+side-channel facts (and owns the #8/#9 root-cause obligations), one small
+interpretive feature derives the conservative expectation note from those
+facts, and one independent feature surfaces the already-observed compositor
+signal on immediate imagery. Alternatives considered: folding notes into the
+core (rejected — the false-signal risk deserves its own design pass over
+proven facts) and a per-surface split of side-channel (rejected — three thin
+features sharing one fact-block contract).
+
+### Child features
+
+- `epic-state-aware-interaction-results-postcondition-core` — bounded pre/post
+  delta block on the interaction record (URL/navigation, node identity,
+  control state) — depends on: `[]`
+- `epic-state-aware-interaction-results-side-channel-outcomes` — new-page,
+  download, and clipboard outcome facts; #8/#9 root causes; cursor-contract
+  alignment — depends on: `[postcondition-core]`
+- `epic-state-aware-interaction-results-expectation-notes` — at most one
+  conservative registry-declared expectation note over observed facts —
+  depends on: `[postcondition-core, side-channel-outcomes]`
+- `epic-state-aware-interaction-results-visual-completeness` — compositor
+  visual-completeness marker on immediate imagery — depends on: `[]`
+
+### Simplification arcs
+
+- `postcondition-core` — evaluate consolidating the MCP-layer
+  `semantic_outcomes` list into one bounded post-action semantic surface.
+- `side-channel-outcomes` — one never-absent cursor contract across pages and
+  downloads; facts derived from existing authorities, no parallel event
+  stream.
+- `visual-completeness` — replace the tracing-only compositor-signal discard
+  with the surfaced marker.
+
+### Decomposition risks
+
+- **Riskiest feature: `postcondition-core`** — per-action overhead and
+  contract blast radius. Mitigated: pre-state from already-executing calls
+  plus one bounded URL read; the block is byte-bounded like
+  `SanitizedParameters`.
+- **False-signal risk concentrates in `expectation-notes`** — deliberately
+  last, smallest, and pure over proven facts; conservative registry with no
+  sensitivity knobs in v1.
+- **Side-channel blind spots may be genuinely unobservable** (blocked
+  `window.open` and suppressed downloads leave no CDP record today). The
+  honest fallback is "no outcome observed" facts, not claimed blockage; the
+  macOS report cannot be reproduced locally, so deterministic doubles and
+  fault injection carry the verification load.
+- **Critical path is core → side-channel → notes** (three deep); accepted
+  because notes is small and visual-completeness parallelizes with core.
 
 ## References
 
