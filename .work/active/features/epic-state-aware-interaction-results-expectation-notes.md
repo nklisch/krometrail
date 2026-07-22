@@ -35,6 +35,17 @@ function over the postcondition facts produced by `postcondition-core` and
 Does NOT cover: any new fact capture (upstream features own facts), and any
 verdict language — the note never says "failed", "broken", or "bug".
 
+## Advisory constraints (binding, from the epic's cross-model adjudication)
+
+Negative notes require a completeness gate: each channel an expectation
+depends on (navigation signal, node state, page cursor, download cursor)
+carries a typed observation state — changed / unchanged / unavailable /
+not-applicable, with what it was observed through — and a "did not hold" note
+is emitted only when every required channel was successfully observed.
+Anything less becomes "expectation not evaluated", never "no effect
+observed". Role-based expectations are suppressed when the target role is
+unavailable (coordinate actions, unresolved selectors).
+
 ## Epic context
 
 - Parent epic: `epic-state-aware-interaction-results`

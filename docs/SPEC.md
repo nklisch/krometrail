@@ -154,8 +154,10 @@ deltas relevant to the dispatched action: navigation and URL identity, target ch
 backing-node identity change, and side-channel outcomes such as a new page, download activity, or a clipboard result.
 Postconditions report observed facts. At most one conservative expectation note may describe a common expectation
 that observably did not hold — for example, a link activation with no navigation — without claiming the action
-failed. When the immediate post-action image may contain compositor-unstable content, the observation marks visual
-completeness so callers consult retained temporal evidence before reporting a visual defect.
+failed. When the bounded compositor-rendezvous signal preceding an automatic post-action screenshot is not observed, the
+observation carries a stable rendezvous-unobserved marker so callers consult retained temporal evidence before
+reporting a visual defect. The marker reports signal provenance only: its absence never certifies that the immediate
+image shows settled pixels.
 
 Element references are scoped to the target attachment and document generation that produced them.
 A later snapshot of the same attached document preserves a reference while its backing DOM node

@@ -56,6 +56,17 @@ pixel-analysis pass on the immediate path.
 - `docs/VISUAL-EVIDENCE.md` — evidence classes (immediate vs retained)
 - GitHub issue #14, finding #5 (`44b8a67f-e2bb-49eb-9526-5af6bfd745c7`)
 
+## Advisory amendment (binding, from the epic's cross-model adjudication)
+
+Rendezvous semantics, not completeness semantics: a successful double-rAF
+rendezvous proves two frame callbacks ran within the bounded wait — it does
+not prove the captured pixels are artifact-free (the reported duplicate-card
+case is not shown to correlate with a missing signal). The marker therefore
+reports compositor-rendezvous provenance: the stable code is
+`compositor_rendezvous_unobserved`, attached when the signal did not confirm;
+absence of the marker is never a settlement claim, and the marker/SPEC
+wording must state both directions. Success maps to nothing.
+
 ## Design decisions
 
 Resolved with judgment under the active autopilot goal (no questions asked;
@@ -134,10 +145,10 @@ information over a stable-coded warning.
 
 ```rust
 // in the define_stable_enum! ErrorCode block, after ScreenshotFailed:
-VisualCompletenessUnconfirmed => "visual_completeness_unconfirmed",
+CompositorRendezvousUnobserved => "compositor_rendezvous_unobserved",
 ```
 
-- `default_retry`: add `Self::VisualCompletenessUnconfirmed` to the
+- `default_retry`: add `Self::CompositorRendezvousUnobserved` to the
   `RetryAdvice::Safe` group (a fresh observation is safe and may confirm
   settlement).
 - `default_recovery`: `Some("treat the immediate screenshot as possibly
@@ -168,8 +179,8 @@ impl LiveObservation {
   compiler flags.
 
 **Acceptance Criteria**:
-- [ ] `ErrorCode::VisualCompletenessUnconfirmed.as_str() ==
-      "visual_completeness_unconfirmed"`; serde round-trips the stable name.
+- [ ] `ErrorCode::CompositorRendezvousUnobserved.as_str() ==
+      "compositor_rendezvous_unobserved"`; serde round-trips the stable name.
 - [ ] `attach_screenshot_warning` appends to an available screenshot's
       warnings and is a no-op on an unavailable part.
 - [ ] `bash scripts/check-wire-enum-schemas.sh` passes.
@@ -188,7 +199,7 @@ pub(crate) async fn await_compositor_ready(
     connection_generation: u64,
 ) -> Option<KrometrailError>; // Some(marker) when the double-rAF signal did not confirm
 
-fn visual_completeness_unconfirmed(
+fn compositor_rendezvous_unobserved(
     target_id: krometrail_core::TargetId,
 ) -> KrometrailError;
 ```
@@ -196,7 +207,7 @@ fn visual_completeness_unconfirmed(
 **Implementation Notes**:
 - Marker construction mirrors `tall_screenshot_guidance`'s locality
   (constructor lives beside its observation site):
-  `KrometrailError::from_browser_failure(ErrorCode::VisualCompletenessUnconfirmed,
+  `KrometrailError::from_browser_failure(ErrorCode::CompositorRendezvousUnobserved,
   message).with_context(ErrorContext { target_id: Some(target_id), ..default })`
   — `from_browser_failure` applies the code's default retry and recovery.
 - Message (privacy-bounded, no page content): `"compositor readiness was not

@@ -194,6 +194,49 @@ features sharing one fact-block contract).
 - **Critical path is core → side-channel → notes** (three deep); accepted
   because notes is small and visual-completeness parallelizes with core.
 
+## Advisory review adjudication (cross-model, gpt-5.6-sol)
+
+One advisory pass over the decomposition and code seams; every proposal
+adjudicated by the receiving orchestrator:
+
+- **Accepted, fixed immediately**: a required `postcondition` field makes
+  pre-existing persisted `record_json` rows undecodable with no version
+  mismatch to trigger cache clearing — store schema bumped to v9 so
+  incompatible retained cache clears per Current Contract Discipline.
+- **Accepted, bound into `side-channel-outcomes`**: (a) the supervisor
+  processes `Execute` serially, so `page_contexts()` reflects pre-action state
+  during interaction execution — popup facts need post-dispatch target-event
+  reconciliation or assembly after target reduction; (b) any side-channel
+  collections must carry canonical caps + omission counts before
+  serialization; (c) clipboard scope narrows to explicit clipboard operations
+  (record enrichment + failure classification) — generic clicks cannot
+  observe clipboard state without an automatic probe with unresolved
+  permission/privacy semantics; (d) download-cursor fix must also activate
+  the download authority before interaction dispatch (lazy activation
+  otherwise misses early downloads), seed the cursor like pages, and qualify
+  `Page.windowOpen` (open-attempt fact, no blocked field) and
+  `Page.frameRequestedNavigation` (disposition `download`) — never claim
+  "blocked", only attempt/outcome/no-outcome.
+- **Accepted, bound into `expectation-notes`**: negative notes require a
+  per-channel completeness gate — typed channel states
+  (changed/unchanged/unavailable/not-applicable + observed-through) and a
+  note only when every channel the expectation requires was successfully
+  observed; role-based expectations suppressed when the target role is
+  unavailable.
+- **Accepted, bound into `visual-completeness`**: rendezvous semantics, not
+  completeness semantics — a successful double-rAF proves two callbacks ran,
+  not that pixels are artifact-free; the marker/naming must report
+  compositor-rendezvous provenance (observed/unavailable) and never map
+  success to "visually complete".
+- **Accepted as follow-up under this epic**: one pre/post URL pair is a URL
+  delta, not a navigation delta (misses same-URL reloads and
+  committed-and-returned navigations); an always-on non-waiting main-frame
+  `Page.frameNavigated`/`Page.navigatedWithinDocument` signal should back the
+  navigation fact, with URL comparison retained as a separate fact.
+- **Rejected (already satisfied)**: "pre-state must come from the final
+  post-scroll resolution" — the landed code re-resolves after scroll and uses
+  only that resolution's facts; value facts are length-only.
+
 ## References
 
 - GitHub issue #14 (E2E ergonomics: semantic interaction and retained-evidence

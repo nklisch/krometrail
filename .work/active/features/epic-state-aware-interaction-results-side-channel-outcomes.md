@@ -46,6 +46,37 @@ concrete defects; reproduce with deterministic doubles and boundary fault
 injection (layered-cdp-qualification) — the reporting surface must not paper
 over a real bug.
 
+## Advisory constraints (binding, from the epic's cross-model adjudication)
+
+- **Supervisor serialization**: `Execute` is processed serially — queued
+  `Input(TargetCreated)` events are handled only after the operation returns,
+  so `page_contexts()` reflects pre-action state during interaction
+  execution. Popup facts require a post-dispatch target-event reconciliation
+  step (or assembly after target reduction); do not read the page cursor
+  inside `execute_interaction_request_inner` and call it a post-state.
+- **Clipboard scope narrowed**: enrich the explicit clipboard operations'
+  records and fix failure classification (#8's `command_failed` ambiguity);
+  no automatic clipboard probing after arbitrary clicks.
+- **Download activation ordering**: the lazily-activated download authority
+  must be subscribed/enabled before interaction dispatch or early downloads
+  stay unobservable; cursor seeded like the page cursor (`next - 1`, never
+  absent); `WaitForDownloadRequest.after` becomes required.
+- **CDP signal qualification**: `Page.windowOpen` = bounded open-attempt fact
+  (no blocked field); `Page.frameRequestedNavigation` with disposition
+  `download` = download-attempt candidate; `Browser.downloadWillBegin`
+  onward = lifecycle facts. There is no general suppressed-popup/download
+  signal: report attempt/outcome/no-outcome-observed, never "blocked".
+- **Bounded collections**: any per-interaction side-channel lists carry
+  canonical caps and exact omission counts before serialization into the
+  record (the record's byte discipline is enforced at construction).
+- **Navigation-fact upgrade (advisory F5, accepted follow-up)**: one pre/post
+  URL pair is a URL delta, not a navigation delta — it misses same-URL
+  reloads and navigations that commit and return before observation. Back the
+  navigation fact with an always-on, non-waiting main-frame
+  `Page.frameNavigated` + `Page.navigatedWithinDocument` signal (cursor or
+  drained receiver), keeping `url_changed` as a separate fact; record signal
+  availability alongside.
+
 ## Epic context
 
 - Parent epic: `epic-state-aware-interaction-results`
