@@ -1562,6 +1562,13 @@ mod tests {
             let mut valid = resolved_range();
             let valid = valid.as_object_mut().unwrap();
             valid.insert("anchor_kind".into(), json!(anchor_kind));
+            if anchor_kind == "interaction" {
+                // Interaction-kind resolved ranges echo the governing window.
+                valid.insert(
+                    "applied_interaction_window".into(),
+                    json!({"before_ms": 150, "after_ms": 250}),
+                );
+            }
             valid["resolved_anchor"]["reference"] = reference;
             *range = valid.clone();
             Ok(())

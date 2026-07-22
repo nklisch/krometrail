@@ -480,6 +480,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Some(RangeResolutionOptions::DEFAULT.implicit_interaction_window),
             RangeResolutionOptions {
                 retention: RetentionPolicy::AllowPartial,
                 capture_gaps: CaptureGapPolicy::Include,
@@ -513,6 +514,7 @@ mod tests {
             vec![marker_id],
             Vec::new(),
             Vec::new(),
+            None,
             RangeResolutionOptions {
                 retention: RetentionPolicy::AllowPartial,
                 capture_gaps: CaptureGapPolicy::Include,

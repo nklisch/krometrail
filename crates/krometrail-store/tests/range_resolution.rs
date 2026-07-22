@@ -249,6 +249,8 @@ async fn marker_navigation_and_gap_policies_use_generic_timeline_rows() {
         .unwrap();
     assert_eq!(marker_range.marker_ids, vec![marker]);
     assert_eq!(marker_range.gaps, vec![gap]);
+    // Non-interaction anchors carry no applied interaction window.
+    assert_eq!(marker_range.applied_interaction_window, None);
     let mut reject = RangeResolutionOptions::DEFAULT;
     reject.capture_gaps = CaptureGapPolicy::Reject;
     assert_eq!(
@@ -324,6 +326,30 @@ async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_not_partia
         .unwrap();
     assert_eq!(resolved.interaction_ids, vec![interaction_id]);
     assert_eq!(resolved.frame_ids.len(), 2);
+    // The explicit window governs and is echoed exactly.
+    assert_eq!(resolved.applied_interaction_window, Some(zero));
+
+    // An omitted window falls back to the implicit default, and the resolved
+    // range echoes that governing default rather than leaving the echo to the
+    // ambiguous `options.implicit_interaction_window` input.
+    let mut allow_partial = RangeResolutionOptions::DEFAULT;
+    allow_partial.retention = krometrail_core::RetentionPolicy::AllowPartial;
+    let implicit = fixture
+        .resolver()
+        .resolve(
+            TemporalRangeAnchor::Interaction {
+                scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
+                interaction_id,
+                window: None,
+            },
+            allow_partial,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        implicit.applied_interaction_window,
+        Some(RangeResolutionOptions::DEFAULT.implicit_interaction_window)
+    );
 
     let late_interaction_id = krometrail_core::InteractionId::from_uuid(Uuid::from_u128(41));
     let late_completion = SessionTime::from_nanos(26_000_010);

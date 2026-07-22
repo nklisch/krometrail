@@ -1572,6 +1572,11 @@ struct CompactResolvedRange {
     marker_count: u32,
     gap_count: u32,
     retention_warning_count: u32,
+    /// The window that governed interaction-kind resolved bounds; absent for
+    /// other anchor kinds. `options.implicit_interaction_window` is only the
+    /// fallback input.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    applied_interaction_window: Option<krometrail_core::InteractionWindow>,
     options: krometrail_core::RangeResolutionOptions,
 }
 
@@ -1708,6 +1713,7 @@ fn compact_resolved_range(
         marker_count: count(range.marker_ids.len())?,
         gap_count: count(range.gaps.len())?,
         retention_warning_count: count(range.retention_warnings.len())?,
+        applied_interaction_window: range.applied_interaction_window,
         options: range.options,
     })
 }

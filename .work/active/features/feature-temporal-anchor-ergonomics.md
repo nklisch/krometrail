@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-anchor-ergonomics
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, visual, bug]
 parent: null
 depends_on: []
@@ -141,3 +141,48 @@ the fallback input, with `applied_interaction_window` as the governing value.
 - Low. The flat shape collides with no existing top-level bundle field
   (`anchor`/`retention`/`capture_gaps` are free at that level). Stale callers
   fail loudly, which is the intended contract behavior.
+
+## Implementation notes
+
+Implemented 2026-07-21; full gate green (fmt, wire-enum schema check, check,
+test, clippy `-D warnings`).
+
+### Unit 1 — flat bundle request
+- `TemporalDebugBundleRequest` keeps the composed `TemporalQueryRequest` as a
+  private validated field (so `query()`/`into_parts()` and the whole service
+  path are untouched), while both wire directions are flat: the `Wire` twin
+  now declares `anchor`/`retention`/`capture_gaps` at top level
+  (`deny_unknown_fields` kept), and a manual `Serialize` impl emits the same
+  flat shape so round-trips stay exact. Deserialization composes and
+  re-validates the query exactly once.
+- The MCP tool schema flattened automatically through
+  `delegate_json_schema!`; no MCP code change was needed (the registry parses
+  the request via serde and server tests serialize requests via serde).
+- A stale nested call now fails with an explicit unknown-field error naming
+  `query`; pinned by the new core test
+  `request_rejects_the_superseded_query_nesting_with_an_unknown_field_error`.
+- SPEC/plugin-skill sweep found no nested-shape example to align.
+
+### Unit 2 — applied-window echo
+- `ResolvedRange.applied_interaction_window: Option<InteractionWindow>` added,
+  populated from the two interaction seed sites (`Interaction`,
+  `LatestInteraction`) with `window.unwrap_or(options.implicit_interaction_window)`;
+  `None` for every other anchor kind. Carried via `RangeSeed` through
+  `finalize`.
+- `validate()` enforces the echo bidirectionally: interaction-kind resolved
+  ranges must carry `Some`, all other kinds `None`, and the window re-runs the
+  whole-millisecond constructor. This is slightly stronger than the design's
+  minimum but keeps internally built and wire-decoded values equally truthful.
+- Schema descriptions: `options.implicit_interaction_window` now states it is
+  the fallback input; the new field is described as the governing value.
+- **Addition beyond the design text (rationale logged):** the concise
+  projection `CompactResolvedRange` in `krometrail-mcp/src/response.rs` also
+  carries `applied_interaction_window` (omitted when `None`). The shakedown
+  observed the ambiguous echo in the *concise* `resolve_temporal_range`
+  response, which projects through `CompactResolvedRange` and would otherwise
+  still show only `options.implicit_interaction_window`.
+- The MCP schema-conformance harness (`repair_range`) now supplies the echoed
+  window for interaction-kind synthesized ranges.
+- Resolver-level acceptance tests added in
+  `crates/krometrail-store/tests/range_resolution.rs`: explicit window echoed
+  exactly, omitted window echoes the default, marker anchors echo `None`.

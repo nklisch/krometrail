@@ -1407,6 +1407,7 @@ mod tests {
             Vec::new(),
             gaps,
             Vec::new(),
+            Some(krometrail_core::RangeResolutionOptions::DEFAULT.implicit_interaction_window),
             krometrail_core::RangeResolutionOptions::DEFAULT,
         )
         .unwrap()

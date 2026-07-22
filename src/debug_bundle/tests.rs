@@ -1323,6 +1323,7 @@ mod policy_tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Some(RangeResolutionOptions::DEFAULT.implicit_interaction_window),
             RangeResolutionOptions {
                 retention: RetentionPolicy::AllowPartial,
                 capture_gaps: CaptureGapPolicy::Include,

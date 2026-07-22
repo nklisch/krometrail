@@ -192,6 +192,12 @@ temporal_vision::stable_registry! {
 pub struct RangeResolutionOptions {
     pub retention: RetentionPolicy,
     pub capture_gaps: CaptureGapPolicy,
+    /// Fallback input only: the window applied when an interaction-kind anchor
+    /// omits an explicit window. The window that actually governed the resolved
+    /// bounds is echoed as `applied_interaction_window` on the resolved range.
+    #[schemars(
+        description = "Fallback window used only when an interaction-kind anchor omits an explicit window; the resolved range echoes the governing window as applied_interaction_window"
+    )]
     pub implicit_interaction_window: InteractionWindow,
 }
 impl RangeResolutionOptions {
@@ -596,6 +602,10 @@ pub struct ResolvedRange {
     pub marker_ids: Vec<MarkerId>,
     pub gaps: Vec<CaptureGap>,
     pub retention_warnings: Vec<RetentionWarning>,
+    /// The window that governed the resolved bounds: the explicit request
+    /// window when one was given, otherwise the implicit fallback. `Some` for
+    /// interaction-kind anchors and `None` for every other anchor kind.
+    pub applied_interaction_window: Option<InteractionWindow>,
     pub options: RangeResolutionOptions,
 }
 
@@ -641,6 +651,10 @@ struct ResolvedRangeWire {
     marker_ids: Vec<MarkerId>,
     gaps: Vec<CaptureGap>,
     retention_warnings: Vec<RetentionWarning>,
+    #[schemars(
+        description = "The window that governed the resolved bounds for interaction-kind anchors; null for other anchor kinds"
+    )]
+    applied_interaction_window: Option<InteractionWindow>,
     options: RangeResolutionOptions,
 }
 
@@ -694,6 +708,7 @@ impl ResolvedRange {
             marker_ids,
             gaps,
             retention_warnings,
+            None,
             options,
         )
     }
@@ -712,6 +727,7 @@ impl ResolvedRange {
         marker_ids: Vec<MarkerId>,
         gaps: Vec<CaptureGap>,
         retention_warnings: Vec<RetentionWarning>,
+        applied_interaction_window: Option<InteractionWindow>,
         options: RangeResolutionOptions,
     ) -> Result<Self> {
         let value = Self {
@@ -727,6 +743,7 @@ impl ResolvedRange {
             marker_ids,
             gaps,
             retention_warnings,
+            applied_interaction_window,
             options,
         };
         value.validate()?;
@@ -786,6 +803,18 @@ impl ResolvedRange {
             ));
         }
         validate_anchor_kind(self.anchor_kind, &self.resolved_anchor.reference)?;
+        if let Some(window) = self.applied_interaction_window {
+            // Re-run the public constructor so internally built values cannot
+            // bypass the same whole-millisecond boundary as Serde.
+            InteractionWindow::new(window.before(), window.after())?;
+        }
+        if (self.anchor_kind == TemporalRangeAnchorKind::Interaction)
+            != self.applied_interaction_window.is_some()
+        {
+            return Err(invalid(
+                "interaction-kind resolved ranges must echo exactly the applied interaction window",
+            ));
+        }
         if let ResolvedAnchorReference::SourceFrames {
             start_frame_id,
             end_frame_id,
@@ -842,6 +871,7 @@ impl<'de> Deserialize<'de> for ResolvedRange {
             wire.marker_ids,
             wire.gaps,
             wire.retention_warnings,
+            wire.applied_interaction_window,
             wire.options,
         )
         .map_err(serde::de::Error::custom)
@@ -994,6 +1024,7 @@ struct RangeSeed {
     anchor_kind: TemporalRangeAnchorKind,
     anchor_reference: ResolvedAnchorReference,
     requested_anchor_time: SessionTime,
+    applied_interaction_window: Option<InteractionWindow>,
     preloaded_frames: Option<Vec<CapturedFrame>>,
 }
 
@@ -1015,6 +1046,7 @@ fn seed_from_interaction(
             interaction_id: interaction.interaction_id,
         },
         requested_anchor_time: interaction.timing.dispatched_at,
+        applied_interaction_window: Some(window),
         preloaded_frames: None,
     })
 }
@@ -1055,6 +1087,7 @@ where
                     anchor_kind: TemporalRangeAnchorKind::SessionTime,
                     anchor_reference: ResolvedAnchorReference::Interval,
                     requested_anchor_time: range_midpoint(range),
+                    applied_interaction_window: None,
                     preloaded_frames: None,
                 })
             }
@@ -1083,6 +1116,7 @@ where
                     anchor_kind: TemporalRangeAnchorKind::WallClock,
                     anchor_reference: ResolvedAnchorReference::Interval,
                     requested_anchor_time: range_midpoint(requested_range),
+                    applied_interaction_window: None,
                     preloaded_frames: None,
                 })
             }
@@ -1136,6 +1170,7 @@ where
                         end_frame_id,
                     },
                     requested_anchor_time: range_midpoint(requested_range),
+                    applied_interaction_window: None,
                     preloaded_frames: Some(frames),
                 })
             }
@@ -1365,6 +1400,7 @@ where
             marker_ids,
             gaps,
             retention_warnings,
+            seed.applied_interaction_window,
             options,
         )
     }
@@ -1689,6 +1725,7 @@ fn seed_from_observation(
         anchor_kind: kind,
         anchor_reference,
         requested_anchor_time: observation.session_time(),
+        applied_interaction_window: None,
         preloaded_frames: None,
     })
 }
@@ -1838,6 +1875,10 @@ mod tests {
             ),
         ];
         for (kind, reference, requested_time) in cases {
+            let applied = (kind == TemporalRangeAnchorKind::Interaction).then(|| {
+                InteractionWindow::new(Duration::from_millis(150), Duration::from_millis(250))
+                    .unwrap()
+            });
             let value = ResolvedRange::new_with_anchor(
                 session,
                 target,
@@ -1851,9 +1892,11 @@ mod tests {
                 vec![marker],
                 vec![],
                 vec![],
+                applied,
                 RangeResolutionOptions::DEFAULT,
             )
             .unwrap();
+            assert_eq!(value.applied_interaction_window, applied);
             assert_eq!(value.resolved_anchor.reference, reference);
             assert_eq!(value.resolved_anchor.requested_time, requested_time);
             let encoded = serde_json::to_string(&value).unwrap();
@@ -1917,6 +1960,7 @@ mod tests {
             vec![],
             vec![],
             vec![warning],
+            None,
             RangeResolutionOptions {
                 retention: RetentionPolicy::AllowPartial,
                 ..RangeResolutionOptions::DEFAULT

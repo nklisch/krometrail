@@ -11,11 +11,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::{
     ArtifactFailurePolicy, ArtifactGenerationRequest, ArtifactGenerationResult,
     ArtifactGeneratorRequest, ArtifactMarker, ArtifactMarkerId, BrowserEventFilter,
-    BrowserEventSelection, CancellationSignal, CapabilityId, FrameId, KrometrailError,
-    NonEmptyText, OperationMutability, PortFuture, ResolvedAnchorReference, ResolvedRange, Result,
-    SessionTime, TemporalContext, TemporalContextRequest, TemporalQueryRequest,
-    TemporalRangeAnchor, TemporalRangeResolution, error::invalid, timeline::MAX_FOCUS_TIMES,
-    validation::deserialize_validated,
+    BrowserEventSelection, CancellationSignal, CapabilityId, CaptureGapPolicy, FrameId,
+    KrometrailError, NonEmptyText, OperationMutability, PortFuture, ResolvedAnchorReference,
+    ResolvedRange, Result, RetentionPolicy, SessionTime, TemporalContext, TemporalContextRequest,
+    TemporalQueryRequest, TemporalRangeAnchor, TemporalRangeResolution, error::invalid,
+    timeline::MAX_FOCUS_TIMES, validation::deserialize_validated,
 };
 
 pub const MAX_BUNDLE_CALLER_MARKERS: usize = 64;
@@ -45,8 +45,12 @@ pub enum BundleEpochScope {
 
 /// The sole bundle request. Natural anchors are resolved by the bundle service
 /// exactly once; no sibling request accepts an already-resolved range.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+///
+/// The wire shape is flat — `anchor`, `retention`, and `capture_gaps` sit at
+/// the top level exactly as `resolve_temporal_range` accepts them. The
+/// composed `TemporalQueryRequest` is an internal validation detail, not a
+/// nested wire object.
+#[derive(Clone, Debug, PartialEq)]
 pub struct TemporalDebugBundleRequest {
     query: TemporalQueryRequest,
     caller_markers: Vec<ArtifactMarker>,
@@ -57,7 +61,9 @@ pub struct TemporalDebugBundleRequest {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct TemporalDebugBundleRequestWire {
-    query: TemporalQueryRequest,
+    anchor: TemporalRangeAnchor,
+    retention: RetentionPolicy,
+    capture_gaps: CaptureGapPolicy,
     caller_markers: Vec<ArtifactMarker>,
     orientation: OrientationPolicy,
     #[serde(default)]
@@ -125,15 +131,28 @@ impl TemporalDebugBundleRequest {
     }
 }
 
+impl Serialize for TemporalDebugBundleRequest {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("TemporalDebugBundleRequest", 6)?;
+        state.serialize_field("anchor", &self.query.anchor)?;
+        state.serialize_field("retention", &self.query.retention)?;
+        state.serialize_field("capture_gaps", &self.query.capture_gaps)?;
+        state.serialize_field("caller_markers", &self.caller_markers)?;
+        state.serialize_field("orientation", &self.orientation)?;
+        state.serialize_field("epochs", &self.epochs)?;
+        state.end()
+    }
+}
+
 impl<'de> Deserialize<'de> for TemporalDebugBundleRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: TemporalDebugBundleRequestWire| {
-            Self::new(
-                wire.query,
-                wire.caller_markers,
-                wire.orientation,
-                wire.epochs,
-            )
+            let query = TemporalQueryRequest::new(wire.anchor, wire.retention, wire.capture_gaps)?;
+            Self::new(query, wire.caller_markers, wire.orientation, wire.epochs)
         })
     }
 }
@@ -771,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn request_deserialization_revalidates_nested_query_and_rejects_unknown_fields() {
+    fn request_deserialization_revalidates_flat_query_and_rejects_unknown_fields() {
         let request = TemporalDebugBundleRequest::default_policy(query()).unwrap();
         assert_eq!(request.epochs(), BundleEpochScope::Anchor);
         let mut defaulted = serde_json::to_value(&request).unwrap();
@@ -783,7 +802,7 @@ mod tests {
             BundleEpochScope::Anchor
         );
         let mut value = serde_json::to_value(request).unwrap();
-        value["query"]["anchor"]["scope"]["target_id"] = serde_json::Value::Null;
+        value["anchor"]["scope"]["target_id"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<TemporalDebugBundleRequest>(value).is_err());
 
         let mut value =
@@ -791,5 +810,31 @@ mod tests {
                 .unwrap();
         value["resolved_range"] = serde_json::json!({});
         assert!(serde_json::from_value::<TemporalDebugBundleRequest>(value).is_err());
+    }
+
+    #[test]
+    fn request_rejects_the_superseded_query_nesting_with_an_unknown_field_error() {
+        let flat =
+            serde_json::to_value(TemporalDebugBundleRequest::default_policy(query()).unwrap())
+                .unwrap();
+        let object = flat.as_object().unwrap();
+        let mut nested = serde_json::Map::new();
+        nested.insert(
+            "query".into(),
+            serde_json::json!({
+                "anchor": object["anchor"],
+                "retention": object["retention"],
+                "capture_gaps": object["capture_gaps"],
+            }),
+        );
+        nested.insert("caller_markers".into(), serde_json::json!([]));
+        nested.insert("orientation".into(), serde_json::json!("include"));
+        let error =
+            serde_json::from_value::<TemporalDebugBundleRequest>(serde_json::Value::Object(nested))
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("query"),
+            "nested-query rejection must name the unknown field: {error}"
+        );
     }
 }
