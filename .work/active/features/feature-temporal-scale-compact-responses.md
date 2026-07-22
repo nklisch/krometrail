@@ -464,3 +464,24 @@ All three child stories implemented in dependency order and closed
   is the misreporting warning. `CompactResolvedRange` is now the concise
   tier of the single projection entry point rather than a parallel path.
 - Commits: `bdc5a59c` (Unit 1), `83e8e725` (Unit 2), `86ef49f4` (Unit 3).
+
+## Review adjudication (standard weight, cross-model gpt-5.6-sol, one pass)
+
+Clean areas: clock injection and lifecycle guards, full-tier head pagination
+composition, epoch-predicate consolidation (behavior-preserving), structured
+sampling accounting, canonical manifest completeness, foundation-doc honesty.
+
+Five findings, all accepted; fixes routed to the active implementation worker
+(single-writer), closure is fix-verification only:
+1. (blocker) `fetch_source_frames` expanded/full still serializes the complete
+   canonical range — must project through `bounded_resolved_range` at every
+   tier.
+2. (significant) Mixed elapsed/future tails: only `[session_now,
+   requested_end]` is "not yet elapsed"; the elapsed prefix keeps loss/
+   uncertainty language.
+3. (significant) Pin-state `retained_frame_ids`/`missing_frame_ids` unbounded
+   at every tier — bound with exact omitted counts.
+4. (minor) Manifest sampling-index bounding branch dead (tagged
+   `ParameterValue` shape mismatch).
+5. (minor) Missing over-cap tests (fetch tiers, manifest indices, pin caps,
+   video range) that allowed 1/3/4 through.

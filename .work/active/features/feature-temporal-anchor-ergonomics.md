@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-anchor-ergonomics
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, visual, bug]
 parent: null
 depends_on: []
@@ -186,3 +186,10 @@ test, clippy `-D warnings`).
 - Resolver-level acceptance tests added in
   `crates/krometrail-store/tests/range_resolution.rs`: explicit window echoed
   exactly, omitted window echoes the default, marker anchors echo `None`.
+
+## Review adjudication (standard weight, cross-model gpt-5.6-sol, one pass)
+
+No findings. Wire contract (flat shape, deny-unknown-fields, preserved
+validation), applied-window bidirectional enforcement including the
+latest_interaction collapse, and the test surface all verified clean.
+Review complete 2026-07-22.
