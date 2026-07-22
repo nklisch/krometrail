@@ -2308,6 +2308,141 @@ async fn opt_in_real_chrome_resolves_semantic_queries_to_exact_references() {
 }
 
 #[tokio::test]
+async fn opt_in_real_chrome_qualifies_exact_native_disclosure_queries() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome native disclosure qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("verified-native-disclosures");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(support::chrome::verified_interactions_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::default(),
+            },
+        ))
+        .await
+        .expect("native disclosure fixture");
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    await_fixture_ready(&session, target).await;
+
+    let variants = [
+        ("disclosure-inline-pua", "Inline PUA disclosure"),
+        ("disclosure-pseudo-pua", "Pseudo PUA disclosure"),
+        ("disclosure-zero-width", "Zerowidth disclosure"),
+        ("disclosure-sr-only", "Screen reader suffix disclosure"),
+        ("disclosure-plain", "Plain disclosure"),
+    ];
+    let mut failures = Vec::new();
+    for (id, expected) in variants {
+        let role_result = query_page(
+            &session,
+            target,
+            SemanticQuery::role("button", Some(exact_semantic_text(expected))).unwrap(),
+            None,
+            20,
+        )
+        .await;
+        let text_result = query_page(
+            &session,
+            target,
+            SemanticQuery::Text {
+                text: exact_semantic_text(expected),
+            },
+            None,
+            20,
+        )
+        .await;
+        if role_result.outcome != SemanticQueryOutcome::Unique
+            || text_result.outcome != SemanticQueryOutcome::Unique
+        {
+            let snapshot = session
+                .execute(
+                    BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target)),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+                .expect("capture AX evidence snapshot");
+            let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
+                panic!("AX evidence snapshot result");
+            };
+            let ax_name_bytes = snapshot
+                .nodes
+                .iter()
+                .filter(|node| node.role == "button")
+                .map(|node| {
+                    (
+                        node.name.clone(),
+                        node.name.as_deref().map(|name| name.as_bytes().to_vec()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if id == "disclosure-sr-only" {
+                assert_eq!(role_result.outcome, SemanticQueryOutcome::NoMatch);
+                assert_eq!(text_result.outcome, SemanticQueryOutcome::NoMatch);
+                eprintln!(
+                    "expected decorated sr-only disclosure miss; full-snapshot AX name bytes: {ax_name_bytes:?}"
+                );
+            } else {
+                failures.push((id, role_result.outcome, text_result.outcome, ax_name_bytes));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "native disclosure exact-query qualification failures with full-snapshot AX name bytes: {failures:?}"
+    );
+
+    session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    selector("#disclosure-plain"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("toggle native disclosure");
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "document.querySelector('#disclosure-plain').getAttribute('aria-expanded')",
+        )
+        .await,
+        json!("true")
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn opt_in_real_chrome_qualifies_viewport_presets_guidance_and_target_isolation() {
     if !support::chrome::real_browser_tests_enabled() {
         eprintln!(

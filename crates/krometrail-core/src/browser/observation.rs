@@ -605,6 +605,9 @@ impl SemanticTextMatch {
 
     pub fn matches(&self, candidate: &str) -> bool {
         let expected = normalize_semantic_text(self.value.as_str(), self.case_sensitive);
+        if expected.is_empty() {
+            return false;
+        }
         let candidate = normalize_semantic_text(candidate, self.case_sensitive);
         match self.mode {
             SemanticTextMatchMode::Exact => candidate == expected,
@@ -629,6 +632,13 @@ fn normalize_semantic_text(value: &str, case_sensitive: bool) -> String {
     let mut normalized = String::new();
     let mut pending_space = false;
     for character in value.trim().chars() {
+        if is_invisible_format(character) {
+            continue;
+        }
+        if is_private_use(character) {
+            pending_space = !normalized.is_empty();
+            continue;
+        }
         if character.is_whitespace() {
             pending_space = !normalized.is_empty();
             continue;
@@ -644,6 +654,25 @@ fn normalize_semantic_text(value: &str, case_sensitive: bool) -> String {
         }
     }
     normalized
+}
+
+const fn is_invisible_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{FEFF}'
+    )
+}
+
+const fn is_private_use(character: char) -> bool {
+    let codepoint = character as u32;
+    (codepoint >= 0xE000 && codepoint <= 0xF8FF)
+        || (codepoint >= 0xF0000 && codepoint <= 0xFFFFD)
+        || (codepoint >= 0x100000 && codepoint <= 0x10FFFD)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1399,6 +1428,31 @@ mod tests {
 
         let sensitive = SemanticTextMatch::new("Save", SemanticTextMatchMode::Exact, true).unwrap();
         assert!(!sensitive.matches("save"));
+    }
+
+    #[test]
+    fn exact_match_ignores_format_characters_and_private_use_glyphs() {
+        for candidate in [
+            "Advanced filters\u{200b}",
+            "Advanced filters\u{200d}",
+            "Filters \u{e5cf}",
+            "\u{e5cf} Filters",
+        ] {
+            let exact = SemanticTextMatch::new(
+                if candidate.contains("Advanced") {
+                    "Advanced filters"
+                } else {
+                    "Filters"
+                },
+                SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap();
+            assert!(exact.matches(candidate), "candidate {candidate:?}");
+        }
+        let icon_only =
+            SemanticTextMatch::new("\u{e5cf}", SemanticTextMatchMode::Exact, false).unwrap();
+        assert!(!icon_only.matches("\u{e5cf}"));
     }
 
     #[test]

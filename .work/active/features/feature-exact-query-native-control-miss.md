@@ -1,14 +1,14 @@
 ---
 id: feature-exact-query-native-control-miss
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser, bug]
 parent: null
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-22
 ---
 
 # Exact semantic queries can miss visible native controls
@@ -242,3 +242,32 @@ const fn is_private_use(character: char) -> bool
   that authors meant to distinguish — implausible for agent-facing controls, and
   ambiguity still surfaces as the existing multiple-match outcome rather than a
   wrong single action (semantic matching never silently selects one of several).
+
+## Implementation notes
+
+- Added the five-variant native disclosure fixture: inline PUA content, CSS pseudo-element PUA
+  content, an embedded zero-width space, a clipped screen-reader-only suffix, and an undecorated
+  positive control. Every button is visible/enabled, carries `aria-expanded`/`aria-controls`, and
+  toggles its panel when clicked.
+- Reproduction verdict: the codepoint hypothesis reproduced in real Chrome. Before the fix,
+  exact role/name and exact rendered-text queries missed the inline PUA, pseudo-PUA, and ZWSP
+  controls. The captured AX names were `Inline PUA disclosure \u{e5cf}` and
+  `Pseudo PUA disclosure \u{e5cf}` (UTF-8 suffix bytes `[238, 151, 143]`), and
+  `Zero\u{200b}width disclosure` (UTF-8 bytes `[226, 128, 139]`). The screen-reader-only
+  variant produced the intentionally decorated name `Screen reader suffix disclosure extra
+  details`; its exact visible-text query remained a designed no-match with a relaxed candidate.
+  The undecorated control matched. Because Chrome did emit the hypothesized codepoints, no
+  re-scope away from the matcher fix was warranted.
+- Added the matcher-level red test and scripted snapshot seam red test before implementation;
+  both became green after extending the shared normalizer. The fix strips the explicit invisible
+  format list without inserting separators, treats BMP and supplementary private-use codepoints
+  as separator whitespace, and rejects an all-invisible/all-icon normalized query as a text key.
+  This applies symmetrically to exact/contains role-name, label, rendered-text, and
+  container-text matching.
+- The gated real-Chrome test now qualifies the three codepoint variants and positive control, and
+  records the full-snapshot AX name bytes for the expected decorated sr-only boundary. The
+  disclosure click also verified `aria-expanded` toggling.
+- Regenerated `docs/public/llms-full.txt` through `bun run docs:build`; no generated file was
+  edited directly. Full verification passed with the escalated local test process: format,
+  wire-enum schema check, workspace check, workspace tests, and workspace clippy with
+  `-D warnings`.

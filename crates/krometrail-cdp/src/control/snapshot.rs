@@ -3582,6 +3582,152 @@ mod tests {
     }
 
     #[test]
+    fn exact_role_name_and_text_match_names_carrying_invisible_codepoints() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root = SnapshotNodeId::new(1).unwrap();
+        let zwsp = SnapshotNodeId::new(2).unwrap();
+        let pua = SnapshotNodeId::new(3).unwrap();
+        let reference = |node_id| NodeReference {
+            target_id: target(),
+            generation,
+            node_id,
+        };
+        let node = |id, name: &str| SnapshotNode {
+            id,
+            parent: (id != root).then_some(root),
+            depth: u16::from(id != root),
+            role: if id == root { "document" } else { "button" }.into(),
+            name: (!name.is_empty()).then(|| name.to_owned()),
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: id != root,
+            reference: (id != root).then(|| reference(id)),
+            document_rect: None,
+        };
+        let zwsp_name = "Advanced filters\u{200b}";
+        let pua_name = "Filters \u{e5cf}";
+        let nodes = vec![node(root, ""), node(zwsp, zwsp_name), node(pua, pua_name)];
+        let context = ObservationContext::new(
+            krometrail_core::SessionId::from_uuid(uuid::Uuid::from_u128(10)),
+            target(),
+            4,
+            krometrail_core::SessionTime::ZERO,
+            krometrail_core::SessionTime::ZERO,
+        )
+        .unwrap();
+        let snapshot = PageSnapshot::new(context, generation, nodes, 0).unwrap();
+        let bound = BoundTarget {
+            target_id: target(),
+            browser_target_key: "target-a".into(),
+            attachment_generation: 4,
+            transport_session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            visibility: krometrail_core::TargetVisibility::Visible,
+        };
+        let mut registry = SnapshotRegistry::default();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: 4,
+                document: DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                frame: None,
+                bindings: HashMap::new(),
+                node_by_backend: HashMap::new(),
+                semantic: HashMap::from([
+                    (
+                        root,
+                        SemanticNodeMetadata {
+                            rendered_text: format!("{zwsp_name} {pua_name}"),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        zwsp,
+                        SemanticNodeMetadata {
+                            rendered_text: zwsp_name.into(),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        pua,
+                        SemanticNodeMetadata {
+                            rendered_text: pua_name.into(),
+                            ..Default::default()
+                        },
+                    ),
+                ]),
+                parent_by_node: HashMap::from([
+                    (root, None),
+                    (zwsp, Some(root)),
+                    (pua, Some(root)),
+                ]),
+                dom_semantics_captured: true,
+                next_node_id: 3,
+            },
+        );
+        let request = |query| {
+            QueryPageRequest::new(
+                krometrail_core::PageSelection::Target(target()),
+                query,
+                None,
+                20,
+            )
+            .unwrap()
+        };
+        for (expected, observed) in [("Advanced filters", zwsp_name), ("Filters", pua_name)] {
+            let role = registry
+                .query(
+                    &bound,
+                    &request(
+                        SemanticQuery::role(
+                            "button",
+                            Some(
+                                krometrail_core::SemanticTextMatch::new(
+                                    expected,
+                                    krometrail_core::SemanticTextMatchMode::Exact,
+                                    false,
+                                )
+                                .unwrap(),
+                            ),
+                        )
+                        .unwrap(),
+                    ),
+                    &snapshot,
+                )
+                .unwrap();
+            assert_eq!(
+                role.outcome,
+                krometrail_core::SemanticQueryOutcome::Unique,
+                "{observed:?}"
+            );
+
+            let text = registry
+                .query(
+                    &bound,
+                    &request(SemanticQuery::Text {
+                        text: krometrail_core::SemanticTextMatch::new(
+                            expected,
+                            krometrail_core::SemanticTextMatchMode::Exact,
+                            false,
+                        )
+                        .unwrap(),
+                    }),
+                    &snapshot,
+                )
+                .unwrap();
+            assert_eq!(
+                text.outcome,
+                krometrail_core::SemanticQueryOutcome::Unique,
+                "{observed:?}"
+            );
+        }
+    }
+
+    #[test]
     fn semantic_query_is_preordered_scoped_bounded_and_explicit() {
         let generation = SnapshotGeneration::new(1).unwrap();
         let root = SnapshotNodeId::new(1).unwrap();

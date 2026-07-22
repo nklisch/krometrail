@@ -186,7 +186,10 @@ matcher, when the relaxation would still match nothing, or when the query matche
 unreported nodes; callers narrow the query until it returns one unique reference before acting. Plain
 role/name queries acquire only the selected document's accessibility tree. Container-text, label,
 rendered-text, and test-id queries additionally acquire DOM semantics. Completeness limits apply to
-the selected acquisition, not unrelated documents, and fail with bounded narrowing guidance.
+the selected acquisition, not unrelated documents, and fail with bounded narrowing guidance. Exact and
+contains text matching compares whitespace-collapsed text while ignoring the supported invisible format
+characters and treating private-use icon glyphs as separator whitespace; an all-icon name does not become a
+text-match key.
 
 ## Browser-Control Surface
 

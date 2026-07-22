@@ -19,6 +19,20 @@
     #responsive-probe { width: 11px; height: 1px; }
     @media (max-width: 500px) { #responsive-probe { width: 22px; } }
     .hidden { display: none; }
+    .disclosure-panel { display: none; margin: 4px 0 12px; }
+    .disclosure-panel[data-open="true"] { display: block; }
+    .disclosure-pseudo-pua::after { content: "\e5cf"; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   </style>
 </head>
 <body>
@@ -56,6 +70,18 @@
       <input id="semantic-aria-input" aria-labelledby="semantic-aria-caption semantic-aria-requirement">
     </section>
     <button class="semantic-repeat">Repeated semantic action</button>
+    <section id="disclosure-fixture" aria-label="Disclosure matching variants">
+      <button id="disclosure-inline-pua" aria-expanded="false" aria-controls="disclosure-inline-pua-panel">Inline PUA disclosure <span class="disclosure-icon-font">&#xe5cf;</span></button>
+      <div id="disclosure-inline-pua-panel" class="disclosure-panel" data-open="false">Inline PUA panel</div>
+      <button id="disclosure-pseudo-pua" class="disclosure-pseudo-pua" aria-expanded="false" aria-controls="disclosure-pseudo-pua-panel">Pseudo PUA disclosure</button>
+      <div id="disclosure-pseudo-pua-panel" class="disclosure-panel" data-open="false">Pseudo PUA panel</div>
+      <button id="disclosure-zero-width" aria-expanded="false" aria-controls="disclosure-zero-width-panel">Zero&#x200b;width disclosure</button>
+      <div id="disclosure-zero-width-panel" class="disclosure-panel" data-open="false">Zero width panel</div>
+      <button id="disclosure-sr-only" aria-expanded="false" aria-controls="disclosure-sr-only-panel">Screen reader suffix disclosure<span class="sr-only"> extra details</span></button>
+      <div id="disclosure-sr-only-panel" class="disclosure-panel" data-open="false">Screen reader suffix panel</div>
+      <button id="disclosure-plain" aria-expanded="false" aria-controls="disclosure-plain-panel">Plain disclosure</button>
+      <div id="disclosure-plain-panel" class="disclosure-panel" data-open="false">Plain panel</div>
+    </section>
   </main>
   <script>
     const state = { clicks: 0, changes: 0, keydowns: [], drops: 0, coordinateClicks: 0, scrolledClicks: 0, dialogsScheduled: 0, passwordSubmits: 0, semanticClicks: 0 };
@@ -81,6 +107,14 @@
       byId('scrolled-click-target').textContent = 'Scrolled target clicked';
     });
     byId('semantic-save').addEventListener('click', () => { state.semanticClicks++; });
+    for (const button of document.querySelectorAll('#disclosure-fixture > button')) {
+      button.addEventListener('click', () => {
+        const panel = byId(button.getAttribute('aria-controls'));
+        const open = button.getAttribute('aria-expanded') !== 'true';
+        button.setAttribute('aria-expanded', String(open));
+        panel.dataset.open = String(open);
+      });
+    }
     byId('confirm-target').addEventListener('mousedown', () => { state.dialogsScheduled++; setTimeout(() => { byId('dialog-output').value = window.confirm('Confirm fixture') ? 'accepted' : 'dismissed'; }, 0); });
     byId('prompt-target').addEventListener('mousedown', () => { state.dialogsScheduled++; setTimeout(() => { const value = window.prompt('Prompt fixture', ''); byId('dialog-output').value = value === null ? 'dismissed' : `prompt:${value}`; }, 0); });
     window.replaceClickTarget = () => { const old = byId('click-target'); const replacement = old.cloneNode(true); old.replaceWith(replacement); };
