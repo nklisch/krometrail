@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results-side-channel-outcomes
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-state-aware-interaction-results
 depends_on: [epic-state-aware-interaction-results-postcondition-core]
@@ -825,3 +825,9 @@ closure is fix-verification only:
   single zero-grace poll of the optional probe; a paused stalled-probe test
   verifies the result returns after one second of settling time, before the
   two-second probe ceiling.
+
+## Review closure
+
+Closure verified 2026-07-22: all routed fixes landed and confirmed in-tree
+(commits 5f31d41e / 211bc4c7) with the full workspace gate green. Review
+complete.

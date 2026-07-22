@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-scale-compact-responses
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, visual, storage]
 parent: null
 depends_on: []
@@ -504,3 +504,9 @@ Five findings, all accepted; fixes routed to the active implementation worker
   analyzed indices verifies the 256-id cap and exact omission count.
 - **B5 fixed:** over-cap coverage now includes fetch ranges, tagged manifest
   sampling indices, pin vectors, and a 1,000-frame temporal-video result range.
+
+## Review closure
+
+Closure verified 2026-07-22: all routed fixes landed and confirmed in-tree
+(commits 5f31d41e / 211bc4c7) with the full workspace gate green. Review
+complete.
