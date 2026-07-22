@@ -3,7 +3,10 @@
 //! This is the only production module that names cdpkit. The adapter owns one live connection and
 //! multiplexes browser/session requests; reconnect and target reconstruction remain outside it.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use cdpkit::{CDP, CdpError, Sender};
 use futures_util::StreamExt;
@@ -181,6 +184,7 @@ impl TransportEvents for CdpkitEvents {
                 Some(params) => Ok(Some(NamedEvent {
                     method: self.method.clone(),
                     params,
+                    received_at: Some(Instant::now()),
                 })),
                 None => Err(TransportError::SubscriptionClosed),
             }

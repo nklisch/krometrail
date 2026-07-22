@@ -9,7 +9,7 @@ use krometrail_core::{
 use serde_json::{Value, json};
 
 use super::{
-    BoundTarget, PageControl, bind_target,
+    BoundTarget, InteractionDispatchBaselines, PageControl, bind_target,
     navigation::OperationCancellation,
     operation_error, post_action_observation_error,
     snapshot::{ReferenceRequirement, ResolvedNode, quad_bounds},
@@ -91,7 +91,12 @@ impl PageControl {
         cancel: &OperationCancellation,
         parent_batch: Option<InteractionId>,
         interaction_id: InteractionId,
-    ) -> Result<(BrowserOperationResult, Option<TargetVisibility>)> {
+        dispatch_baselines: &(dyn Fn() -> InteractionDispatchBaselines + Sync),
+    ) -> Result<(
+        BrowserOperationResult,
+        Option<TargetVisibility>,
+        InteractionDispatchBaselines,
+    )> {
         self.execute_interaction_request_inner(
             transport,
             browser_events,
@@ -100,6 +105,7 @@ impl PageControl {
             cancel,
             parent_batch,
             interaction_id,
+            dispatch_baselines,
         )
         .await
         .map_err(|mut error| {
@@ -119,7 +125,12 @@ impl PageControl {
         cancel: &OperationCancellation,
         parent_batch: Option<InteractionId>,
         interaction_id: InteractionId,
-    ) -> Result<(BrowserOperationResult, Option<TargetVisibility>)> {
+        dispatch_baselines: &(dyn Fn() -> InteractionDispatchBaselines + Sync),
+    ) -> Result<(
+        BrowserOperationResult,
+        Option<TargetVisibility>,
+        InteractionDispatchBaselines,
+    )> {
         let plan = interaction_plan(&request)?;
         let bound = bind_target(state, plan.target)?;
         let generation = state.connection_generation;
@@ -216,6 +227,7 @@ impl PageControl {
                     .map_err(|error| page_signal_setup_error(error, bound.target_id))?,
             )
         };
+        let dispatch_baselines = dispatch_baselines();
         // Attribution fence for the passive signal drains: signals delivered
         // before this point belong to earlier activity (a late event from the
         // previous interaction queued between subscription and dispatch) and
@@ -306,45 +318,65 @@ impl PageControl {
             // CDP commands; running them concurrently keeps the probe's
             // bounded window from adding serial latency ahead of the
             // observation a batch deadline could otherwise swallow.
-            let probe = async {
-                let ResolvedTarget::Element { node, .. } = &resolved else {
-                    return None;
-                };
-                let scope = CommandScope::Session(bound.transport_session.clone());
-                tokio::time::timeout(
-                    POSTCONDITION_PROBE_WINDOW,
-                    cancel.race(
-                        generation,
-                        bound.target_id,
-                        super::snapshot::probe_backend_node_facts(
-                            transport,
-                            &scope,
+            let (probed, observed) = {
+                let probe = async {
+                    let ResolvedTarget::Element { node, .. } = &resolved else {
+                        return None;
+                    };
+                    let scope = CommandScope::Session(bound.transport_session.clone());
+                    tokio::time::timeout(
+                        POSTCONDITION_PROBE_WINDOW,
+                        cancel.race(
+                            generation,
                             bound.target_id,
-                            node.backend_node_id,
+                            super::snapshot::probe_backend_node_facts(
+                                transport,
+                                &scope,
+                                bound.target_id,
+                                node.backend_node_id,
+                            ),
                         ),
-                    ),
-                )
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .flatten()
+                    )
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten()
+                };
+                let observe = async {
+                    self.await_compositor_ready(transport, &bound, cancel, generation)
+                        .await;
+                    self.observe_live(
+                        transport,
+                        &bound,
+                        LiveObservationRequest {
+                            target: plan.target,
+                        },
+                        observation_started,
+                        plan.kind == BrowserOperationKind::Scroll,
+                        Some((cancel, generation)),
+                    )
+                    .await
+                };
+                tokio::pin!(probe);
+                tokio::pin!(observe);
+                tokio::select! {
+                    biased;
+                    observed = &mut observe => {
+                        // Observation completion is the result boundary. A probe
+                        // that is not already ready is optional evidence and must
+                        // never extend the interaction beyond that boundary.
+                        let probed = std::future::poll_fn(|context| {
+                            match probe.as_mut().poll(context) {
+                                std::task::Poll::Ready(result) => std::task::Poll::Ready(result),
+                                std::task::Poll::Pending => std::task::Poll::Ready(None),
+                            }
+                        })
+                        .await;
+                        (probed, observed)
+                    }
+                    probed = &mut probe => (probed, observe.await),
+                }
             };
-            let observe = async {
-                self.await_compositor_ready(transport, &bound, cancel, generation)
-                    .await;
-                self.observe_live(
-                    transport,
-                    &bound,
-                    LiveObservationRequest {
-                        target: plan.target,
-                    },
-                    observation_started,
-                    plan.kind == BrowserOperationKind::Scroll,
-                    Some((cancel, generation)),
-                )
-                .await
-            };
-            let (probed, observed) = tokio::join!(probe, observe);
             post_facts = probed;
             match observed {
                 Ok((BrowserOperationResult::ObserveLive(observation), _)) => observation,
@@ -424,6 +456,7 @@ impl PageControl {
                 },
             ),
             prepared_visibility,
+            dispatch_baselines,
         ))
     }
 

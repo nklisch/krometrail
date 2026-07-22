@@ -4,6 +4,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Instant,
 };
 
 use krometrail_core::{
@@ -857,10 +858,11 @@ async fn pump_signal_only(
     while runtime.accepting.load(Ordering::Acquire) {
         match events.next().await {
             Ok(Some(event)) => {
+                let observed = ingress_observed_at(clock.as_ref(), event.received_at);
                 if let Some(kind) = page_signal_for(&runtime, method, &event.params) {
                     let _ = runtime.page_signal_sender.send(PageSignal {
                         kind,
-                        observed_at: clock.now(),
+                        observed_at: observed,
                     });
                 }
             }
@@ -879,6 +881,7 @@ async fn pump_non_network(
     while runtime.accepting.load(Ordering::Acquire) {
         match events.next().await {
             Ok(Some(event)) => {
+                let observed = ingress_observed_at(clock.as_ref(), event.received_at);
                 match method {
                     "Page.javascriptDialogOpening" => {
                         *runtime.open_dialog.lock().expect("open dialog lock") =
@@ -892,13 +895,12 @@ async fn pump_non_network(
                 if let Some(kind) = page_signal_for(&runtime, method, &event.params) {
                     let _ = runtime.page_signal_sender.send(PageSignal {
                         kind,
-                        observed_at: clock.now(),
+                        observed_at: observed,
                     });
                 }
                 if !runtime.persist_events {
                     continue;
                 }
-                let observed = clock.now();
                 match runtime
                     .normalizer
                     .normalize_non_network(method, &event.params)
@@ -950,7 +952,7 @@ async fn pump_network_source(
     while runtime.accepting.load(Ordering::Acquire) {
         match events.next().await {
             Ok(Some(event)) => {
-                let observed = clock.now();
+                let observed = ingress_observed_at(clock.as_ref(), event.received_at);
                 match runtime.normalizer.normalize_network(method, &event.params) {
                     Ok(activity) => {
                         // Persistence takes the same normalized activity as waits, but its
@@ -993,6 +995,64 @@ async fn pump_network_source(
                 return;
             }
         }
+    }
+}
+
+/// Converts a transport receipt timestamp into this session's observation
+/// clock. Production cdpkit events carry the receipt instant before they enter
+/// any pump; alternate transports use the local dequeue clock as an explicit
+/// fallback because they cannot claim ingress timing they did not record.
+fn ingress_observed_at(
+    clock: &dyn MonotonicClock,
+    received_at: Option<Instant>,
+) -> krometrail_core::ObservedTime {
+    let now = clock.now();
+    let Some(received_at) = received_at else {
+        return now;
+    };
+    let delay = Instant::now()
+        .saturating_duration_since(received_at)
+        .as_nanos();
+    let delay = u64::try_from(delay).unwrap_or(u64::MAX);
+    krometrail_core::ObservedTime::from_nanos(now.as_nanos().saturating_sub(delay))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use krometrail_core::{MonotonicClock, ObservedTime};
+
+    use super::ingress_observed_at;
+
+    struct FixedClock(ObservedTime);
+
+    impl MonotonicClock for FixedClock {
+        fn now(&self) -> ObservedTime {
+            self.0
+        }
+    }
+
+    #[test]
+    fn delayed_delivery_keeps_an_earlier_ingress_before_the_next_interaction_floor() {
+        let clock = FixedClock(ObservedTime::from_nanos(10_000_000_000));
+        let ingress_now = Instant::now();
+        let delayed_ingress = ingress_now
+            .checked_sub(Duration::from_millis(50))
+            .expect("test instant remains representable");
+
+        let first_interaction_signal = ingress_observed_at(&clock, Some(delayed_ingress));
+        let second_interaction_signal = ingress_observed_at(&clock, Some(ingress_now));
+
+        assert!(
+            first_interaction_signal < second_interaction_signal,
+            "a pump-delayed first event must retain its earlier ingress ordering"
+        );
+        assert_eq!(
+            ingress_observed_at(&clock, None),
+            clock.0,
+            "transports without ingress metadata use the documented dequeue fallback"
+        );
     }
 }
 

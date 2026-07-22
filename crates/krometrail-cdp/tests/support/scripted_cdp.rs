@@ -57,7 +57,9 @@ struct State {
     responses: HashMap<String, VecDeque<Result<Value, TransportError>>>,
     hold_events_open: bool,
     held_methods: HashSet<String>,
+    held_after_calls: HashMap<String, usize>,
     command_notify: Arc<Notify>,
+    method_notify: Arc<Notify>,
 }
 
 impl ScriptedCdp {
@@ -78,7 +80,9 @@ impl ScriptedCdp {
                 responses: HashMap::new(),
                 hold_events_open: false,
                 held_methods: HashSet::new(),
+                held_after_calls: HashMap::new(),
                 command_notify: Arc::new(Notify::new()),
+                method_notify: Arc::new(Notify::new()),
             })),
             closed: Arc::new(AtomicBool::new(false)),
             disconnect_notify: Arc::new(Notify::new()),
@@ -160,6 +164,21 @@ impl ScriptedCdp {
             .unwrap()
             .held_methods
             .insert(method.to_owned());
+    }
+
+    pub fn release_method(&self, method: &str) {
+        let mut state = self.state.lock().unwrap();
+        state.held_methods.remove(method);
+        state.held_after_calls.remove(method);
+        state.method_notify.notify_waiters();
+    }
+
+    pub fn hold_method_after(&self, method: &str, completed_calls: usize) {
+        self.state
+            .lock()
+            .unwrap()
+            .held_after_calls
+            .insert(method.to_owned(), completed_calls);
     }
 
     pub async fn wait_for_command(&self, method: &str) {
@@ -370,11 +389,47 @@ impl CdpTransport for ScriptedCdp {
         method: &str,
         params: Value,
     ) -> TransportFuture<'_, Result<Value, TransportError>> {
-        let held = self.state.lock().unwrap().held_methods.contains(method);
+        let state = Arc::clone(&self.state);
+        let method_notify = Arc::clone(&self.state.lock().unwrap().method_notify);
+        let method_name = method.to_owned();
+        let held = {
+            let state = state.lock().unwrap();
+            state.held_methods.contains(method)
+                || state.held_after_calls.get(method).is_some_and(|threshold| {
+                    state
+                        .commands
+                        .iter()
+                        .filter(|(called, _)| called == method)
+                        .count()
+                        >= *threshold
+                })
+        };
         let result = self.response(scope, method, params);
         Box::pin(async move {
             if held {
-                std::future::pending::<Result<Value, TransportError>>().await
+                loop {
+                    let notified = method_notify.notified();
+                    let still_held = {
+                        let state = state.lock().unwrap();
+                        state.held_methods.contains(&method_name)
+                            || state
+                                .held_after_calls
+                                .get(&method_name)
+                                .is_some_and(|threshold| {
+                                    state
+                                        .commands
+                                        .iter()
+                                        .filter(|(called, _)| called == &method_name)
+                                        .count()
+                                        >= *threshold
+                                })
+                    };
+                    if !still_held {
+                        break;
+                    }
+                    notified.await;
+                }
+                result
             } else {
                 result
             }
@@ -486,12 +541,20 @@ impl TransportEvents for ScriptedEvents {
         let live_receiver = self.live_receiver.as_mut();
         Box::pin(async move {
             if let Some(params) = event {
-                return Ok(Some(NamedEvent { method, params }));
+                return Ok(Some(NamedEvent {
+                    method,
+                    params,
+                    received_at: None,
+                }));
             }
             if let Some(receiver) = live_receiver {
                 tokio::select! {
                     params = receiver.recv() => match params {
-                        Some(params) => Ok(Some(NamedEvent { method, params })),
+                        Some(params) => Ok(Some(NamedEvent {
+                            method,
+                            params,
+                            received_at: None,
+                        })),
                         None => Ok(None),
                     },
                     _ = disconnect_notify.notified() => Err(TransportError::Disconnected),

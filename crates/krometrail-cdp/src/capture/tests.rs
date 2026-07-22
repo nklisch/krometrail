@@ -742,6 +742,7 @@ impl TestTransport {
                     viewport_height,
                     timestamp,
                 ),
+                received_at: None,
             })
             .await
             .unwrap();
@@ -774,6 +775,7 @@ impl TestTransport {
                     metadata_height,
                     timestamp,
                 ),
+                received_at: None,
             })
             .await
             .unwrap();
@@ -791,6 +793,7 @@ impl TestTransport {
             .send(NamedEvent {
                 method: "Page.screencastFrame".into(),
                 params: frame_params(ack_token),
+                received_at: None,
             })
             .await
             .unwrap();
@@ -812,6 +815,7 @@ impl TestTransport {
             .send(NamedEvent {
                 method: "Page.screencastVisibilityChanged".into(),
                 params: serde_json::json!({"visible": visible}),
+                received_at: None,
             })
             .await
             .unwrap();
@@ -829,6 +833,7 @@ impl TestTransport {
             .send(NamedEvent {
                 method: method.to_owned(),
                 params: serde_json::json!({}),
+                received_at: None,
             })
             .await
             .unwrap();

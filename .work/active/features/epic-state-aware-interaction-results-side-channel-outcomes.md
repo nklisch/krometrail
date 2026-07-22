@@ -8,7 +8,7 @@ depends_on: [epic-state-aware-interaction-results-postcondition-core]
 release_binding: null
 gate_origin: null
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-22
 ---
 
 # Side-channel outcomes
@@ -801,3 +801,27 @@ closure is fix-verification only:
 5. (significant) `tokio::join!` waits out a stalled 2s probe after
    observation completes — probe becomes subordinate to observation
    completion (optional evidence never extends the result).
+
+## Review fixes
+
+- **A1 fixed:** target reconciliation now separates the cancellable,
+  read-only `Target.getTargets` fetch from the uncancelled reduction/state
+  publication and attach-effects phase. A paused stalled-attach regression
+  proves the supervisor completes attachment after the side-channel deadline.
+- **A2 fixed:** pointer gesture `TransportError::Timeout` now follows the
+  ambiguous-but-dispatched policy used for `CommandFailed`; direct timeout
+  injection covers the popup-opening click case.
+- **A3 fixed:** page and managed-download cursors are captured immediately
+  before dispatch and returned through the interaction seam for enrichment.
+  A preflight side-channel regression confirms an event delivered while target
+  resolution is still running is excluded from the dispatched interaction.
+- **A4 fixed:** production cdpkit `NamedEvent` values now carry a receipt
+  `Instant` before pump queueing, and signal/persistence pumps project that
+  ingress instant into session time. Test and alternate transports that omit
+  receipt metadata explicitly retain the dequeue-clock fallback; those paths
+  cannot make an ingress-order claim they did not record. A delayed-delivery
+  ordering regression covers the two-interaction fence boundary.
+- **A5 fixed:** live observation now wins the concurrent race and performs a
+  single zero-grace poll of the optional probe; a paused stalled-probe test
+  verifies the result returns after one second of settling time, before the
+  two-second probe ceiling.

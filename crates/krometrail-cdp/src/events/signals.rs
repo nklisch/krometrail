@@ -14,9 +14,9 @@ pub(crate) enum PageSignalKind {
     NavigationCommitted,
 }
 
-/// One delivered page signal, stamped with the pump's monotonic observation
-/// time so postcondition drains can fence attribution to a single
-/// interaction's dispatch..observation interval.
+/// One delivered page signal, stamped from the transport ingress receipt when
+/// the adapter supplies it, so pump backlog cannot move an earlier event into
+/// a later interaction's dispatch..observation interval.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PageSignal {
     pub(crate) kind: PageSignalKind,

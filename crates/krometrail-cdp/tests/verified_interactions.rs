@@ -620,6 +620,62 @@ async fn degraded_post_probe_is_unobserved_and_keeps_the_dispatched_action_succe
     session.stop().await.unwrap();
 }
 
+/// A renderer state probe is optional evidence. Once the live observation is
+/// complete, a probe that remains pending must be dropped rather than consume
+/// its full two-second ceiling.
+#[tokio::test(start_paused = true)]
+async fn stalled_post_probe_does_not_extend_fast_live_observation() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    let button = actionability_state(json!({"checked": false}));
+    script_selector_resolution(&transport, button.clone());
+    script_selector_resolution(&transport, button);
+    script_post_probe(
+        &transport,
+        actionability_state(json!({"connected": true, "checked": true})),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    // The first two Runtime.callFunctionOn calls are pre-dispatch reads; hold
+    // the third, post-action probe call.
+    transport.hold_method_after("Runtime.callFunctionOn", 2);
+
+    let operation = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(selector_click(target, "#button")),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        }
+    });
+    transport
+        .wait_for_command_count("Runtime.callFunctionOn", 3)
+        .await;
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    tokio::task::yield_now().await;
+    assert!(
+        operation.is_finished(),
+        "live observation completion must not wait for a stalled probe"
+    );
+    transport.release_method("Runtime.callFunctionOn");
+    let result = operation.await.unwrap().unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(
+        result.record.postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::Unobserved
+    );
+    session.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn malformed_post_probe_payload_is_unobserved_not_a_detachment_claim() {
     let transport = ScriptedCdp::chrome();
@@ -783,6 +839,69 @@ async fn dispatched_click_survives_lost_gesture_acknowledgement() {
     session.stop().await.unwrap();
 }
 
+/// Reconciliation may publish the discovered target before its attach effect
+/// completes. A side-channel deadline must not cancel that effect and strand
+/// the target in the supervisor's authoritative state.
+#[tokio::test(start_paused = true)]
+async fn stalled_reconciliation_attach_runs_to_completion_after_side_channel_deadline() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let evidence = Arc::new(support::RecordingEvidenceFake::default());
+    let session = scripted_session_with_evidence(transport.clone(), evidence).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let attach_before = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Target.attachToTarget")
+        .count();
+    transport.hold_method("Target.attachToTarget");
+    transport.push_response(
+        "Target.getTargets",
+        json!({"targetInfos":[
+            {"targetId":"target-a","type":"page","url":"http://fixture/","title":"fixture"},
+            {"targetId":"target-b","type":"page","url":"http://popup/","title":"popup","openerId":"target-a"}
+        ]}),
+    );
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+
+    let operation = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(coordinate_click(target)),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        }
+    });
+    transport
+        .wait_for_command_count("Target.attachToTarget", attach_before + 1)
+        .await;
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !operation.is_finished(),
+        "the deadline must not cancel an in-flight authoritative attach"
+    );
+    transport.release_method("Target.attachToTarget");
+    let result = operation.await.unwrap().unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(
+        result.record.postcondition.new_pages.unwrap().pages.len(),
+        1
+    );
+    session.stop().await.unwrap();
+}
+
 /// A rejected gesture command (protocol-level refusal, not a lost response)
 /// remains a hard dispatch failure.
 #[tokio::test]
@@ -810,6 +929,83 @@ async fn rejected_click_gesture_command_stays_a_hard_error() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::InteractionFailed);
     assert!(error.message.as_str().contains("input command"));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn timed_out_gesture_acknowledgement_is_treated_as_dispatched() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"BUTTON","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    transport.push_response("Input.dispatchMouseEvent", json!({}));
+    transport.push_response("Input.dispatchMouseEvent", json!({}));
+    transport.push_response("Input.dispatchMouseEvent", json!({}));
+    transport.push_failure("Input.dispatchMouseEvent", TransportError::Timeout);
+    observation_script(&transport);
+    let session = scripted_session(transport).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(coordinate_click(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("a timed-out gesture acknowledgement stays dispatched");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(result.record.outcome, InteractionOutcome::Dispatched);
+    session.stop().await.unwrap();
+}
+
+/// A side-channel event delivered while the interaction is still resolving its
+/// target belongs to the preflight interval, not to the dispatched action.
+#[tokio::test]
+async fn preflight_side_channel_is_not_attributed_to_the_interaction() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    let button = actionability_state(json!({"checked": false}));
+    script_selector_resolution(&transport, button.clone());
+    script_selector_resolution(&transport, button);
+    script_post_probe(
+        &transport,
+        actionability_state(json!({"connected": true, "checked": true})),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let operation = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(selector_click(target, "#button")),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        })
+    };
+
+    transport.wait_for_command("DOM.getDocument").await;
+    transport.push_scoped_event(
+        "Page.windowOpen",
+        Some("session-a"),
+        json!({"url":"http://fixture/preflight","windowName":"preflight","windowFeatures":[],"userGesture":false}),
+    );
+
+    let result = operation.await.unwrap().unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(
+        result.record.postcondition.signals.window_open_attempts,
+        Some(0)
+    );
     session.stop().await.unwrap();
 }
 

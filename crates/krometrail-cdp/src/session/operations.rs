@@ -42,25 +42,7 @@ pub(crate) async fn execute_operation(
     }
     let outer_batch = matches!(request, BrowserOperationRequest::Batch(_));
     let direct_target = direct_request_target(&request);
-    // Pre-action side-channel cursors. The supervisor handles `Execute`
-    // serially, so queued target events cannot advance the page cursor while
-    // the operation runs: this read is the honest pre-action anchor.
-    let page_cursor_before = kind
-        .is_interaction()
-        .then(|| state.page_contexts().ok().map(|inventory| inventory.cursor))
-        .flatten();
-    // The download cursor is absent only when the session does not manage
-    // downloads or activation failed; the delta then stays unobserved.
-    let download_cursor_before = kind
-        .is_interaction()
-        .then(|| {
-            shared
-                .downloads
-                .as_ref()
-                .and_then(|control| control.cursor())
-        })
-        .flatten();
-    let mut result = execute_operation_unfenced(
+    let result = execute_operation_unfenced(
         page_control,
         state,
         Arc::clone(&transport),
@@ -71,12 +53,6 @@ pub(crate) async fn execute_operation(
     )
     .await
     .map_err(|error| classify_open_dialog(error, kind, direct_target, shared))?;
-    if let Some(cursor_before) = page_cursor_before {
-        attach_new_page_facts(&mut result, state, &transport, shared, cursor_before).await;
-    }
-    if let Some(cursor_before) = download_cursor_before {
-        attach_download_facts(&mut result, shared, cursor_before);
-    }
     if state_changing && !outer_batch {
         let sink = shared
             .interaction_evidence
@@ -355,6 +331,13 @@ pub(super) async fn reconcile_targets_once(
     transport: &Arc<dyn CdpTransport>,
     shared: &Arc<SessionShared>,
 ) -> Result<()> {
+    let infos = fetch_target_infos(transport).await?;
+    apply_target_reconciliation(state, transport, shared, infos).await
+}
+
+/// Read-only target inventory acquisition. This is the only phase that a
+/// post-interaction side-channel timeout may cancel.
+async fn fetch_target_infos(transport: &Arc<dyn CdpTransport>) -> Result<Vec<TransportTargetInfo>> {
     let response = transport
         .send_raw(
             &CommandScope::Browser,
@@ -363,7 +346,7 @@ pub(super) async fn reconcile_targets_once(
         )
         .await
         .map_err(|error| transport_error_to_core(error, true))?;
-    let infos = response
+    response
         .get("targetInfos")
         .and_then(Value::as_array)
         .ok_or_else(|| {
@@ -380,7 +363,18 @@ pub(super) async fn reconcile_targets_once(
                 ErrorCode::TargetFailed,
                 "browser returned an invalid target inventory",
             )
-        })?;
+        })
+}
+
+/// Applies a fetched inventory and runs every resulting external effect to
+/// completion. Callers must not wrap this phase in a cancellation timeout:
+/// the reducer publishes authoritative state before attach/enable effects run.
+async fn apply_target_reconciliation(
+    state: &mut SupervisorState,
+    transport: &Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+    infos: Vec<TransportTargetInfo>,
+) -> Result<()> {
     let reduction = reduce(state.clone(), SupervisorInput::InitialTargets(infos))?;
     *state = reduction.state;
     let browser_event_support = *shared
@@ -436,12 +430,15 @@ async fn attach_new_page_facts(
     else {
         return;
     };
-    let reconciled = tokio::time::timeout(
-        SIDE_CHANNEL_RECONCILE_WINDOW,
-        reconcile_targets_once(state, transport, shared),
-    )
-    .await;
-    if !matches!(reconciled, Ok(Ok(()))) {
+    let infos =
+        tokio::time::timeout(SIDE_CHANNEL_RECONCILE_WINDOW, fetch_target_infos(transport)).await;
+    let Ok(Ok(infos)) = infos else {
+        return;
+    };
+    if apply_target_reconciliation(state, transport, shared, infos)
+        .await
+        .is_err()
+    {
         return;
     }
     let Ok(inventory) = state.page_contexts() else {
@@ -530,7 +527,16 @@ async fn execute_non_local_operation(
                 ));
             }
         };
-        let (result, observed_visibility) = page_control
+        let dispatch_baselines = || crate::control::InteractionDispatchBaselines {
+            page_cursor_before: state.page_contexts().ok().map(|inventory| inventory.cursor),
+            // The download cursor is absent only when the session does not
+            // manage downloads; that delta then stays unobserved.
+            download_cursor_before: shared
+                .downloads
+                .as_ref()
+                .and_then(|control| control.cursor()),
+        };
+        let (mut result, observed_visibility, baselines) = page_control
             .execute_interaction_request(
                 transport.as_ref(),
                 shared.browser_events.as_ref(),
@@ -539,8 +545,15 @@ async fn execute_non_local_operation(
                 cancellation,
                 context.parent_batch,
                 interaction_id,
+                &dispatch_baselines,
             )
             .await?;
+        if let Some(cursor_before) = baselines.page_cursor_before {
+            attach_new_page_facts(&mut result, state, &transport, shared, cursor_before).await;
+        }
+        if let Some(cursor_before) = baselines.download_cursor_before {
+            attach_download_facts(&mut result, shared, cursor_before);
+        }
         if let Some(visibility) = observed_visibility {
             commit_observed_visibility(
                 state,

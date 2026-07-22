@@ -52,6 +52,10 @@ impl CommandScope {
 pub struct NamedEvent {
     pub method: String,
     pub params: serde_json::Value,
+    /// Receipt time at the production transport boundary. Test and alternate
+    /// transports may leave this absent; consumers then use their local pump
+    /// clock as the documented fallback.
+    pub received_at: Option<std::time::Instant>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

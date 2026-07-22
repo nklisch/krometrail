@@ -2,10 +2,11 @@ use std::{sync::Arc, time::Duration};
 
 use krometrail_core::{
     BrowserOperationRequest, BrowserOperationResult, BrowserOperationScope, BrowserSessionState,
-    CssPoint, CssRect, CssSize, DeviceScaleFactor, DocumentReadiness, ErrorCode, ErrorContext,
-    IdSource, InspectPageRequest, KrometrailError, MonotonicClock, NavigationState, NonEmptyText,
-    ObservationContext, PageState, PageStatus, Result, RetryAdvice, SessionId, SessionOrigin,
-    SessionTime, TargetId, TargetLifecycle, TargetVisibility, ViewportState,
+    CssPoint, CssRect, CssSize, DeviceScaleFactor, DocumentReadiness, DownloadSequence, ErrorCode,
+    ErrorContext, IdSource, InspectPageRequest, KrometrailError, MonotonicClock, NavigationState,
+    NonEmptyText, ObservationContext, PageSequence, PageState, PageStatus, Result, RetryAdvice,
+    SessionId, SessionOrigin, SessionTime, TargetId, TargetLifecycle, TargetVisibility,
+    ViewportState,
 };
 use serde_json::{Value, json};
 
@@ -67,6 +68,12 @@ pub(crate) struct BoundTarget {
     pub(crate) attachment_generation: u64,
     pub(crate) transport_session: TransportSessionId,
     pub(crate) visibility: TargetVisibility,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct InteractionDispatchBaselines {
+    pub(crate) page_cursor_before: Option<PageSequence>,
+    pub(crate) download_cursor_before: Option<DownloadSequence>,
 }
 
 impl PageControl {

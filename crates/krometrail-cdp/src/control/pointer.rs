@@ -345,7 +345,7 @@ async fn gesture_mouse_event(
     .await?
     {
         Ok(_) => Ok(()),
-        Err(TransportError::CommandFailed) => {
+        Err(TransportError::CommandFailed | TransportError::Timeout) => {
             tracing::debug!(
                 target_id = %bound.target_id,
                 event_type,

@@ -1082,6 +1082,7 @@ mod tests {
             NamedEvent {
                 method: "Target.targetCreated".into(),
                 params: serde_json::json!({"targetInfo": {"targetId":"target-1","type":"page","url":"https://example.test/private?token=secret","title":"secret"}}),
+                received_at: None,
             },
         );
         assert!(matches!(input, Some(SupervisorInput::TargetCreated(_))));
