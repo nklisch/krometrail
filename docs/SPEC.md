@@ -149,6 +149,14 @@ authority.
 Automatic live observations also include a small bounded `semantic_outcomes` list prioritizing current alerts,
 dialogs, status messages, and named text. It describes current post-action state and does not claim a pre/post change.
 
+Successful interaction results additionally carry a bounded, on-by-default postcondition block of observed pre/post
+deltas relevant to the dispatched action: navigation and URL identity, target checked/expanded/selected state,
+backing-node identity change, and side-channel outcomes such as a new page, download activity, or a clipboard result.
+Postconditions report observed facts. At most one conservative expectation note may describe a common expectation
+that observably did not hold — for example, a link activation with no navigation — without claiming the action
+failed. When the immediate post-action image may contain compositor-unstable content, the observation marks visual
+completeness so callers consult retained temporal evidence before reporting a visual defect.
+
 Element references are scoped to the target attachment and document generation that produced them.
 A later snapshot of the same attached document preserves a reference while its backing DOM node
 remains present. References are not stable across navigation, document replacement, reconnect, or
