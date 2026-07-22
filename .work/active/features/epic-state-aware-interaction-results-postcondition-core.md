@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results-postcondition-core
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-state-aware-interaction-results
 depends_on: []
@@ -79,8 +79,10 @@ findings, all accepted; closure is fix-verification only:
 4. **Future-schema test seeds the current version** — made version-agnostic in
    the same stride as the v10 bump.
 
-This feature stays at `review` until the side-channel stride lands the fixes
-and the closure verification confirms them.
+Closure verified 2026-07-22: all four fixes landed in the side-channel stride
+(`Unobserved` variant, `observed_at`-fenced signals, concurrent budget-capped
+probes, version-agnostic future-schema test) — confirmed in-tree with the
+full gate green. Review complete.
 
 ## Design decisions
 
