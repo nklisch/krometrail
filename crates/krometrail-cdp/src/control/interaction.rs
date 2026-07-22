@@ -2,8 +2,9 @@ use krometrail_core::{
     ActionDefinition, ActionabilityRequirement, BROWSER_OPERATION_REGISTRY, BrowserActionRequest,
     BrowserOperationKind, BrowserOperationRequest, BrowserOperationResult, CompletionKind,
     CoordinateSpace, CssPoint, ErrorCode, InteractionId, InteractionLocator, InteractionOutcome,
-    InteractionRecord, InteractionResult, LiveObservationRequest, LocatorSummary, NonEmptyText,
-    ObservationContext, PageSelection, Result, SanitizedParameters, TargetId, TargetVisibility,
+    InteractionPostcondition, InteractionRecord, InteractionResult, LiveObservationRequest,
+    LocatorSummary, NonEmptyText, ObservationContext, PageSelection, Result, SanitizedParameters,
+    TargetId, TargetVisibility,
 };
 use serde_json::{Value, json};
 
@@ -289,6 +290,7 @@ impl PageControl {
             plan.sanitized,
             LocatorSummary::from_locator(plan.locator.as_ref()),
             InteractionOutcome::Dispatched,
+            InteractionPostcondition::unobserved(),
             parent_batch,
         )?;
         Ok((

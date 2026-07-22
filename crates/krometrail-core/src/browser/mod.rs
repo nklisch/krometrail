@@ -9,6 +9,7 @@ mod interaction;
 mod local_io;
 mod observation;
 mod operation;
+mod postcondition;
 mod privacy;
 mod session;
 mod target;
@@ -79,6 +80,10 @@ pub use operation::{
     BROWSER_OPERATION_REGISTRY, BrowserOperationDefinition, BrowserOperationKind,
     BrowserOperationRequest, BrowserOperationResult, BrowserOperationScope,
     BrowserOperationScopeKind, OperationEvidence, OperationMutability,
+};
+pub use postcondition::{
+    FlagObservation, InteractionPostcondition, NodeStateFacts, PagePostcondition,
+    TargetNodeOutcome, TargetPostcondition,
 };
 pub use privacy::{
     EventRedactor, MAX_REDACTED_FUNCTION_BYTES, MAX_REDACTED_NAME_BYTES, MAX_REDACTED_TEXT_BYTES,

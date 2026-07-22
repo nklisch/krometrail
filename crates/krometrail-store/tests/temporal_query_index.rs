@@ -2,10 +2,10 @@ use std::{sync::Arc, time::Duration};
 
 use krometrail_core::{
     BrowserOperationKind, InteractionAnchor, InteractionAnchorSource, InteractionEvidenceSink,
-    InteractionId, InteractionOutcome, InteractionRecord, InteractionRecordSource,
-    InteractionTiming, LocatorSummary, NavigationId, ObservationContext, ObservationKind,
-    ObservedTime, SanitizedParameters, SessionId, SessionRange, SessionTime, TargetId,
-    TimelineStore,
+    InteractionId, InteractionOutcome, InteractionPostcondition, InteractionRecord,
+    InteractionRecordSource, InteractionTiming, LocatorSummary, NavigationId, NodeStateFacts,
+    ObservationContext, ObservationKind, ObservedTime, SanitizedParameters, SessionId,
+    SessionRange, SessionTime, TargetId, TargetNodeOutcome, TimelineStore,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -92,6 +92,22 @@ impl Fixture {
             .unwrap(),
             LocatorSummary::from_locator(None),
             InteractionOutcome::Dispatched,
+            InteractionPostcondition::from_facts(
+                Some(&NodeStateFacts {
+                    connected: true,
+                    checked: Some(false),
+                    value_length: Some(0),
+                    ..NodeStateFacts::default()
+                }),
+                Some(&NodeStateFacts {
+                    connected: true,
+                    checked: Some(true),
+                    value_length: Some(0),
+                    ..NodeStateFacts::default()
+                }),
+                Some(false),
+                true,
+            ),
             Some(InteractionId::from_uuid(Uuid::from_u128(99))),
         )
         .unwrap()
@@ -175,10 +191,25 @@ async fn exact_anchor_and_optional_action_record_round_trip_idempotently() {
         )
         .await
         .unwrap();
+    let decoded = fixture
+        .index
+        .interaction_record(record.id)
+        .await
+        .unwrap()
+        .expect("stored interaction record decodes");
+    assert_eq!(decoded, record);
+    // The populated postcondition block survives the opaque record_json round trip.
     assert_eq!(
-        fixture.index.interaction_record(record.id).await.unwrap(),
-        Some(record)
+        decoded.postcondition.target.node,
+        TargetNodeOutcome::Present
     );
+    assert_eq!(decoded.postcondition.target.checked.changed, Some(true));
+    assert_eq!(
+        decoded.postcondition.target.value_length_changed,
+        Some(false)
+    );
+    assert_eq!(decoded.postcondition.page.url_changed, Some(false));
+    assert!(decoded.postcondition.page.navigation_lifecycle_observed);
     assert_eq!(
         fixture
             .index

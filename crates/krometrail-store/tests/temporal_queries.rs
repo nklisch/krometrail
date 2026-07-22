@@ -132,6 +132,7 @@ impl Fixture {
                 .unwrap(),
             LocatorSummary::from_locator(None),
             InteractionOutcome::Dispatched,
+            krometrail_core::InteractionPostcondition::unobserved(),
             None,
         )
         .unwrap();
@@ -690,6 +691,7 @@ async fn persisted_browser_sanitization_survives_storage_and_session_deletion_re
             fill.sanitize(),
             LocatorSummary::from_locator(fill.locator()),
             InteractionOutcome::Dispatched,
+            krometrail_core::InteractionPostcondition::unobserved(),
             Some(InteractionId::from_uuid(Uuid::from_u128(499))),
         )
         .unwrap(),
@@ -702,6 +704,7 @@ async fn persisted_browser_sanitization_survives_storage_and_session_deletion_re
             dialog.sanitize(),
             LocatorSummary::from_locator(dialog.locator()),
             InteractionOutcome::Dispatched,
+            krometrail_core::InteractionPostcondition::unobserved(),
             None,
         )
         .unwrap(),
@@ -714,6 +717,7 @@ async fn persisted_browser_sanitization_survives_storage_and_session_deletion_re
             upload.sanitize(),
             LocatorSummary::from_locator(upload.locator()),
             InteractionOutcome::Dispatched,
+            krometrail_core::InteractionPostcondition::unobserved(),
             None,
         )
         .unwrap(),

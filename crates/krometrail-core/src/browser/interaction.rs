@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    BrowserOperationKind, CoordinateSpace, CssPoint, ElementLocator, LiveObservation,
-    NodeReference, ObservationContext, PageSelection,
+    BrowserOperationKind, CoordinateSpace, CssPoint, ElementLocator, InteractionPostcondition,
+    LiveObservation, NodeReference, ObservationContext, PageSelection,
 };
 
 const MAX_SANITIZED_PARAMETERS_BYTES: usize = 4_096;
@@ -863,6 +863,7 @@ pub struct InteractionRecord {
     pub sanitized_parameters: SanitizedParameters,
     pub locator: LocatorSummary,
     pub outcome: InteractionOutcome,
+    pub postcondition: InteractionPostcondition,
     pub parent_batch: Option<InteractionId>,
 }
 #[derive(Deserialize)]
@@ -875,6 +876,7 @@ struct InteractionRecordWire {
     sanitized_parameters: SanitizedParameters,
     locator: LocatorSummary,
     outcome: InteractionOutcome,
+    postcondition: InteractionPostcondition,
     parent_batch: Option<InteractionId>,
 }
 impl InteractionRecord {
@@ -888,6 +890,7 @@ impl InteractionRecord {
         sanitized_parameters: SanitizedParameters,
         locator: LocatorSummary,
         outcome: InteractionOutcome,
+        postcondition: InteractionPostcondition,
         parent_batch: Option<InteractionId>,
     ) -> Result<Self> {
         if context.started_at > dispatch_time
@@ -917,6 +920,7 @@ impl InteractionRecord {
             sanitized_parameters,
             locator,
             outcome,
+            postcondition,
             parent_batch,
         })
     }
@@ -948,6 +952,7 @@ request_wire!(
         w.sanitized_parameters,
         w.locator,
         w.outcome,
+        w.postcondition,
         w.parent_batch
     )
 );

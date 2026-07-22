@@ -4695,6 +4695,7 @@ mod tests {
                 SanitizedParameters::new(json!({"button": "left"})).unwrap(),
                 LocatorSummary::from_locator(None),
                 InteractionOutcome::Dispatched,
+                krometrail_core::InteractionPostcondition::unobserved(),
                 None,
             )
             .unwrap();

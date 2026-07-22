@@ -2115,6 +2115,7 @@ mod tests {
             request.sanitize(),
             LocatorSummary::from_locator(request.locator()),
             InteractionOutcome::Dispatched,
+            krometrail_core::InteractionPostcondition::unobserved(),
             None,
         )
         .unwrap();

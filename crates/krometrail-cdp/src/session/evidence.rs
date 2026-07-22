@@ -1,7 +1,7 @@
 use krometrail_core::{
     BrowserOperationKind, BrowserOperationResult, ErrorCode, ErrorContext, IdSource,
-    InteractionAnchor, InteractionEvidenceSink, InteractionOutcome, InteractionRecord,
-    KrometrailError, LocatorSummary, MonotonicClock, NavigationId, NonEmptyText,
+    InteractionAnchor, InteractionEvidenceSink, InteractionOutcome, InteractionPostcondition,
+    InteractionRecord, KrometrailError, LocatorSummary, MonotonicClock, NavigationId, NonEmptyText,
     ObservationContext, PageChange, PageOperationOutcome, Result, RetryAdvice, SanitizedParameters,
 };
 
@@ -94,6 +94,7 @@ fn project_result(
             SanitizedParameters::new(serde_json::json!({"utf8_bytes": value.utf8_bytes}))?,
             LocatorSummary::from_locator(None),
             InteractionOutcome::Dispatched,
+            InteractionPostcondition::unobserved(),
             None,
         )?;
         return Ok(Some(EvidenceProjection {
@@ -123,6 +124,7 @@ fn project_result(
             }))?,
             LocatorSummary::from_locator(None),
             InteractionOutcome::Dispatched,
+            InteractionPostcondition::unobserved(),
             None,
         )?;
         return Ok(Some(EvidenceProjection {
