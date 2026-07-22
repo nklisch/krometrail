@@ -1,7 +1,7 @@
 ---
 id: story-batch-timeout-preserves-dispatched-record
 kind: story
-stage: review
+stage: done
 tags: [browser, bug]
 parent: null
 depends_on: []
@@ -86,3 +86,12 @@ Cooperative post-dispatch budgeting, external kill only as a backstop:
   tests, and workspace clippy all passed. The full workspace test gate needed
   loopback socket permission for existing endpoint/session tests; with that
   permission it passed completely.
+
+## Review closure
+
+Bounded inline review (standalone story), 2026-07-22: no findings. Cooperative
+budgeting, backstop, and pre-dispatch behavior all match the design; all three
+acceptance criteria pinned by deterministic tests (post-dispatch record
+preservation + persistence, pre-dispatch no-record timeout, wedged-persistence
+backstop); SPEC Batching sentence accurate both directions; full gate green at
+commit 8b5dc1e5. Done.
