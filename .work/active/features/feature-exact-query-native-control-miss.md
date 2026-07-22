@@ -286,3 +286,10 @@ silently; hoist to an unconditional NoMatch pin. (nit, rejected) ZWJ stripping
 can conflate emoji-sequence names — design-accepted risk, surfaces as
 Ambiguous, never a wrong single action. Fix routed to the post-implementation
 batch; closure is fix-verification only.
+
+## Review fixes
+
+- Hoisted the screen-reader-only disclosure variant out of the shared
+  qualification loop and now unconditionally pins `NoMatch` for both exact
+  role/name and exact-text forms, preserving the intentional decorated-name
+  boundary.

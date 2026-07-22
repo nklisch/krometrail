@@ -56,7 +56,45 @@ fn history() -> Value {
 }
 
 fn frame_tree() -> Value {
-    json!({"frameTree":{"frame":{"id":"main","loaderId":"loader-1","url":"http://fixture/"}}})
+    frame_tree_with_loader("loader-1")
+}
+
+fn frame_tree_with_loader(loader_id: &str) -> Value {
+    json!({"frameTree":{"frame":{"id":"main","loaderId":loader_id,"url":"http://fixture/"}}})
+}
+
+fn semantic_ax_tree(name: Option<&str>) -> Value {
+    let mut button = json!({
+        "nodeId":"button",
+        "ignored":false,
+        "role":{"value":"button"},
+        "backendDOMNodeId":42
+    });
+    if let Some(name) = name {
+        button["name"] = json!({"value":name});
+    }
+    json!({
+        "nodes":[
+            {"nodeId":"root","ignored":false,"role":{"value":"document"},"childIds":["button"]},
+            button
+        ]
+    })
+}
+
+fn semantic_dom_snapshot() -> Value {
+    json!({
+        "strings":["main","DIV","BUTTON","#text","Ready"],
+        "documents":[{
+            "frameId":0,
+            "nodes":{
+                "parentIndex":[-1,0,1],
+                "nodeName":[1,2,3],
+                "backendNodeId":[1,42,43],
+                "attributes":[[],[],[]]
+            },
+            "layout":{"nodeIndex":[2],"text":[4]}
+        }]
+    })
 }
 
 fn png_base64() -> String {
@@ -1055,6 +1093,21 @@ async fn wait_for(
     target: krometrail_core::TargetId,
     condition: WaitCondition,
 ) -> krometrail_core::WaitResult {
+    wait_for_with_timeout(
+        session,
+        target,
+        condition,
+        std::time::Duration::from_secs(3),
+    )
+    .await
+}
+
+async fn wait_for_with_timeout(
+    session: &Arc<dyn krometrail_core::BrowserSessionPort>,
+    target: krometrail_core::TargetId,
+    condition: WaitCondition,
+    timeout: std::time::Duration,
+) -> krometrail_core::WaitResult {
     let poll_interval = if matches!(&condition, WaitCondition::Semantic { .. }) {
         std::time::Duration::from_millis(100)
     } else {
@@ -1066,7 +1119,7 @@ async fn wait_for(
                 WaitRequest::new(
                     PageSelection::Target(target),
                     condition,
-                    std::time::Duration::from_secs(3),
+                    timeout,
                     poll_interval,
                 )
                 .unwrap(),
@@ -1079,6 +1132,176 @@ async fn wait_for(
         panic!("wait result")
     };
     *result
+}
+
+#[tokio::test]
+async fn scripted_semantic_wait_present_satisfies_in_one_poll() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        semantic_ax_tree(Some("Save")),
+    );
+
+    let result = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role(
+                "button",
+                Some(SemanticTextMatch::new("Save", SemanticTextMatchMode::Exact, false).unwrap()),
+            )
+            .unwrap(),
+            presence: WaitPresence::Present,
+        },
+    )
+    .await;
+    assert!(matches!(result.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        result.last_probe,
+        Some(WaitProbe::Semantic {
+            matched: true,
+            outcome: SemanticQueryOutcome::Unique,
+            match_count: 1,
+            relaxed_match_candidates: None,
+        })
+    ));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn scripted_semantic_wait_absent_satisfies_in_one_poll() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response("Accessibility.getFullAXTree", semantic_ax_tree(None));
+
+    let result = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role(
+                "button",
+                Some(
+                    SemanticTextMatch::new("Never rendered", SemanticTextMatchMode::Exact, false)
+                        .unwrap(),
+                ),
+            )
+            .unwrap(),
+            presence: WaitPresence::Absent,
+        },
+    )
+    .await;
+    assert!(matches!(result.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        result.last_probe,
+        Some(WaitProbe::Semantic {
+            matched: true,
+            outcome: SemanticQueryOutcome::NoMatch,
+            match_count: 0,
+            relaxed_match_candidates: None,
+        })
+    ));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn scripted_semantic_wait_timeout_carries_relaxed_match_candidates() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        semantic_ax_tree(Some("Save now")),
+    );
+
+    let result = wait_for_with_timeout(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role(
+                "button",
+                Some(SemanticTextMatch::new("Save", SemanticTextMatchMode::Exact, false).unwrap()),
+            )
+            .unwrap(),
+            presence: WaitPresence::Present,
+        },
+        std::time::Duration::from_millis(50),
+    )
+    .await;
+    assert!(matches!(result.outcome, WaitOutcome::TimedOut { .. }));
+    let Some(WaitProbe::Semantic {
+        matched: false,
+        outcome: SemanticQueryOutcome::NoMatch,
+        match_count: 0,
+        relaxed_match_candidates: Some(candidates),
+    }) = result.last_probe
+    else {
+        panic!("exact semantic timeout retains relaxed candidate evidence: {result:?}");
+    };
+    assert_eq!(candidates.count, 1);
+    assert!(!candidates.saturated);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn scripted_semantic_wait_continues_after_stale_snapshot_poll() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    // The first DOM-semantic capture observes a different document on its
+    // post-capture fingerprint check, producing StaleReference. The next
+    // poll sees a stable document and can satisfy the same query.
+    transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-1"));
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        semantic_ax_tree(Some("Ready")),
+    );
+    transport.push_response("DOMSnapshot.captureSnapshot", semantic_dom_snapshot());
+    transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-2"));
+    transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-2"));
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        semantic_ax_tree(Some("Ready")),
+    );
+    transport.push_response("DOMSnapshot.captureSnapshot", semantic_dom_snapshot());
+    transport.push_response("Page.getFrameTree", frame_tree_with_loader("loader-2"));
+
+    let result = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::Text {
+                text: SemanticTextMatch::new("Ready", SemanticTextMatchMode::Exact, false).unwrap(),
+            },
+            presence: WaitPresence::Present,
+        },
+    )
+    .await;
+    assert!(matches!(result.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        result.last_probe,
+        Some(WaitProbe::Semantic {
+            matched: true,
+            outcome: SemanticQueryOutcome::Unique,
+            match_count: 1,
+            relaxed_match_candidates: None,
+        })
+    ));
+    assert_eq!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Page.getFrameTree")
+            .count(),
+        4,
+        "the stale semantic poll must be followed by a fresh poll"
+    );
+    session.stop().await.unwrap();
 }
 
 async fn launch_real_fixture(

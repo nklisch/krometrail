@@ -85,6 +85,7 @@ impl PageControl {
         }
     }
 
+    #[must_use]
     pub(crate) async fn await_compositor_ready(
         &self,
         transport: &dyn CdpTransport,

@@ -2449,6 +2449,32 @@ async fn opt_in_real_chrome_qualifies_temporal_fill_and_native_segments() {
         json!("[2,2]")
     );
 
+    session
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    selector("#native-datetime-local-input"),
+                    "2026-07-21T10:30:00",
+                    FillMode::Replace,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("datetime-local fill accepts browser-normalized seconds");
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "document.querySelector('#native-datetime-local-input').value",
+        )
+        .await,
+        json!("2026-07-21T10:30")
+    );
+
     let invalid = session
         .execute(
             BrowserOperationRequest::Fill(
@@ -2508,35 +2534,35 @@ async fn opt_in_real_chrome_qualifies_temporal_fill_and_native_segments() {
             .map(|node| node.name.clone())
             .collect::<Vec<_>>()
     );
-    if let Some(segment) = spinbuttons.matches.first() {
-        let segment_result = session
-            .execute(
-                BrowserOperationRequest::Fill(
-                    FillRequest::new(
-                        page,
-                        InteractionLocator::Element(ElementLocator::Reference(segment.reference)),
-                        "2028-02-03",
-                        FillMode::Replace,
-                        false,
-                    )
-                    .unwrap(),
-                ),
-                krometrail_core::BrowserOperationContext::default(),
-            )
-            .await;
-        if let Err(error) = segment_result {
-            assert_eq!(error.code, ErrorCode::ReferenceNotActionable);
-            assert!(
-                error
-                    .message
-                    .as_str()
-                    .contains("target the input element itself")
-            );
-            eprintln!("native date spinbutton branch: guided owner-target failure");
-        } else {
-            eprintln!("native date spinbutton branch: canonicalized to owning input");
-        }
-    }
+    let segment = spinbuttons
+        .matches
+        .first()
+        .expect("Chrome exposes native date spinbuttons");
+    session
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    InteractionLocator::Element(ElementLocator::Reference(segment.reference)),
+                    "2028-02-03",
+                    FillMode::Replace,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("native date spinbutton canonicalizes to its owning input");
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "document.querySelector('#native-date-input').value",
+        )
+        .await,
+        json!("2028-02-03")
+    );
     session.stop().await.unwrap();
 }
 
@@ -2746,7 +2772,6 @@ async fn opt_in_real_chrome_qualifies_exact_native_disclosure_queries() {
         ("disclosure-inline-pua", "Inline PUA disclosure"),
         ("disclosure-pseudo-pua", "Pseudo PUA disclosure"),
         ("disclosure-zero-width", "Zerowidth disclosure"),
-        ("disclosure-sr-only", "Screen reader suffix disclosure"),
         ("disclosure-plain", "Plain disclosure"),
     ];
     let mut failures = Vec::new();
@@ -2793,20 +2818,45 @@ async fn opt_in_real_chrome_qualifies_exact_native_disclosure_queries() {
                     )
                 })
                 .collect::<Vec<_>>();
-            if id == "disclosure-sr-only" {
-                assert_eq!(role_result.outcome, SemanticQueryOutcome::NoMatch);
-                assert_eq!(text_result.outcome, SemanticQueryOutcome::NoMatch);
-                eprintln!(
-                    "expected decorated sr-only disclosure miss; full-snapshot AX name bytes: {ax_name_bytes:?}"
-                );
-            } else {
-                failures.push((id, role_result.outcome, text_result.outcome, ax_name_bytes));
-            }
+            failures.push((id, role_result.outcome, text_result.outcome, ax_name_bytes));
         }
     }
     assert!(
         failures.is_empty(),
         "native disclosure exact-query qualification failures with full-snapshot AX name bytes: {failures:?}"
+    );
+
+    let sr_only_role = query_page(
+        &session,
+        target,
+        SemanticQuery::role(
+            "button",
+            Some(exact_semantic_text("Screen reader suffix disclosure")),
+        )
+        .unwrap(),
+        None,
+        20,
+    )
+    .await;
+    let sr_only_text = query_page(
+        &session,
+        target,
+        SemanticQuery::Text {
+            text: exact_semantic_text("Screen reader suffix disclosure"),
+        },
+        None,
+        20,
+    )
+    .await;
+    assert_eq!(
+        sr_only_role.outcome,
+        SemanticQueryOutcome::NoMatch,
+        "screen-reader-only suffix is an intentional decorated-name boundary"
+    );
+    assert_eq!(
+        sr_only_text.outcome,
+        SemanticQueryOutcome::NoMatch,
+        "screen-reader-only suffix is an intentional decorated-text boundary"
     );
 
     session

@@ -49,7 +49,7 @@ const KEY_DISPATCH: &[(NamedKey, KeyDispatch)] = &[
     (NamedKey::F12, key("F12", "F12", 123)),
 ];
 
-const FILL_TEMPORAL_FUNCTION: &str = "function(value){const descriptor=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');if(!descriptor||typeof descriptor.set!=='function')return false;const previous=this.value;descriptor.set.call(this,value);if(this.value!==value){descriptor.set.call(this,previous);return false;}this.dispatchEvent(new Event('input',{bubbles:true}));this.dispatchEvent(new Event('change',{bubbles:true}));return true;}";
+const FILL_TEMPORAL_FUNCTION: &str = "function(value){const descriptor=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');if(!descriptor||typeof descriptor.set!=='function')return false;const previous=this.value;descriptor.set.call(this,value);if(this.value===''){descriptor.set.call(this,previous);return false;}this.dispatchEvent(new Event('input',{bubbles:true}));this.dispatchEvent(new Event('change',{bubbles:true}));return true;}";
 const fn key(key: &'static str, code: &'static str, keycode: u16) -> KeyDispatch {
     KeyDispatch {
         key,

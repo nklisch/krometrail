@@ -380,3 +380,17 @@ is fix-verification only):
    path — mirror the upload canonicalization test shape.
 4. (nit) Editable-miss guidance is date/time-flavored for non-temporal misses —
    scope the message.
+
+## Review fixes
+
+- Temporal assignment now treats an empty sanitized read-back as browser
+  rejection, while accepting non-empty normalized values; deterministic
+  coverage and a gated `datetime-local` seconds case pin the behavior.
+- The gated spinbutton qualification now requires Chrome's canonicalization
+  success, then asserts the owning date input's value, and fails if no native
+  spinbuttons are exposed.
+- Added deterministic editable-host promotion coverage for the exact probe,
+  one-shot revalidation, `throwOnSideEffect:false`, and `inputType` to
+  `ResolvedNode.temporal_input` threading.
+- Editable kind-miss guidance is now date/time-specific only for temporal
+  probes; other misses retain generic not-editable guidance.

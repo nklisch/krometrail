@@ -1218,7 +1218,11 @@ mod tests {
                         .and_then(Value::as_str)
                         == Some("semantic");
                     if is_semantic_wait {
-                        object.insert("poll_interval".into(), json!(100));
+                        let poll_interval = object
+                            .get("poll_interval")
+                            .and_then(Value::as_u64)
+                            .unwrap_or_default();
+                        object.insert("poll_interval".into(), json!(poll_interval.max(100)));
                     }
                     for child in object.values_mut() {
                         repair_semantic_wait_poll_interval(child);

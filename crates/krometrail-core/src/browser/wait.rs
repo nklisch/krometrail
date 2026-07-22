@@ -121,6 +121,7 @@ enum WaitConditionWire {
     Semantic {
         /// Satisfied when the query matches at least one node (`present`) or none (`absent`).
         /// Uses the same query language as `query_page`.
+        /// Semantic waits poll no more often than once per 100 milliseconds.
         query: SemanticQuery,
         #[serde(default)]
         presence: WaitPresence,

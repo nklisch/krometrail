@@ -344,3 +344,12 @@ fix-verification only):
 
 Rejected (no action): timeout evidence `last_probe_at = started_at` when all
 polls were inconclusive — pre-existing shape the design accepted.
+
+## Review fixes
+
+- Added default-lane scripted present, absent, exact-miss timeout-with-relaxed-
+  candidates, and stale-poll continuation tests through the real semantic
+  `query_page` capture path.
+- Documented the 100 ms semantic poll floor in the wire comment and plugin
+  guidance, and changed schema-test repair to clamp existing intervals rather
+  than overwrite values above the floor.

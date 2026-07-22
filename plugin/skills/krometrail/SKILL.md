@@ -174,7 +174,8 @@ For text waits, omitting `locator` scopes the match to the full document-body te
 For a control identified by role and accessible name, use the semantic wait condition so waiting
 and targeting share the same query language. It is satisfied by any matching node for `present`
 or by no matching nodes for `absent`; it returns observed query evidence but no actionable
-reference, so follow it with `query_page` before acting. For example:
+reference, so follow it with `query_page` before acting. Semantic waits poll no more often than
+once per 100 milliseconds. For example:
 
 ```json
 {"condition":"semantic","value":{"query":{"kind":"role","role":"button","name":{"value":"Save","mode":"contains"}},"presence":"present"}}

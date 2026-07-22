@@ -386,3 +386,11 @@ marker" while the authoritative paragraph uses rendezvous naming — reword to
 the amended name; (minor) the pages.rs attach site (navigation/reload/history/
 viewport lane) has no test — add one scripted navigate/reload marker test;
 (nit) add the design-specified `#[must_use]` on `await_compositor_ready`.
+
+## Review fixes
+
+- Reworded the current-state SPEC sentence to use
+  `compositor_rendezvous_unobserved` and state both marker directions.
+- Added a scripted navigation test covering the `pages.rs` attach site and
+  exactly one warning on an available screenshot after a compositor failure.
+- Added the requested `#[must_use]` annotation to `await_compositor_ready`.

@@ -1013,6 +1013,57 @@ async fn navigation_rejection_and_malformed_preflight_are_source_safe() {
 }
 
 #[tokio::test]
+async fn navigation_marks_post_action_screenshot_when_compositor_rendezvous_is_unobserved() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(&transport).await;
+    let first = "http://fixture/first";
+    let second = "http://fixture/second";
+
+    transport.push_response("Page.getFrameTree", frame("loader-1", first));
+    transport.push_response("Page.getNavigationHistory", history(0, &[first]));
+    transport.push_response(
+        "Page.navigate",
+        json!({"frameId":"main","loaderId":"loader-2"}),
+    );
+    transport.push_response("Page.getFrameTree", frame("loader-2", second));
+    transport.push_response("Page.getNavigationHistory", history(1, &[first, second]));
+    transport.push_failure("Runtime.evaluate", TransportError::CommandFailed);
+    script_live(
+        &transport,
+        second,
+        "Second",
+        "loader-2",
+        1,
+        &[first, second],
+    );
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::NavigatePage(
+                NavigatePageRequest::new(PageSelection::Selected, second).unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::NavigatePage(result) = result else {
+        panic!("navigate")
+    };
+    let ObservationPart::Available(observation) = result.observation else {
+        panic!("navigation returns a post-action screenshot")
+    };
+    let ObservationPart::Available(screenshot) = observation.screenshot else {
+        panic!("navigation returns a post-action screenshot")
+    };
+    assert_eq!(screenshot.warnings().len(), 1);
+    assert_eq!(
+        screenshot.warnings()[0].code,
+        ErrorCode::CompositorRendezvousUnobserved
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn opt_in_real_chrome_runs_complete_managed_page_lifecycle() {
     if !support::chrome::real_browser_tests_enabled() {
         eprintln!("skipping real Chrome page-lifecycle test; set KROMETRAIL_REAL_CHROME_TESTS=1");

@@ -1839,10 +1839,17 @@ async fn resolve_backend_node(
             )
             .await;
         }
-        return Err(not_actionable(
-            target_id,
-            "backing node is not valid for the requested interaction; for a native date/time field, target the input element itself",
-        ));
+        let message = if state
+            .get("inputType")
+            .and_then(Value::as_str)
+            .and_then(TemporalInputKind::from_input_type)
+            .is_some()
+        {
+            "backing node is not valid for the requested interaction; for a native date/time field, target the input element itself"
+        } else {
+            "backing node is not valid for the requested interaction"
+        };
+        return Err(not_actionable(target_id, message));
     }
     resolve_backend_node_from_state(
         transport,
@@ -4513,6 +4520,175 @@ mod tests {
         assert_eq!(calls[3].1["throwOnSideEffect"], json!(false));
         assert_eq!(calls[3].1["returnByValue"], json!(false));
         assert!(calls.iter().all(|(method, _)| method != "DOM.getBoxModel"));
+    }
+
+    #[tokio::test]
+    async fn editable_host_resolution_promotes_once_and_threads_temporal_input() {
+        let transport = SnapshotTransport::default();
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":10}}));
+        transport.push("DOM.resolveNode", json!({"object":{"objectId":"segment"}}));
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({
+                "result": {"value": {
+                    "connected": true,
+                    "visuallyHidden": false,
+                    "interactionBlocked": false,
+                    "isEditable": false,
+                    "inputType": "text"
+                }}
+            }),
+        );
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({"result":{"result":{"type":"object","objectId":"host"}}}),
+        );
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":20}}));
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":20}}));
+        transport.push("DOM.resolveNode", json!({"object":{"objectId":"input"}}));
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({
+                "result": {"value": {
+                    "connected": true,
+                    "visuallyHidden": false,
+                    "interactionBlocked": false,
+                    "isEditable": true,
+                    "inputType": "datetime-local"
+                }}
+            }),
+        );
+        transport.push(
+            "DOM.getBoxModel",
+            json!({"model":{"border":[10.0,20.0,30.0,20.0,30.0,40.0,10.0,40.0]}}),
+        );
+        let scope = CommandScope::Session(TransportSessionId::new("session-a").unwrap());
+        let resolved = resolve_backend_node(
+            &transport,
+            &scope,
+            target(),
+            10,
+            None,
+            ReferenceRequirement::Editable,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.backend_node_id, 20);
+        assert_eq!(
+            resolved.temporal_input,
+            Some(TemporalInputKind::DatetimeLocal)
+        );
+        assert!(resolved.document_quad.is_some());
+        let calls = transport.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(_, params)| { params["functionDeclaration"] == EDITABLE_HOST_FUNCTION })
+                .count(),
+            1
+        );
+        let host_probe = &calls[3].1;
+        assert_eq!(host_probe["throwOnSideEffect"], json!(false));
+        assert_eq!(host_probe["returnByValue"], json!(false));
+        assert_eq!(
+            calls
+                .iter()
+                .map(|(method, _)| method.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "DOM.describeNode",
+                "DOM.resolveNode",
+                "Runtime.callFunctionOn",
+                "Runtime.callFunctionOn",
+                "DOM.describeNode",
+                "DOM.describeNode",
+                "DOM.resolveNode",
+                "Runtime.callFunctionOn",
+                "DOM.getBoxModel",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn editable_kind_miss_keeps_generic_guidance_for_non_temporal_nodes() {
+        let transport = SnapshotTransport::default();
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":10}}));
+        transport.push("DOM.resolveNode", json!({"object":{"objectId":"node"}}));
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({
+                "result": {"value": {
+                    "connected": true,
+                    "visuallyHidden": false,
+                    "interactionBlocked": false,
+                    "isEditable": false,
+                    "inputType": "text"
+                }}
+            }),
+        );
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({"result":{"result":{"type":"object","objectId":"same"}}}),
+        );
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":10}}));
+        let scope = CommandScope::Session(TransportSessionId::new("session-a").unwrap());
+        let error = resolve_backend_node(
+            &transport,
+            &scope,
+            target(),
+            10,
+            None,
+            ReferenceRequirement::Editable,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ReferenceNotActionable);
+        assert_eq!(
+            error.message.as_str(),
+            "backing node is not valid for the requested interaction"
+        );
+    }
+
+    #[tokio::test]
+    async fn editable_kind_miss_keeps_temporal_guidance_when_host_promotion_falls_back() {
+        let transport = SnapshotTransport::default();
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":10}}));
+        transport.push("DOM.resolveNode", json!({"object":{"objectId":"segment"}}));
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({
+                "result": {"value": {
+                    "connected": true,
+                    "visuallyHidden": false,
+                    "interactionBlocked": false,
+                    "isEditable": false,
+                    "inputType": "date"
+                }}
+            }),
+        );
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({"result":{"result":{"type":"object","objectId":"same"}}}),
+        );
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":10}}));
+        let scope = CommandScope::Session(TransportSessionId::new("session-a").unwrap());
+        let error = resolve_backend_node(
+            &transport,
+            &scope,
+            target(),
+            10,
+            None,
+            ReferenceRequirement::Editable,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ReferenceNotActionable);
+        assert!(
+            error
+                .message
+                .as_str()
+                .contains("for a native date/time field")
+        );
     }
 
     #[tokio::test]

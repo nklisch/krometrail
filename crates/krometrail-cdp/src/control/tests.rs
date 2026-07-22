@@ -776,6 +776,50 @@ mod interactions {
     }
 
     #[tokio::test]
+    async fn temporal_fill_accepts_a_browser_normalized_nonempty_assignment() {
+        let transport = RecordingTransport::default();
+        let request = FillRequest::new(
+            PageSelection::Target(target()),
+            InteractionLocator::Element(krometrail_core::ElementLocator::CssSelector(
+                krometrail_core::NonEmptyText::new("#datetime").unwrap(),
+            )),
+            "2026-07-21T10:30:00",
+            FillMode::Replace,
+            false,
+        )
+        .unwrap();
+        transport.push(
+            "DOM.resolveNode",
+            Ok(json!({"object":{"objectId":"datetime"}})),
+        );
+        // The browser double returns success for a valid value even when the
+        // browser's canonical read-back omits the zero seconds component.
+        transport.push(
+            "Runtime.callFunctionOn",
+            Ok(json!({"result":{"value":true}})),
+        );
+        keyboard::fill(
+            &transport,
+            &bound(),
+            &request,
+            &temporal_element(TemporalInputKind::DatetimeLocal),
+            &OperationCancellation::default(),
+            0,
+        )
+        .await
+        .unwrap();
+        let call = &transport.calls("Runtime.callFunctionOn")[0];
+        assert!(
+            call["functionDeclaration"]
+                .as_str()
+                .is_some_and(
+                    |value| value.contains("this.value===''") && value.contains("previous")
+                )
+        );
+        assert_eq!(call["arguments"][0]["value"], json!("2026-07-21T10:30:00"));
+    }
+
+    #[tokio::test]
     async fn temporal_fill_rejects_append_and_invalid_browser_assignment() {
         let bound = bound();
         let append = FillRequest::new(
