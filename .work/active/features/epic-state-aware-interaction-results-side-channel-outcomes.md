@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results-side-channel-outcomes
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-state-aware-interaction-results
 depends_on: [epic-state-aware-interaction-results-postcondition-core]
@@ -710,3 +710,68 @@ pub enum TransportError {
   Current Contract Discipline (agent-tool contract, cache-only clear);
   configuration/profiles/diagnostics survive per the schema module's
   existing discipline.
+
+## Implementation notes
+
+All three child stories landed in design order and are at `done`; per-story
+detail lives in their `## Implementation` sections. Commits:
+`22c14364` (popup/navigation facts + schema v10 + review fixes),
+`adfc397c` (eager download authority + never-absent cursor + real-Chrome
+qualification), `61ceb77d` (Timeout classification + clipboard record fact).
+
+Feature-level summary against the design:
+
+- **All seven implementation units landed as designed.** The one structural
+  refinement: the session-layer enrichment is two helpers
+  (`attach_new_page_facts` — the bounded reconciliation pull — and
+  `attach_download_facts` — a lock-read with no browser round-trip) sharing
+  `interaction_record_mut` over the nine interaction variants, rather than a
+  single `enrich_interaction_record`; same seam, same ordering (after
+  `execute_operation_unfenced`, before `persist_result_evidence`), batch
+  steps inherit through recursion as designed.
+- **Binding advisory constraints honored**: pre-action cursors are read
+  under the supervisor's serial `Execute` guarantee and post-state comes
+  only from the pull reconciliation (`reconcile_targets_once`, extracted
+  from and reused by `wait_for_page`); the interaction path never reads the
+  page cursor as post-state. Attempt signals ride the existing page-signal
+  broadcast with `Page.windowOpen`/`Page.frameRequestedNavigation`
+  signal-only (silent degradation, no event-class accounting, no
+  BrowserEventKind growth) and
+  `Page.frameNavigated`/`navigatedWithinDocument` promoted to
+  always-installed operation signals with main-frame filtering. Facts are
+  attempt/outcome/no-outcome only — no "blocked" claims anywhere. Bounded
+  lists carry `MAX_SIDE_CHANNEL_FACTS = 4` caps with exact omission counts
+  enforced at construction and over-cap wire rejection. Cursors ride in the
+  record (`cursor_before` on both deltas) for direct
+  `wait_for_page`/`wait_for_download` chaining. Clipboard scope stayed
+  narrowed: no automatic probing; only the explicit-write record gained the
+  bridge-confirmed fact, and `read_clipboard` stays recordless. The F5
+  navigation-fact upgrade landed as `main_frame_navigation_observed`
+  alongside the retained `url_changed` and `navigation_lifecycle_observed`
+  facts, with signal availability recorded through `Option`.
+- **Root causes**: #9 (lazy activation + Option cursor) fixed by eager
+  activation at session start and the one never-absent cursor contract, and
+  qualified end-to-end against real Chrome. #8 (Timeout→CommandFailed
+  collapse) confirmed by fault injection at the cdpkit mapper and fixed with
+  the distinct `Timeout` category plus honest classification.
+- **Cross-model review fixes** for the parked postcondition-core findings
+  were folded into story 1 (typed `Unobserved` target outcome with the
+  detachment claim now requiring an observed `connected: false`, fenced
+  signal attribution via pump-stamped observation times, 250ms pre-URL
+  budget with the post-probe made concurrent, and the version-agnostic
+  future-schema test seeded at 9999).
+- **Simplification delivered**: `LazyManagedDownloadAuthority` and its
+  activation trap deleted; one cursor contract across pages and downloads;
+  no new event stream; the `wait_for_page` pull body now shared; lazy-path
+  tests retired with the behavior.
+- **Contract changes for the review pass to note**: store schema v9 → v10
+  (cache-only clear); `WaitForDownloadRequest.after` required and
+  `DownloadInventory.cursor` non-optional (breaking, no compat alias, per
+  Current Contract Discipline); `wait_for_download` tool description and
+  SPEC.md rolled forward; `InteractionPostcondition` lost `Copy`.
+- **Known accepted risks** (from the design, unchanged): popup adoption
+  latency yields attempts >= 1 with an empty delta plus the cursor anchor
+  (the real-Chrome qualification tolerates this honestly); the
+  per-interaction cost (+1 `Target.getTargets`, +3 passive subscriptions,
+  and inside batch steps the reconcile shares the step deadline) routes to a
+  `[perf]` item if measured.
