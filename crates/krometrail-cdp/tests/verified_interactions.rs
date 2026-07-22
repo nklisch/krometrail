@@ -137,6 +137,17 @@ fn observation_script(transport: &ScriptedCdp) {
     transport.push_response("Accessibility.getFullAXTree", ax_tree());
     transport.push_response("Page.captureScreenshot", json!({"data":png_base64()}));
 }
+
+fn observation_script_without_compositor_response(transport: &ScriptedCdp) {
+    transport.push_response("Runtime.evaluate", identity());
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":1.0}}));
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response("Page.getNavigationHistory", history());
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response("Accessibility.getFullAXTree", ax_tree());
+    transport.push_response("Page.captureScreenshot", json!({"data":png_base64()}));
+}
 async fn scripted_session(transport: ScriptedCdp) -> Arc<dyn krometrail_core::BrowserSessionPort> {
     scripted_session_with_evidence(transport, support::evidence_sink()).await
 }
@@ -271,6 +282,10 @@ async fn production_port_rejects_empty_coordinate_hits_and_returns_anchored_live
         .position(|call| call.method == "Page.captureScreenshot")
         .expect("interaction returns a post-action screenshot");
     assert!(compositor < screenshot);
+    let ObservationPart::Available(screenshot) = &result.observation.screenshot else {
+        panic!("interaction returns a post-action screenshot")
+    };
+    assert!(screenshot.warnings().is_empty());
     let mouse = calls
         .iter()
         .filter(|call| {
@@ -316,6 +331,48 @@ async fn production_port_rejects_empty_coordinate_hits_and_returns_anchored_live
         .unwrap_err();
     assert_eq!(error.code, krometrail_core::ErrorCode::InteractionFailed);
     assert!(error.message.as_str().contains("no_hit_target"));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn dispatched_click_marks_post_action_screenshot_when_compositor_rendezvous_is_unobserved() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"DIV","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":true}}));
+    transport.push_failure("Runtime.evaluate", TransportError::CommandFailed);
+    observation_script_without_compositor_response(&transport);
+    let session = scripted_session(transport).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(coordinate_click(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let ObservationPart::Available(screenshot) = result.observation.screenshot else {
+        panic!("interaction returns a post-action screenshot")
+    };
+    assert_eq!(screenshot.warnings().len(), 1);
+    assert_eq!(
+        screenshot.warnings()[0].code,
+        ErrorCode::CompositorRendezvousUnobserved
+    );
+    assert!(
+        screenshot.warnings()[0]
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.as_str().contains("retained temporal frames"))
+    );
     session.stop().await.unwrap();
 }
 

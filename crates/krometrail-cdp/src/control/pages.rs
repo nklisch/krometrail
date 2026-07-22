@@ -1,6 +1,7 @@
 use krometrail_core::{
-    BrowserOperationResult, InteractionId, LiveObservation, LiveObservationRequest,
-    ObservationPart, PageSelection, Result, TargetId,
+    BrowserOperationResult, ErrorCode, ErrorContext, InteractionId, KrometrailError,
+    LiveObservation, LiveObservationRequest, NonEmptyText, ObservationPart, PageSelection, Result,
+    TargetId,
 };
 
 use super::{PageControl, bind_target, navigation::OperationCancellation};
@@ -54,7 +55,8 @@ impl PageControl {
                 });
             }
         };
-        self.await_compositor_ready(transport, &bound, cancel, state.connection_generation)
+        let compositor_marker = self
+            .await_compositor_ready(transport, &bound, cancel, state.connection_generation)
             .await;
         let started_at = self.session_time()?;
         match self
@@ -68,7 +70,10 @@ impl PageControl {
             )
             .await
         {
-            Ok((BrowserOperationResult::ObserveLive(observation), _)) => {
+            Ok((BrowserOperationResult::ObserveLive(mut observation), _)) => {
+                if let Some(warning) = compositor_marker {
+                    observation.attach_screenshot_warning(warning);
+                }
                 Ok(PostOperationObservation {
                     observation: ObservationPart::Available(*observation),
                 })
@@ -86,7 +91,7 @@ impl PageControl {
         bound: &super::BoundTarget,
         cancel: &OperationCancellation,
         connection_generation: u64,
-    ) {
+    ) -> Option<KrometrailError> {
         let signal = transport.send_raw(
             &CommandScope::Session(bound.transport_session.clone()),
             "Runtime.evaluate",
@@ -112,6 +117,22 @@ impl PageControl {
                 attachment_generation = bound.attachment_generation,
                 "browser.compositor.signal_unavailable"
             );
+            return Some(self.compositor_rendezvous_unobserved(bound.target_id));
         }
+        None
+    }
+
+    fn compositor_rendezvous_unobserved(&self, target_id: TargetId) -> KrometrailError {
+        KrometrailError::from_browser_failure(
+            ErrorCode::CompositorRendezvousUnobserved,
+            NonEmptyText::new(
+                "compositor readiness was not confirmed within the bounded wait; the immediate screenshot may not show the settled page state",
+            )
+            .expect("static compositor warning is non-empty"),
+        )
+        .with_context(ErrorContext {
+            target_id: Some(target_id),
+            ..ErrorContext::default()
+        })
     }
 }

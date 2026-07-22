@@ -34,6 +34,7 @@ define_stable_enum! {
         PageObservationFailed => "page_observation_failed",
         DialogOpen => "dialog_open",
         ScreenshotFailed => "screenshot_failed",
+        CompositorRendezvousUnobserved => "compositor_rendezvous_unobserved",
         EvaluationFailed => "evaluation_failed",
         NavigationFailed => "navigation_failed",
         InteractionFailed => "interaction_failed",
@@ -255,7 +256,8 @@ impl ErrorCode {
             | Self::ScreenshotFailed
             | Self::NavigationFailed
             | Self::InteractionFailed
-            | Self::WaitTimedOut => RetryAdvice::Safe,
+            | Self::WaitTimedOut
+            | Self::CompositorRendezvousUnobserved => RetryAdvice::Safe,
             Self::VideoEncodingFailed => RetryAdvice::Safe,
             Self::TargetHidden
             | Self::StaleReference
@@ -296,6 +298,9 @@ impl ErrorCode {
             Self::ScreenshotFailed => {
                 Some("retry once; if it fails again, inspect browser compatibility and status")
             }
+            Self::CompositorRendezvousUnobserved => Some(
+                "treat the immediate screenshot as possibly unsettled; consult retained temporal frames for the settled state before reporting a visual defect",
+            ),
             Self::EvaluationFailed => {
                 Some("use a bounded side-effect-free expression returning a JSON value")
             }

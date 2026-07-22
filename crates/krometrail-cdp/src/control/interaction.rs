@@ -343,19 +343,22 @@ impl PageControl {
                     .flatten()
                 };
                 let observe = async {
-                    self.await_compositor_ready(transport, &bound, cancel, generation)
+                    let compositor_marker = self
+                        .await_compositor_ready(transport, &bound, cancel, generation)
                         .await;
-                    self.observe_live(
-                        transport,
-                        &bound,
-                        LiveObservationRequest {
-                            target: plan.target,
-                        },
-                        observation_started,
-                        plan.kind == BrowserOperationKind::Scroll,
-                        Some((cancel, generation)),
-                    )
-                    .await
+                    let observed = self
+                        .observe_live(
+                            transport,
+                            &bound,
+                            LiveObservationRequest {
+                                target: plan.target,
+                            },
+                            observation_started,
+                            plan.kind == BrowserOperationKind::Scroll,
+                            Some((cancel, generation)),
+                        )
+                        .await;
+                    (compositor_marker, observed)
                 };
                 tokio::pin!(probe);
                 tokio::pin!(observe);
@@ -379,9 +382,17 @@ impl PageControl {
             };
             post_facts = probed;
             match observed {
-                Ok((BrowserOperationResult::ObserveLive(observation), _)) => observation,
-                Ok(_) => unreachable!("live observation returns its associated result"),
-                Err(error) => Box::new(self.unavailable_observation(
+                (
+                    compositor_marker,
+                    Ok((BrowserOperationResult::ObserveLive(mut observation), _)),
+                ) => {
+                    if let Some(warning) = compositor_marker {
+                        observation.attach_screenshot_warning(warning);
+                    }
+                    observation
+                }
+                (_, Ok(_)) => unreachable!("live observation returns its associated result"),
+                (_, Err(error)) => Box::new(self.unavailable_observation(
                     &bound,
                     started_at,
                     post_action_observation_error(error, bound.target_id),

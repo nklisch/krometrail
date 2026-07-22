@@ -1139,8 +1139,11 @@ impl EncodedScreenshot {
     pub fn warnings(&self) -> &[KrometrailError] {
         &self.warnings
     }
-    pub fn with_warning(mut self, warning: KrometrailError) -> Self {
+    pub fn push_warning(&mut self, warning: KrometrailError) {
         self.warnings.push(warning);
+    }
+    pub fn with_warning(mut self, warning: KrometrailError) -> Self {
+        self.push_warning(warning);
         self
     }
 }
@@ -1263,6 +1266,16 @@ pub struct LiveObservation {
     pub page: ObservationPart<PageState>,
     pub snapshot: ObservationPart<PageSnapshot>,
     pub screenshot: ObservationPart<EncodedScreenshot>,
+}
+
+impl LiveObservation {
+    /// Attach a warning to an available screenshot. An unavailable screenshot
+    /// already carries its authoritative observation failure.
+    pub fn attach_screenshot_warning(&mut self, warning: KrometrailError) {
+        if let ObservationPart::Available(screenshot) = &mut self.screenshot {
+            screenshot.push_warning(warning);
+        }
+    }
 }
 
 #[cfg(test)]

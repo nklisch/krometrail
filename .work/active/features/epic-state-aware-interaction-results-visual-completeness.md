@@ -1,14 +1,14 @@
 ---
 id: epic-state-aware-interaction-results-visual-completeness
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser, visual]
 parent: epic-state-aware-interaction-results
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-22
 ---
 
 # Visual completeness marker
@@ -342,3 +342,33 @@ hand-edit).
 - **Exhaustive `ErrorCode` matches**: a non-wildcard match elsewhere would
   break compilation on the new variant; the compiler surfaces these
   deterministically during Unit 1.
+
+## Implementation notes
+
+- Execution capability: host implementation lane, high rigor; the feature is a
+  cohesive core/CDP warning-path change with shared post-action observation
+  seams.
+- Review weight: standard (project default).
+- Files changed: `crates/krometrail-core/src/error.rs`,
+  `crates/krometrail-core/src/browser/observation.rs`,
+  `crates/krometrail-cdp/src/control/pages.rs`,
+  `crates/krometrail-cdp/src/control/interaction.rs`,
+  `crates/krometrail-cdp/tests/verified_interactions.rs`, and `docs/SPEC.md`.
+- Tests added/changed: scripted compositor-rendezvous-unobserved interaction
+  contract test; healthy interaction assertion that no marker is emitted;
+  existing core and MCP warning projection coverage retained.
+- Simplification: `with_warning` now delegates to the single mutable
+  `push_warning` path; the existing tracing signal remains the diagnostic
+  channel and the warning is the contract channel.
+- Discrepancies from design: the current code has two post-action call sites,
+  `pages::observe_after_operation` and the concurrent interaction observation
+  path; the marker was attached at both as intended. The advisory amendment's
+  stable name was used: `CompositorRendezvousUnobserved` /
+  `compositor_rendezvous_unobserved`, replacing the older design draft name.
+  The later SPEC marker paragraph was already current, so the generated public
+  docs remained byte-unchanged after regeneration; only the current-state
+  paragraph was extended.
+- Verification: `cargo fmt --all -- --check`,
+  `bash scripts/check-wire-enum-schemas.sh`, workspace check, workspace tests,
+  and clippy all passed under the approved loopback/process-capable run.
+- Adjacent issues parked: none.
