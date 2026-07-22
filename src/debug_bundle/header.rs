@@ -118,19 +118,36 @@ fn compose_summary(
             "Browser events were unavailable; no co-occurrence is asserted."
         }
     };
-    // A partial tail on a live session whose requested end has not yet elapsed
-    // is a future interval, not evidence loss; name it as such instead of
-    // leaving generic partial phrasing.
-    let tail_clause = if range
+    // A partial tail on a live session can contain both elapsed time that may
+    // have lost evidence and a future interval that cannot have lost evidence.
+    // Keep those claims separate rather than labelling the whole tail as
+    // future merely because the requested end is still ahead of the session.
+    let tail_clause = range
         .retention_warnings
         .iter()
-        .any(|warning| matches!(warning, RetentionWarning::RequestedEndNotYetElapsed { .. }))
-    {
-        "The requested end had not yet elapsed at resolution; \
-         the unretained tail is a not-yet-elapsed interval, not evidence loss. "
-    } else {
-        ""
-    };
+        .find_map(|warning| {
+            let RetentionWarning::RequestedEndNotYetElapsed {
+                newest_retained,
+                session_now,
+                ..
+            } = warning
+            else {
+                return None;
+            };
+            if session_now > newest_retained {
+                Some(
+                    "The retained range ends before session time; its elapsed tail may represent \
+                 evidence loss or uncertainty. Only the interval from session time to requested \
+                 end is not yet elapsed and is not evidence loss. ",
+                )
+            } else {
+                Some(
+                    "The requested end had not yet elapsed at resolution; the unretained tail is a \
+                 not-yet-elapsed interval, not evidence loss. ",
+                )
+            }
+        })
+        .unwrap_or("");
     let text = format!(
         "Observed target {} from {} to {} ns. {} source frames retained. {} \
          {} \
@@ -367,6 +384,8 @@ mod tests {
         let summary = header.summary.as_str();
         assert!(summary.contains("not yet elapsed"));
         assert!(summary.contains("not evidence loss"));
+        assert!(summary.contains("elapsed tail"));
+        assert!(summary.contains("may represent evidence loss or uncertainty"));
         assert!(summary.len() <= MAX_BUNDLE_HEADER_BYTES);
     }
 

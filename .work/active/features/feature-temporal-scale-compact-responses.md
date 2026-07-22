@@ -8,7 +8,7 @@ depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-22
 ---
 
 # Compact temporal responses at every-frame scale
@@ -485,3 +485,22 @@ Five findings, all accepted; fixes routed to the active implementation worker
    `ParameterValue` shape mismatch).
 5. (minor) Missing over-cap tests (fetch tiers, manifest indices, pin caps,
    video range) that allowed 1/3/4 through.
+
+## Review fixes
+
+- **B1 fixed:** `fetch_source_frames` now projects its resolved range through
+  `bounded_resolved_range` for concise, expanded, and full responses; a
+  1,000-frame small-selection regression covers the full-tier cap.
+- **B2 fixed:** mixed tails now distinguish the elapsed interval through
+  `session_now` (which may represent evidence loss or uncertainty) from the
+  future interval through the requested end (not yet elapsed and not evidence
+  loss). The header regression asserts both claims and stays within its byte
+  bound.
+- **B3 fixed:** pin request, retained, and missing frame-id vectors are each
+  bounded per response tier with separate exact omission counts. PinState and
+  PinChange over-cap regressions cover concise, expanded, and full.
+- **B4 fixed:** manifest sampling-index projection now traverses the tagged
+  `ParameterValue` object/list/value shape; a decimated manifest with 300
+  analyzed indices verifies the 256-id cap and exact omission count.
+- **B5 fixed:** over-cap coverage now includes fetch ranges, tagged manifest
+  sampling indices, pin vectors, and a 1,000-frame temporal-video result range.

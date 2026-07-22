@@ -1923,8 +1923,14 @@ fn bounded_manifest_value(
     }
     if let Some(Value::Array(indices)) = object
         .get_mut("parameters")
+        .and_then(Value::as_object_mut)
         .and_then(|parameters| parameters.get_mut("analysis_sampling"))
+        .and_then(Value::as_object_mut)
+        .and_then(|sampling| sampling.get_mut("value"))
+        .and_then(Value::as_object_mut)
         .and_then(|sampling| sampling.get_mut("analyzed_source_indices"))
+        .and_then(Value::as_object_mut)
+        .and_then(|indices| indices.get_mut("value"))
     {
         let omitted_count = indices.len().saturating_sub(MAX_FULL_MANIFEST_IDS);
         indices.truncate(MAX_FULL_MANIFEST_IDS);
@@ -1971,15 +1977,42 @@ fn bound_pin_value(value: &mut Value, detail: ResponseDetail) {
         Some(state) => state,
         None => value,
     };
-    let Some(request) = state.get_mut("request").and_then(Value::as_object_mut) else {
-        return;
-    };
-    let Some(Value::Array(ids)) = request.get_mut("expected_frame_ids") else {
+    if let Some(request) = state.get_mut("request").and_then(Value::as_object_mut) {
+        bound_pin_ids(
+            request,
+            "expected_frame_ids",
+            "omitted_expected_frame_id_count",
+            cap,
+        );
+    }
+    if let Some(evidence) = state.get_mut("evidence").and_then(Value::as_object_mut) {
+        bound_pin_ids(
+            evidence,
+            "retained_frame_ids",
+            "omitted_retained_frame_id_count",
+            cap,
+        );
+        bound_pin_ids(
+            evidence,
+            "missing_frame_ids",
+            "omitted_missing_frame_id_count",
+            cap,
+        );
+    }
+}
+
+fn bound_pin_ids(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    omitted_key: &str,
+    cap: usize,
+) {
+    let Some(Value::Array(ids)) = object.get_mut(key) else {
         return;
     };
     let omitted = ids.len().saturating_sub(cap);
     ids.truncate(cap);
-    request.insert("omitted_expected_frame_id_count".into(), json!(omitted));
+    object.insert(omitted_key.into(), json!(omitted));
 }
 
 fn exact_target(
@@ -3052,12 +3085,7 @@ fn project_source_frame_batch(
     batch: SourceFrameBatch,
     response: ResponseRequest,
 ) -> Result<Projection, ResponseInvariantError> {
-    let range = if response.detail == ResponseDetail::Concise {
-        serde_json::to_value(compact_resolved_range(&batch.range)?)
-            .map_err(|_| ResponseInvariantError)?
-    } else {
-        serde_json::to_value(&batch.range).map_err(|_| ResponseInvariantError)?
-    };
+    let range = bounded_resolved_range(&batch.range, response.detail)?;
     let mut projection = Projection::success(json!({
         "range": range,
         "frames": batch.frames.iter().map(|frame| &frame.handle).collect::<Vec<_>>(),
@@ -3299,14 +3327,16 @@ mod tests {
         AccessibleProperty, AccessibleValue, BatchSkipReason, BatchStepResult, BatchStepStatus,
         BrowserOperationKind, CaptureFailureStage, CaptureOrdinal, CaptureStatistics,
         CaptureStreamState, CaptureTimingSummary, CapturedFrame, CssPoint, CssRect, CssSize,
-        DeviceScaleFactor, ErrorContext, EveryNthFrame, FrameId, ImageFormat, InteractionId,
-        InteractionOutcome, InteractionRecord, InteractionResult, InteractionTiming,
+        DeviceScaleFactor, DiskBudgetBytes, ErrorContext, EveryNthFrame, FrameId, ImageFormat,
+        InteractionId, InteractionOutcome, InteractionRecord, InteractionResult, InteractionTiming,
         LocatorSummary, NodeReference, ObservationContext, ObservedTime, PageChange,
-        PageOperationResult, PageSelection, PageSnapshot, PageState, PixelDimensions,
-        PresentationRange, PresentationTime, RangeResolutionOptions, ResolvedRange,
-        SanitizedParameters, ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest,
-        SnapshotGeneration, SnapshotNode, SnapshotNodeId, SourceFrameRead, TargetCaptureStatus,
-        TargetId, TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
+        PageOperationResult, PageSelection, PageSnapshot, PageState, PinProtectionScope, PinState,
+        PixelDimensions, PresentationRange, PresentationTime, ProgressivePinChange,
+        RangeEvidenceAvailability, RangeResolutionOptions, RecordingBudgetState, ResolvedRange,
+        RetentionPinRequest, RetentionRange, RetentionStatus, SanitizedParameters,
+        ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest, SnapshotGeneration,
+        SnapshotNode, SnapshotNodeId, SourceFrameRead, StorageUsage, TargetCaptureStatus, TargetId,
+        TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
         VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
         VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource,
         VideoTimingBasis, ViewportState, VisualEpoch, WaitCondition, WaitProbe, WaitRequest,
@@ -3357,6 +3387,13 @@ mod tests {
     }
 
     fn generated_sampled_difference_generation() -> ArtifactGenerationResult {
+        generated_sampled_difference_generation_with(4, vec![0, 2, 3])
+    }
+
+    fn generated_sampled_difference_generation_with(
+        source_frame_count: u32,
+        analyzed_indices: Vec<usize>,
+    ) -> ArtifactGenerationResult {
         use temporal_vision::{
             DifferenceMapLimits, DifferenceMapParameters, Frame, FrameSequence, FrequencyMode,
             IntegerScale, MeasurementParameters, NormalizationParameters, PixelFormat,
@@ -3365,10 +3402,10 @@ mod tests {
         };
 
         let dimensions = temporal_vision::PixelDimensions::new(2, 2).unwrap();
-        let source_frames = (0..4)
+        let source_frames = (0..source_frame_count)
             .map(|index| {
                 Frame::new(
-                    FrameId::from_uuid(uuid::Uuid::from_u128(100 + index)),
+                    FrameId::from_uuid(uuid::Uuid::from_u128(100 + u128::from(index))),
                     Timestamp::from_nanos(index as u64),
                     dimensions,
                     PixelFormat::Rgba8SrgbStraight,
@@ -3381,26 +3418,28 @@ mod tests {
             .iter()
             .map(|frame| *frame.id())
             .collect::<Vec<_>>();
-        let source_range =
-            TimeRange::new(Timestamp::from_nanos(0), Timestamp::from_nanos(3)).unwrap();
+        let source_range = TimeRange::new(
+            Timestamp::from_nanos(0),
+            Timestamp::from_nanos(u64::from(source_frame_count.saturating_sub(1))),
+        )
+        .unwrap();
         let analyzed: temporal_vision::FrameSequence<
             FrameId,
             krometrail_core::ArtifactMarkerId,
             krometrail_core::GapId,
             Box<[u8]>,
         > = FrameSequence::new(
-            vec![
-                source_frames[0].clone(),
-                source_frames[2].clone(),
-                source_frames[3].clone(),
-            ],
+            analyzed_indices
+                .iter()
+                .map(|index| source_frames[*index].clone())
+                .collect(),
             vec![],
             vec![],
             None,
             None,
         )
         .unwrap()
-        .with_source_provenance(source_frame_ids.clone(), vec![0, 2, 3], source_range)
+        .with_source_provenance(source_frame_ids.clone(), analyzed_indices, source_range)
         .unwrap();
         let normalized = normalize_sequence(
             &analyzed,
@@ -3434,8 +3473,11 @@ mod tests {
             encoded_byte_len: generated.image().bytes().len() as u64,
             manifest: generated.manifest().clone(),
         };
-        let range =
-            SessionRange::new(SessionTime::from_nanos(0), SessionTime::from_nanos(3)).unwrap();
+        let range = SessionRange::new(
+            SessionTime::from_nanos(0),
+            SessionTime::from_nanos(u64::from(source_frame_count.saturating_sub(1))),
+        )
+        .unwrap();
         let resolved = ResolvedRange::new(
             session_id(),
             target_id(),
@@ -3530,6 +3572,130 @@ mod tests {
         assert!(value["manifest_uri"].is_string());
     }
 
+    #[test]
+    fn bounded_manifest_presentation_caps_tagged_sampling_indices() {
+        let generation =
+            generated_sampled_difference_generation_with(600, (0..600).step_by(2).collect());
+        let ArtifactOutcome::Available { artifact, .. } = &generation.outcomes[0] else {
+            unreachable!()
+        };
+        let scope = artifact_scope(&generation.range).unwrap();
+        let value = bounded_manifest_value(scope, &artifact.manifest).unwrap();
+        let indices =
+            &value["parameters"]["analysis_sampling"]["value"]["analyzed_source_indices"]["value"];
+        assert_eq!(indices.as_array().unwrap().len(), MAX_FULL_MANIFEST_IDS);
+        assert_eq!(
+            value["omitted_id_counts"]["analyzed_source_indices"],
+            300 - MAX_FULL_MANIFEST_IDS as u64
+        );
+    }
+
+    fn pin_retention(pinned_usage_bytes: u64) -> RetentionStatus {
+        RetentionStatus::new(
+            DiskBudgetBytes::new(10_000).unwrap(),
+            StorageUsage::new(500, 10, 0, 0, 0, 0, 0).unwrap(),
+            pinned_usage_bytes,
+            None,
+            None,
+            RecordingBudgetState::Available,
+            false,
+            false,
+            0,
+            0,
+            0,
+        )
+        .unwrap()
+    }
+
+    fn large_pin_state() -> (PinState, ProgressivePinChange) {
+        let expected = (0..600)
+            .map(|index| FrameId::from_uuid(uuid::Uuid::from_u128(10_000 + index)))
+            .collect::<Vec<_>>();
+        let request = RetentionPinRequest::new(
+            RetentionRange {
+                session_id: session_id(),
+                target_id: target_id(),
+                range: SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(600)).unwrap(),
+            },
+            expected.clone(),
+        )
+        .unwrap();
+        let retained = expected[..300].to_vec();
+        let missing = expected[300..].to_vec();
+        let state = PinState::new(
+            request,
+            false,
+            RangeEvidenceAvailability::PartiallyUnavailable {
+                retained_frame_ids: retained,
+                missing_frame_ids: missing,
+            },
+            PinProtectionScope::SourceSegmentsOnly,
+            vec![],
+            vec![],
+            0,
+            pin_retention(0),
+        )
+        .unwrap();
+        let change = ProgressivePinChange {
+            changed: true,
+            state: state.clone(),
+        };
+        (state, change)
+    }
+
+    #[tokio::test]
+    async fn pin_state_and_change_bound_all_frame_id_vectors_per_tier() {
+        for detail in [
+            ResponseDetail::Concise,
+            ResponseDetail::Expanded,
+            ResponseDetail::Full,
+        ] {
+            let (state, change) = large_pin_state();
+            let cap = if detail == ResponseDetail::Full {
+                MAX_FULL_PROJECTED_PIN_FRAME_IDS
+            } else {
+                MAX_PROJECTED_PIN_FRAME_IDS
+            };
+            for result in [
+                ProgressiveEvidenceResult::QueryPinState(Box::new(state)),
+                ProgressiveEvidenceResult::PinResolvedRange(Box::new(change)),
+            ] {
+                let mapped = map_progressive_result(
+                    "query_pin_state",
+                    result,
+                    &UnusedProgressive,
+                    Instant::now() + Duration::from_secs(1),
+                    test_cancellation(),
+                    ResponseRequest {
+                        detail,
+                        inline_images: Some(false),
+                    },
+                )
+                .await
+                .unwrap();
+                let value = &mapped.response.result;
+                let state = value.get("state").unwrap_or(value);
+                let request = &state["request"];
+                let evidence = &state["evidence"];
+                assert_eq!(request["expected_frame_ids"].as_array().unwrap().len(), cap);
+                assert_eq!(request["omitted_expected_frame_id_count"], 600 - cap as u64);
+                assert_eq!(
+                    evidence["retained_frame_ids"].as_array().unwrap().len(),
+                    cap
+                );
+                assert_eq!(evidence["missing_frame_ids"].as_array().unwrap().len(), cap);
+                assert_eq!(
+                    evidence["omitted_retained_frame_id_count"],
+                    300 - cap.min(300) as u64
+                );
+                assert_eq!(
+                    evidence["omitted_missing_frame_id_count"],
+                    300 - cap.min(300) as u64
+                );
+            }
+        }
+    }
+
     fn video_result() -> TemporalVideoGenerationResult {
         let first = FrameId::from_uuid(uuid::Uuid::from_u128(30));
         let second = FrameId::from_uuid(uuid::Uuid::from_u128(31));
@@ -3549,6 +3715,13 @@ mod tests {
             RangeResolutionOptions::DEFAULT,
         )
         .unwrap();
+        video_result_with_range(resolved)
+    }
+
+    fn video_result_with_range(resolved: ResolvedRange) -> TemporalVideoGenerationResult {
+        let first = FrameId::from_uuid(uuid::Uuid::from_u128(30));
+        let second = FrameId::from_uuid(uuid::Uuid::from_u128(31));
+        let range = resolved.resolved_range;
         let dimensions = PixelDimensions::new(4, 4).unwrap();
         let geometry = VideoOutputGeometry::new(dimensions, dimensions, dimensions).unwrap();
         let clips = [(0_u32, first, 50_u128), (1, second, 51)]
@@ -3660,6 +3833,26 @@ mod tests {
             .filter(|content| serde_json::to_value(content).unwrap()["type"] == "resource_link")
             .count();
         assert_eq!(links, 4);
+    }
+
+    #[test]
+    fn temporal_video_result_bounds_a_large_range_projection() {
+        let mapped = map_temporal_video_result(
+            "generate_temporal_video",
+            video_result_with_range(large_synthetic_range(1_000)),
+        )
+        .unwrap();
+        let range = &mapped.response.result["range"];
+        assert_eq!(range["frame_count"], 1_000);
+        assert!(range.get("frame_ids").is_none());
+        assert_eq!(
+            range["first_frame_id"],
+            serde_json::to_value(FrameId::from_uuid(uuid::Uuid::from_u128(1))).unwrap()
+        );
+        assert_eq!(
+            range["last_frame_id"],
+            serde_json::to_value(FrameId::from_uuid(uuid::Uuid::from_u128(1_000))).unwrap()
+        );
     }
     fn screenshot(format: ImageFormat) -> EncodedScreenshot {
         let metadata = ScreenshotMetadata::new(
@@ -3942,7 +4135,10 @@ mod tests {
     }
 
     fn source_frame_batch(frame_count: u32) -> SourceFrameBatch {
-        let range = video_result().range;
+        source_frame_batch_for_range(video_result().range, frame_count)
+    }
+
+    fn source_frame_batch_for_range(range: ResolvedRange, frame_count: u32) -> SourceFrameBatch {
         let scope = krometrail_core::EvidenceScope::from_range(&range).unwrap();
         let frames = (0..frame_count)
             .map(|index| {
@@ -3978,6 +4174,44 @@ mod tests {
             })
             .collect();
         SourceFrameBatch { range, frames }
+    }
+
+    #[tokio::test]
+    async fn fetch_source_frame_range_is_bounded_at_every_detail_tier() {
+        let batch = source_frame_batch_for_range(large_synthetic_range(1_000), 5);
+        for detail in [
+            ResponseDetail::Concise,
+            ResponseDetail::Expanded,
+            ResponseDetail::Full,
+        ] {
+            let mapped = map_progressive_result(
+                "fetch_source_frames",
+                ProgressiveEvidenceResult::FetchSourceFrames(Box::new(batch.clone())),
+                &UnusedProgressive,
+                Instant::now() + Duration::from_secs(1),
+                test_cancellation(),
+                ResponseRequest {
+                    detail,
+                    inline_images: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+            let range = &mapped.response.result["range"];
+            assert_eq!(range["frame_count"], 1_000);
+            if detail == ResponseDetail::Full {
+                assert_eq!(
+                    range["frame_ids"]["ids"].as_array().unwrap().len(),
+                    MAX_FULL_RANGE_FRAME_IDS
+                );
+                assert_eq!(
+                    range["frame_ids"]["omitted_count"],
+                    1_000 - MAX_FULL_RANGE_FRAME_IDS as u64
+                );
+            } else {
+                assert!(range.get("frame_ids").is_none());
+            }
+        }
     }
 
     fn source_frame_list(frame_count: u32) -> krometrail_core::SourceFrameList {
