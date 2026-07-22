@@ -137,7 +137,9 @@ impl fmt::Debug for ManagedDownload {
 #[derive(Clone, Eq, PartialEq, Serialize)]
 pub struct DownloadInventory {
     pub session_id: SessionId,
-    pub cursor: Option<DownloadSequence>,
+    /// Never absent: seeded like the page cursor, so an empty inventory still
+    /// anchors `wait_for_download(after: cursor)`.
+    pub cursor: DownloadSequence,
     pub downloads: Vec<ManagedDownload>,
 }
 
@@ -158,7 +160,9 @@ pub struct ListDownloadsRequest {}
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WaitForDownloadRequest {
-    pub after: Option<DownloadSequence>,
+    /// Required wait anchor. Cursors come from `list_downloads` or an
+    /// interaction postcondition's `downloads.cursor_before`.
+    pub after: DownloadSequence,
     pub download_id: Option<DownloadId>,
     #[serde(default)]
     pub terminal: bool,
@@ -248,7 +252,7 @@ mod tests {
         assert!(!item_debug.contains("secret-resource"));
         let inventory = DownloadInventory {
             session_id: SessionId::from_uuid(uuid::Uuid::from_u128(2)),
-            cursor: Some(download.sequence),
+            cursor: download.sequence,
             downloads: vec![download],
         };
         let inventory_debug = format!("{inventory:?}");

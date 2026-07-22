@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Side-channel fixture</title>
+  </head>
+  <body>
+    <h1>Side-channel outcomes</h1>
+    <p>
+      Targets for interaction side-channel qualification: a same-origin
+      download link and a user-gesture popup opener.
+    </p>
+    <a id="download-link" href="report.txt" download="report.txt">Download report</a>
+    <button id="open-button" type="button">Open child page</button>
+    <script>
+      document.getElementById('open-button').addEventListener('click', () => {
+        window.open('child.html', '_blank');
+      });
+    </script>
+  </body>
+</html>

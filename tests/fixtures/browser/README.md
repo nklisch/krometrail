@@ -9,6 +9,7 @@ These directories are standalone target applications for the Rust browser-contro
 | `react-bugs` | Reproducible transient React-render and timer failures for screenshots, navigation, interaction, and temporal visual evidence. |
 | `react-counter` | Minimal dynamic DOM and state-change target for browser actions and before/during/after capture. |
 | `react-spa` | Multi-route target with forms, async data, dynamic lists, and transient visual defects for control and temporal-evaluation scenarios. |
+| `side-channel` | Dependency-free download-link and popup-opener target for interaction side-channel postcondition qualification. |
 | `simple-page` | Dependency-free baseline for navigation, forms, DOM changes, console/error evidence, and screenshots. |
 | `verified-interactions` | Dependency-free target for reference/selector/coordinate input, forms, drag, scrolling, upload, dialogs, explicit no-op boundaries, post-action evidence, and viewport behavior with or without a viewport meta tag. |
 | `waits-and-batches` | Dependency-free two-page target for delayed text/element/page state, navigation readiness, finite-network and long-lived-connection limitations, stale references, and ordered batch qualification. |

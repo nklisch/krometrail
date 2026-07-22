@@ -49,6 +49,17 @@ pub(crate) async fn execute_operation(
         .is_interaction()
         .then(|| state.page_contexts().ok().map(|inventory| inventory.cursor))
         .flatten();
+    // The download cursor is absent only when the session does not manage
+    // downloads or activation failed; the delta then stays unobserved.
+    let download_cursor_before = kind
+        .is_interaction()
+        .then(|| {
+            shared
+                .downloads
+                .as_ref()
+                .and_then(|control| control.cursor())
+        })
+        .flatten();
     let mut result = execute_operation_unfenced(
         page_control,
         state,
@@ -62,6 +73,9 @@ pub(crate) async fn execute_operation(
     .map_err(|error| classify_open_dialog(error, kind, direct_target, shared))?;
     if let Some(cursor_before) = page_cursor_before {
         attach_new_page_facts(&mut result, state, &transport, shared, cursor_before).await;
+    }
+    if let Some(cursor_before) = download_cursor_before {
+        attach_download_facts(&mut result, shared, cursor_before);
     }
     if state_changing && !outer_batch {
         let sink = shared
@@ -209,7 +223,7 @@ pub(super) async fn execute_operation_unfenced(
                 .as_ref()
                 .expect("managed ownership has download authority");
             Ok(BrowserOperationResult::ListDownloads(Box::new(
-                authority.list(Arc::clone(&transport)).await?,
+                authority.list()?,
             )))
         }
         BrowserOperationRequest::WaitForDownload(request) => {
@@ -447,6 +461,26 @@ async fn attach_new_page_facts(
     if let Some(record) = interaction_record_mut(result) {
         record.postcondition.attach_new_pages(
             krometrail_core::NewPagePostcondition::from_observed(cursor_before, pages),
+        );
+    }
+}
+
+/// Post-dispatch download delta: downloads whose begin was recorded after the
+/// pre-action cursor become observed facts on the record before evidence
+/// persistence. Reads only the already-active authority — no browser
+/// round-trip — so this never delays the interaction.
+fn attach_download_facts(
+    result: &mut BrowserOperationResult,
+    shared: &Arc<SessionShared>,
+    cursor_before: krometrail_core::DownloadSequence,
+) {
+    let Some(control) = shared.downloads.as_ref() else {
+        return;
+    };
+    let facts = control.begun_after(cursor_before);
+    if let Some(record) = interaction_record_mut(result) {
+        record.postcondition.attach_downloads(
+            krometrail_core::DownloadPostcondition::from_observed(cursor_before, facts),
         );
     }
 }

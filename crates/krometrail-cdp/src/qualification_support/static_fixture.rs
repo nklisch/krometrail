@@ -28,6 +28,12 @@ pub const BROWSER_CONTEXTS_CROSS_ORIGIN: &str =
     include_str!("../../../../tests/fixtures/browser/browser-contexts/cross-origin.html");
 pub const BROWSER_CONTEXTS_STYLE: &str =
     include_str!("../../../../tests/fixtures/browser/browser-contexts/style.css");
+pub const SIDE_CHANNEL_INDEX: &str =
+    include_str!("../../../../tests/fixtures/browser/side-channel/index.html");
+pub const SIDE_CHANNEL_CHILD: &str =
+    include_str!("../../../../tests/fixtures/browser/side-channel/child.html");
+pub const SIDE_CHANNEL_REPORT: &str =
+    include_str!("../../../../tests/fixtures/browser/side-channel/report.txt");
 
 pub fn contains_stable_fixture_markers() -> bool {
     INDEX_HTML.contains("CDP") && !ANIMATION_JS.trim().is_empty()
@@ -86,6 +92,13 @@ impl FixtureServer {
     pub fn browser_contexts_url(&self) -> String {
         format!(
             "http://127.0.0.1:{}/browser-contexts/index.html",
+            self.address.port()
+        )
+    }
+
+    pub fn side_channel_url(&self) -> String {
+        format!(
+            "http://127.0.0.1:{}/side-channel/index.html",
             self.address.port()
         )
     }
@@ -174,6 +187,21 @@ fn serve_fixture(mut stream: TcpStream) {
         path if path.starts_with("/browser-contexts/asset-") && path.ends_with(".json") => {
             ("200 OK", "application/json", b"{}" as &[u8])
         }
+        "/side-channel" | "/side-channel/index.html" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            SIDE_CHANNEL_INDEX.as_bytes(),
+        ),
+        "/side-channel/child.html" => (
+            "200 OK",
+            "text/html; charset=utf-8",
+            SIDE_CHANNEL_CHILD.as_bytes(),
+        ),
+        "/side-channel/report.txt" => (
+            "200 OK",
+            "text/plain; charset=utf-8",
+            SIDE_CHANNEL_REPORT.as_bytes(),
+        ),
         _ => (
             "404 Not Found",
             "text/plain; charset=utf-8",

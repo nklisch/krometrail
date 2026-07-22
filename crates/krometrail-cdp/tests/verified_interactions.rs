@@ -471,6 +471,9 @@ async fn checkbox_click_postcondition_reports_the_checked_delta() {
         .expect("reconciliation ran for the state-changing click");
     assert!(new_pages.pages.is_empty());
     assert_eq!(new_pages.omitted, 0);
+    // Attach-mode sessions have no download authority: the delta is honestly
+    // absent, never an empty claim.
+    assert!(postcondition.downloads.is_none());
     session.stop().await.unwrap();
 }
 
@@ -2898,4 +2901,149 @@ async fn unavailable_signal_source_degrades_facts_without_failing_the_interactio
     assert_eq!(postcondition.signals.window_open_attempts, None);
     assert_eq!(postcondition.signals.download_requests, Some(0));
     session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_qualifies_download_and_popup_side_channel_facts() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome side-channel qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let mut fixture = support::static_fixture::FixtureServer::start().expect("fixture server");
+    let root = support::chrome::temporary_profile_root("side-channel");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(fixture.side_channel_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::Foreground,
+            },
+        ))
+        .await
+        .expect("real side-channel fixture session");
+    let status = session.status().await.unwrap();
+    let target = status
+        .pages
+        .iter()
+        .find(|page| page.target.target.url().contains("/side-channel/"))
+        .unwrap_or_else(|| panic!("side-channel fixture target: {status:#?}"))
+        .target
+        .target
+        .id();
+    for _ in 0..40 {
+        if evaluate(&session, target, "document.readyState === 'complete'").await == json!(true) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    // (a) The download-link click carries a download delta anchored on the
+    // pre-action cursor, and the cursor chains into wait_for_download —
+    // proving the authority was active before the interaction dispatched.
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(selector_click(target, "#download-link")),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("download link click");
+    let BrowserOperationResult::Click(click) = result else {
+        panic!("click result")
+    };
+    let downloads = click
+        .record
+        .postcondition
+        .downloads
+        .as_ref()
+        .expect("managed session attaches the download delta");
+    let waited = session
+        .execute(
+            BrowserOperationRequest::WaitForDownload(krometrail_core::WaitForDownloadRequest {
+                after: downloads.cursor_before,
+                download_id: None,
+                terminal: true,
+                timeout: 30_000,
+            }),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("download completes after the postcondition cursor");
+    let BrowserOperationResult::WaitForDownload(inventory) = waited else {
+        panic!("wait_for_download result")
+    };
+    let observed = inventory
+        .downloads
+        .iter()
+        .find(|download| download.sequence > downloads.cursor_before)
+        .expect("a download observed after the pre-action cursor");
+    assert_eq!(observed.state, krometrail_core::DownloadState::Completed);
+    // When the begin was recorded before the observation point, the record
+    // carries the fact; otherwise the honest empty delta still anchored the
+    // successful wait above.
+    if let Some(fact) = downloads.downloads.first() {
+        assert_eq!(fact.download_id, observed.id);
+    }
+
+    // (b) The window.open click reports the attempt signal and the adopted
+    // popup with an opener match — through the postcondition delta or, under
+    // adoption latency, through the cursor it anchors.
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(selector_click(target, "#open-button")),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("window.open click");
+    let BrowserOperationResult::Click(click) = result else {
+        panic!("click result")
+    };
+    let postcondition = &click.record.postcondition;
+    assert!(
+        postcondition.signals.window_open_attempts.unwrap_or(0) >= 1,
+        "window.open attempt signal missing: {postcondition:?}"
+    );
+    let new_pages = postcondition
+        .new_pages
+        .as_ref()
+        .expect("reconciliation attaches the new-page delta");
+    let popup_matched = new_pages.pages.iter().any(|page| page.opener_matched);
+    if !popup_matched {
+        let waited = session
+            .execute(
+                BrowserOperationRequest::WaitForPage(krometrail_core::WaitForPageRequest {
+                    after: new_pages.cursor_before,
+                    opener_target_id: Some(target),
+                    timeout_ms: 10_000,
+                }),
+                krometrail_core::BrowserOperationContext::default(),
+            )
+            .await
+            .expect("popup observable from the postcondition cursor");
+        let BrowserOperationResult::WaitForPage(waited) = waited else {
+            panic!("wait_for_page result")
+        };
+        assert_eq!(waited.matched.opener_target_id, Some(target));
+    }
+
+    session.stop().await.unwrap();
+    fixture.shutdown();
 }

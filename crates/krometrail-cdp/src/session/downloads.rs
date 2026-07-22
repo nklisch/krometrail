@@ -19,16 +19,22 @@ use tokio::sync::Notify;
 use crate::targets::supervisor::SubscriberRegistry;
 use crate::transport::{CdpTransport, CommandScope, NamedEvent, TransportEvents};
 
-pub(crate) struct LazyManagedDownloadAuthority {
+/// The eagerly-activated managed download control. `activate` runs once at
+/// managed session start — before any interaction can dispatch — so download
+/// events are subscribed and managed download behavior is enabled for the
+/// whole session. Activation failure stores the unavailable error and never
+/// fails session start: explicit download operations report the stored error
+/// and interaction facts degrade to absent.
+pub(crate) struct ManagedDownloadControl {
     session_id: SessionId,
     base_root: PathBuf,
     ids: Arc<dyn IdSource>,
     subscribers: Arc<SubscriberRegistry>,
-    active: tokio::sync::Mutex<Option<Arc<ManagedDownloadAuthority>>>,
+    active: std::sync::OnceLock<Arc<ManagedDownloadAuthority>>,
     unavailable: Mutex<Option<KrometrailError>>,
 }
 
-impl LazyManagedDownloadAuthority {
+impl ManagedDownloadControl {
     pub(crate) fn new(
         base_root: PathBuf,
         session_id: SessionId,
@@ -40,44 +46,42 @@ impl LazyManagedDownloadAuthority {
             base_root,
             ids,
             subscribers,
-            active: tokio::sync::Mutex::new(None),
+            active: std::sync::OnceLock::new(),
             unavailable: Mutex::new(None),
         })
     }
 
-    async fn activate(
-        &self,
-        transport: Arc<dyn CdpTransport>,
-    ) -> Result<Arc<ManagedDownloadAuthority>> {
-        if let Some(error) = self
-            .unavailable
-            .lock()
-            .expect("download failure lock")
-            .clone()
-        {
-            return Err(error);
+    /// Called once at managed session start. Subscribe-before-enable ordering
+    /// is preserved by [`ManagedDownloadAuthority::configure`].
+    pub(crate) async fn activate(&self, transport: Arc<dyn CdpTransport>) -> Result<()> {
+        if self.active.get().is_some() {
+            return Ok(());
         }
-        let mut active = self.active.lock().await;
-        if let Some(authority) = active.as_ref() {
-            return Ok(Arc::clone(authority));
-        }
-        let authority = ManagedDownloadAuthority::configure(
+        match ManagedDownloadAuthority::configure(
             transport,
             &self.base_root,
             self.session_id,
             Arc::clone(&self.ids),
             Arc::clone(&self.subscribers),
         )
-        .await?;
-        *active = Some(Arc::clone(&authority));
-        Ok(authority)
+        .await
+        {
+            Ok(authority) => {
+                let _ = self.active.set(authority);
+                self.unavailable
+                    .lock()
+                    .expect("download failure lock")
+                    .take();
+                Ok(())
+            }
+            Err(error) => {
+                *self.unavailable.lock().expect("download failure lock") = Some(error.clone());
+                Err(error)
+            }
+        }
     }
 
-    pub(crate) async fn list(&self, transport: Arc<dyn CdpTransport>) -> Result<DownloadInventory> {
-        Ok(self.activate(transport).await?.list())
-    }
-
-    async fn activated(&self) -> Result<Arc<ManagedDownloadAuthority>> {
+    fn activated(&self) -> Result<&Arc<ManagedDownloadAuthority>> {
         if let Some(error) = self
             .unavailable
             .lock()
@@ -86,14 +90,34 @@ impl LazyManagedDownloadAuthority {
         {
             return Err(error);
         }
-        self.active.lock().await.as_ref().cloned().ok_or_else(|| {
+        self.active.get().ok_or_else(|| {
             download_error(
                 ErrorCode::Unsupported,
                 self.session_id,
-                "managed download control has not been activated",
-                "call list_downloads before triggering a download, then retry",
+                "managed download control is unavailable in this session",
+                "restart the managed browser session and retry",
             )
         })
+    }
+
+    /// Sync pre-dispatch cursor capture for postcondition assembly.
+    /// `None` only when activation failed for this session.
+    pub(crate) fn cursor(&self) -> Option<DownloadSequence> {
+        self.active.get().map(|authority| authority.cursor())
+    }
+
+    /// Sync begun-after delta for postcondition assembly.
+    pub(crate) fn begun_after(
+        &self,
+        cursor: DownloadSequence,
+    ) -> Vec<krometrail_core::DownloadFact> {
+        self.active
+            .get()
+            .map_or_else(Vec::new, |authority| authority.begun_after(cursor))
+    }
+
+    pub(crate) fn list(&self) -> Result<DownloadInventory> {
+        Ok(self.activated()?.list())
     }
 
     pub(crate) async fn wait_with_cancellation(
@@ -101,8 +125,7 @@ impl LazyManagedDownloadAuthority {
         request: WaitForDownloadRequest,
         cancellation: Option<Arc<dyn CancellationSignal>>,
     ) -> Result<DownloadInventory> {
-        self.activated()
-            .await?
+        self.activated()?
             .wait_with_cancellation(request, cancellation)
             .await
     }
@@ -112,14 +135,13 @@ impl LazyManagedDownloadAuthority {
         transport: &dyn CdpTransport,
         id: DownloadId,
     ) -> Result<DownloadState> {
-        self.activated().await?.cancel(transport, id).await
+        self.activated()?.cancel(transport, id).await
     }
 
     pub(crate) async fn read(
         &self,
         request: ReadManagedDownloadRequest,
     ) -> Result<ManagedDownloadRead> {
-        let active = self.active.lock().await.as_ref().cloned();
         if self
             .unavailable
             .lock()
@@ -128,7 +150,7 @@ impl LazyManagedDownloadAuthority {
         {
             return Err(resource_not_found(self.session_id));
         }
-        match active {
+        match self.active.get() {
             Some(authority) => authority.read(request).await,
             None => Err(resource_not_found(self.session_id)),
         }
@@ -143,8 +165,7 @@ impl LazyManagedDownloadAuthority {
         {
             return Err(error);
         }
-        let active = self.active.lock().await.as_ref().cloned();
-        match active {
+        match self.active.get() {
             Some(authority) => match authority.rebind(Arc::clone(&transport)).await {
                 Ok(()) => Ok(()),
                 Err(error) => {
@@ -158,8 +179,7 @@ impl LazyManagedDownloadAuthority {
     }
 
     pub(crate) async fn shutdown(&self, transport: Option<&dyn CdpTransport>) -> Result<()> {
-        let active = self.active.lock().await.as_ref().cloned();
-        match active {
+        match self.active.get() {
             Some(authority) => authority.shutdown(transport).await,
             None => Ok(()),
         }
@@ -188,9 +208,19 @@ struct State {
 #[derive(Clone)]
 struct Entry {
     public: ManagedDownload,
+    /// The sequence assigned at `begin`, retained while `public.sequence`
+    /// bumps on every transition: postcondition deltas key on begin ordering
+    /// so a pre-action download's later progress is never attributed to the
+    /// current interaction.
+    begun_sequence: DownloadSequence,
     verified_size: Option<u64>,
     media_type: NonEmptyText,
 }
+
+// Sequence seeding mirrors the page cursor: sequence 1 is the
+// empty-inventory cursor, so the cursor is never absent and waiting after an
+// initial empty inventory cannot miss the first download.
+const INITIAL_NEXT_SEQUENCE: u64 = 2;
 
 impl ManagedDownloadAuthority {
     pub(crate) async fn configure(
@@ -230,7 +260,7 @@ impl ManagedDownloadAuthority {
             ids,
             state: Mutex::new(State {
                 accepting: true,
-                next_sequence: 1,
+                next_sequence: INITIAL_NEXT_SEQUENCE,
                 by_guid: BTreeMap::new(),
                 overflow_rejection: None,
                 transport_generation: 1,
@@ -248,6 +278,34 @@ impl ManagedDownloadAuthority {
     pub(crate) fn list(&self) -> DownloadInventory {
         let state = self.state.lock().expect("download state lock");
         inventory(self.session_id, &state)
+    }
+
+    /// The never-absent inventory cursor: the last assigned sequence, with
+    /// the seeded value covering an empty inventory.
+    pub(crate) fn cursor(&self) -> DownloadSequence {
+        let state = self.state.lock().expect("download state lock");
+        state_cursor(&state)
+    }
+
+    /// Downloads whose begin was recorded after `cursor`, in begin order,
+    /// with their state at the observation point.
+    pub(crate) fn begun_after(
+        &self,
+        cursor: DownloadSequence,
+    ) -> Vec<krometrail_core::DownloadFact> {
+        let state = self.state.lock().expect("download state lock");
+        let mut facts = state
+            .by_guid
+            .values()
+            .filter(|entry| entry.begun_sequence > cursor)
+            .map(|entry| krometrail_core::DownloadFact {
+                download_id: entry.public.id,
+                sequence: entry.public.sequence,
+                state: entry.public.state,
+            })
+            .collect::<Vec<_>>();
+        facts.sort_by_key(|fact| fact.sequence);
+        facts
     }
 
     pub(crate) async fn rebind(self: &Arc<Self>, transport: Arc<dyn CdpTransport>) -> Result<()> {
@@ -324,7 +382,7 @@ impl ManagedDownloadAuthority {
         loop {
             let notified = self.changed.notified();
             let snapshot = self.list();
-            let after = request.after.map_or(0, DownloadSequence::get);
+            let after = request.after.get();
             let matched = snapshot.downloads.iter().any(|download| {
                 download.sequence.get() > after
                     && request.download_id.is_none_or(|id| id == download.id)
@@ -556,6 +614,7 @@ impl ManagedDownloadAuthority {
                     guid.clone(),
                     Entry {
                         public: public.clone(),
+                        begun_sequence: sequence,
                         verified_size: None,
                         media_type: download_media_type(params),
                     },
@@ -1056,12 +1115,12 @@ fn verified_file(root: &Path, guid: &str, expected: u64) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+fn state_cursor(state: &State) -> DownloadSequence {
+    DownloadSequence::new(state.next_sequence.saturating_sub(1)).expect("seeded download cursor")
+}
+
 fn inventory(session_id: SessionId, state: &State) -> DownloadInventory {
-    let cursor = state
-        .by_guid
-        .values()
-        .map(|entry| entry.public.sequence)
-        .max();
+    let cursor = state_cursor(state);
     let mut downloads = state
         .by_guid
         .values()
@@ -1329,8 +1388,8 @@ mod tests {
         }
     }
 
-    fn lazy(base: PathBuf) -> Arc<LazyManagedDownloadAuthority> {
-        LazyManagedDownloadAuthority::new(
+    fn control(base: PathBuf) -> Arc<ManagedDownloadControl> {
+        ManagedDownloadControl::new(
             base,
             SessionId::from_uuid(uuid::Uuid::from_u128(200)),
             Arc::new(Ids(AtomicU64::new(0))),
@@ -1381,7 +1440,7 @@ mod tests {
             ids: Arc::new(Ids(AtomicU64::new(0))),
             state: Mutex::new(State {
                 accepting: true,
-                next_sequence: 1,
+                next_sequence: INITIAL_NEXT_SEQUENCE,
                 by_guid: BTreeMap::new(),
                 overflow_rejection: None,
                 transport_generation: 1,
@@ -1489,19 +1548,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_and_named_profile_defaults_stay_inert_until_first_list() {
+    async fn eager_activation_subscribes_before_enabling_and_seeds_the_cursor() {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().join("downloads");
-        let authority = lazy(base.clone());
+        let control = control(base.clone());
+        assert_eq!(control.cursor(), None, "cursor precedes activation only");
         let transport = Arc::new(ActivationTransport::new(false));
-
-        authority.rebind(transport.clone()).await.unwrap();
-        assert!(transport.activity().is_empty());
-        assert!(!base.exists());
-
         let transport_port: Arc<dyn CdpTransport> = transport.clone();
-        let inventory = authority.list(transport_port.clone()).await.unwrap();
-        assert!(inventory.downloads.is_empty());
+
+        control.activate(transport_port.clone()).await.unwrap();
+        // Subscribe-before-enable: no begin/progress event can race the tracker.
         assert_eq!(
             transport.activity(),
             vec![
@@ -1510,32 +1566,42 @@ mod tests {
                 "command:Browser.setDownloadBehavior",
             ]
         );
-        assert!(base.join(authority.session_id.to_string()).is_dir());
+        assert!(base.join(control.session_id.to_string()).is_dir());
 
-        authority.list(transport_port).await.unwrap();
-        assert_eq!(transport.activity().len(), 3, "activation is shared");
+        // The cursor and inventory are available from activation with no
+        // further transport activity: sequence 1 is the empty-inventory cursor.
+        let inventory = control.list().unwrap();
+        assert!(inventory.downloads.is_empty());
+        assert_eq!(inventory.cursor.get(), 1);
+        assert_eq!(control.cursor(), Some(inventory.cursor));
+        assert!(control.begun_after(inventory.cursor).is_empty());
+        assert_eq!(transport.activity().len(), 3);
+
+        control.activate(transport_port).await.unwrap();
+        assert_eq!(transport.activity().len(), 3, "activation runs once");
     }
 
     #[tokio::test]
-    async fn activation_failure_is_local_and_retryable() {
+    async fn activation_failure_degrades_without_failing_the_session() {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().join("downloads");
-        let authority = lazy(base.clone());
+        let control = control(base.clone());
         let transport = Arc::new(ActivationTransport::new(true));
         let transport_port: Arc<dyn CdpTransport> = transport.clone();
 
-        let error = authority.list(transport_port.clone()).await.unwrap_err();
+        let error = control.activate(transport_port).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::BrowserCompatibilityFailed);
-        assert!(!base.join(authority.session_id.to_string()).exists());
+        assert!(!base.join(control.session_id.to_string()).exists());
 
-        authority.list(transport_port).await.unwrap();
-        assert_eq!(
-            transport
-                .activity()
-                .iter()
-                .filter(|entry| entry.as_str() == "command:Browser.setDownloadBehavior")
-                .count(),
-            2
+        // Explicit operations report the stored error; interaction facts
+        // degrade through the absent cursor.
+        let listed = control.list().unwrap_err();
+        assert_eq!(listed.code, ErrorCode::BrowserCompatibilityFailed);
+        assert_eq!(control.cursor(), None);
+        assert!(
+            control
+                .begun_after(DownloadSequence::new(1).unwrap())
+                .is_empty()
         );
     }
 
@@ -1543,19 +1609,59 @@ mod tests {
     async fn reconnect_failure_isolates_and_disables_only_download_control() {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().join("downloads");
-        let authority = lazy(base.clone());
+        let control = control(base.clone());
         let transport = Arc::new(ActivationTransport::new(false));
         let transport_port: Arc<dyn CdpTransport> = transport.clone();
-        authority.list(transport_port.clone()).await.unwrap();
+        control.activate(transport_port.clone()).await.unwrap();
 
         transport.fail_next_behavior();
-        let error = authority.rebind(transport_port.clone()).await.unwrap_err();
+        let error = control.rebind(transport_port).await.unwrap_err();
         assert_eq!(error.code, ErrorCode::BrowserCompatibilityFailed);
-        assert!(!base.join(authority.session_id.to_string()).exists());
+        assert!(!base.join(control.session_id.to_string()).exists());
 
-        let retry = authority.list(transport_port).await.unwrap_err();
+        let retry = control.list().unwrap_err();
         assert_eq!(retry.code, ErrorCode::BrowserCompatibilityFailed);
-        assert!(!base.join(authority.session_id.to_string()).exists());
+        assert!(!base.join(control.session_id.to_string()).exists());
+    }
+
+    #[tokio::test]
+    async fn begun_after_keys_on_begin_ordering_not_transition_sequences() {
+        let temp = tempfile::tempdir().unwrap();
+        let authority = authority(temp.path());
+        let transport = Transport {
+            calls: Mutex::new(Vec::new()),
+        };
+        // A pre-action download begins before the cursor capture.
+        authority
+            .begin(
+                1,
+                &transport,
+                &json!({"guid":"pre-guid","url":"https://example.test/pre","suggestedFilename":"pre"}),
+            )
+            .await;
+        let cursor = authority.cursor();
+
+        // The pre-action download progresses (bumping its public sequence
+        // past the cursor) while a post-cursor download begins.
+        authority.transition("pre-guid", DownloadState::InProgress, Some(64), None);
+        authority
+            .begin(
+                1,
+                &transport,
+                &json!({"guid":"post-guid","url":"https://example.test/post","suggestedFilename":"post"}),
+            )
+            .await;
+
+        let facts = authority.begun_after(cursor);
+        assert_eq!(facts.len(), 1, "pre-action progress is never attributed");
+        assert_eq!(facts[0].state, DownloadState::InProgress);
+        let post = authority
+            .list()
+            .downloads
+            .into_iter()
+            .find(|download| download.id == facts[0].download_id)
+            .unwrap();
+        assert!(post.sequence > cursor);
     }
 
     #[test]
@@ -1783,7 +1889,7 @@ mod tests {
         let error = authority
             .wait_with_cancellation(
                 WaitForDownloadRequest {
-                    after: None,
+                    after: DownloadSequence::new(1).unwrap(),
                     download_id: Some(rejected.id),
                     terminal: true,
                     timeout: 100,
@@ -1813,7 +1919,7 @@ mod tests {
         let error = authority
             .wait_with_cancellation(
                 WaitForDownloadRequest {
-                    after: None,
+                    after: DownloadSequence::new(1).unwrap(),
                     download_id: None,
                     terminal: true,
                     timeout: 1_000,

@@ -325,7 +325,7 @@ define_browser_operations! {
         stable_name: "list_downloads", description: "List bounded managed-session downloads and capture a wait cursor.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
     },
     WaitForDownload(WaitForDownloadRequest) => DownloadInventory {
-        stable_name: "wait_for_download", description: "Wait after a cursor for a managed download lifecycle change.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
+        stable_name: "wait_for_download", description: "Wait after a required cursor (from list_downloads or an interaction postcondition downloads.cursor_before) for a managed download lifecycle change.", mutability: ReadOnly, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,
     },
     CancelDownload(CancelDownloadRequest) => CancelDownloadResult {
         stable_name: "cancel_download", description: "Cancel one active managed-session download.", mutability: StateChanging, evidence: RequestedOnly, scope: Browser, batchable: false, action: None,

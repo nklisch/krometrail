@@ -419,12 +419,25 @@ impl BrowserConnector for ProductionBrowserConnector {
             )
             .await?;
             let downloads = if ownership == BrowserOwnership::Managed {
-                Some(downloads::LazyManagedDownloadAuthority::new(
+                let control = downloads::ManagedDownloadControl::new(
                     managed_download_root,
                     session_id,
                     Arc::clone(&ids),
                     Arc::clone(&subscribers),
-                ))
+                );
+                // Eager activation before the session is published, so
+                // download events are observable before any interaction can
+                // dispatch. Failure stores the unavailable error: the session
+                // starts, explicit download operations report the stored
+                // error, and interaction facts degrade to absent.
+                if let Err(error) = control.activate(Arc::clone(&connection.transport)).await {
+                    tracing::warn!(
+                        event = "managed_download_activation_failed",
+                        error_code = error.code.as_str(),
+                        "managed download control is unavailable for this session"
+                    );
+                }
+                Some(control)
             } else {
                 None
             };
@@ -586,7 +599,7 @@ pub(crate) struct SessionShared {
     capture: Option<Arc<CaptureRuntime>>,
     browser_events: Arc<SessionDomainAuthority>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
-    downloads: Option<Arc<downloads::LazyManagedDownloadAuthority>>,
+    downloads: Option<Arc<downloads::ManagedDownloadControl>>,
     pub(crate) operation_cancellation: OperationCancellation,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
 }

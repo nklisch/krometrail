@@ -212,6 +212,12 @@ The control capability provides operations for:
 - observe popup and download lifecycle metadata and retrieve completed local download resources within the
   managed session boundary.
 
+Managed download observation activates with the managed session itself, before any interaction can
+dispatch, so a download triggered by the first interaction is already observable. Download inventories
+carry a never-absent cursor seeded like the page cursor: an empty inventory still anchors a wait.
+`wait_for_download` requires an explicit `after` cursor, taken from `list_downloads` or from an
+interaction postcondition's `downloads.cursor_before`.
+
 Page-asset acquisition remains bounded and complete before presentation. Concise responses include a small row
 sample, deterministic counts by asset kind, and separate source-versus-presentation omission counts. Expanded
 responses include a broader bounded sample; full returns every acquired row.
