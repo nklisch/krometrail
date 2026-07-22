@@ -16,6 +16,8 @@ use crate::{
     transport::CdpTransport,
 };
 
+const BATCH_TIMEOUT_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BatchTermination {
     Cancelled,
@@ -144,9 +146,8 @@ impl PageControl {
                             if matches!(value.outcome, WaitOutcome::TimedOut { .. })
                     );
                     let error = result_failure(&result, target_id);
-                    let terminal = if wait_timed_out {
-                        (tokio::time::Instant::now() >= deadline)
-                            .then_some(BatchTermination::TimedOut)
+                    let terminal = if wait_timed_out || tokio::time::Instant::now() >= deadline {
+                        Some(BatchTermination::TimedOut)
                     } else {
                         error.as_ref().and_then(error_termination)
                     };
@@ -370,7 +371,7 @@ async fn dispatch_bounded(
         error = cancellation.wait(generation, target_id) => {
             DispatchOutcome::Interrupted(error)
         }
-        _ = tokio::time::sleep_until(deadline) => DispatchOutcome::TimedOut,
+        _ = tokio::time::sleep_until(deadline + BATCH_TIMEOUT_GRACE) => DispatchOutcome::TimedOut,
         result = execution => DispatchOutcome::Completed(result),
     }
 }

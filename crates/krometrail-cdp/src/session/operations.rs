@@ -431,13 +431,17 @@ async fn attach_new_page_facts(
     transport: &Arc<dyn CdpTransport>,
     shared: &Arc<SessionShared>,
     cursor_before: krometrail_core::PageSequence,
+    deadline: Option<tokio::time::Instant>,
 ) {
     let Some(acting_target) = interaction_record_mut(result).map(|record| record.context.target_id)
     else {
         return;
     };
-    let infos =
-        tokio::time::timeout(SIDE_CHANNEL_RECONCILE_WINDOW, fetch_target_infos(transport)).await;
+    let infos = tokio::time::timeout_at(
+        crate::control::bounded_deadline(deadline, SIDE_CHANNEL_RECONCILE_WINDOW),
+        fetch_target_infos(transport),
+    )
+    .await;
     let Ok(Ok(infos)) = infos else {
         return;
     };
@@ -549,13 +553,21 @@ async fn execute_non_local_operation(
                 state,
                 request,
                 cancellation,
-                context.parent_batch,
+                context,
                 interaction_id,
                 &dispatch_baselines,
             )
             .await?;
         if let Some(cursor_before) = baselines.page_cursor_before {
-            attach_new_page_facts(&mut result, state, &transport, shared, cursor_before).await;
+            attach_new_page_facts(
+                &mut result,
+                state,
+                &transport,
+                shared,
+                cursor_before,
+                context.deadline,
+            )
+            .await;
         }
         if let Some(cursor_before) = baselines.download_cursor_before {
             attach_download_facts(&mut result, shared, cursor_before);

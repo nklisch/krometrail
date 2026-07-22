@@ -1,7 +1,7 @@
 ---
 id: story-batch-timeout-preserves-dispatched-record
 kind: story
-stage: implementing
+stage: review
 tags: [browser, bug]
 parent: null
 depends_on: []
@@ -62,3 +62,27 @@ Cooperative post-dispatch budgeting, external kill only as a backstop:
   injection past dispatch that also ignores budgets).
 - Existing batch, wait-step, and timeout tests unchanged in meaning; full
   workspace gate green.
+
+## Implementation
+
+- Root cause confirmed: `dispatch_bounded` dropped the entire operation future
+  at the batch deadline, so a step that had already dispatched input could
+  lose its interaction record before enrichment and persistence completed.
+- Landed cooperative post-dispatch budgeting through the existing execution
+  context. Completion waits, compositor rendezvous, postcondition probes,
+  live observation, and the cancellable side-channel inventory pull now clamp
+  to the remaining batch deadline and use the existing unavailable observation
+  shapes on exhaustion. The batch retains a 500 ms external backstop and
+  still reports `timed_out` when a completed step crosses its deadline.
+- Preserved pre-dispatch timeout behavior and standalone operations without a
+  deadline. No wire-contract or new error family was introduced; budget
+  exhaustion uses the existing observation degradation code with a bounded
+  cause. The non-cancellable target-reconciliation reducer remains outside
+  the timeout wrapper, protected by the existing backstop.
+- Added deterministic dispatched, pre-dispatch, and wedged-persistence tests;
+  updated the current Batching specification to describe the preserved
+  record behavior.
+- Verification: formatting, wire-schema checks, workspace check, workspace
+  tests, and workspace clippy all passed. The full workspace test gate needed
+  loopback socket permission for existing endpoint/session tests; with that
+  permission it passed completely.

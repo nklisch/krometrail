@@ -320,6 +320,8 @@ Related actions can be submitted as an ordered batch. Every step receives its ow
 
 A failed batch reports the same evidence a degraded batch reports: every step result the batch produced, and a top-level error naming the failing step index, its operation, its stable error code, and its cause. There is no separate failure shape that drops that evidence, and a failed operation's summary text states its cause rather than only naming the tool.
 
+When a batch deadline expires after a step has dispatched input, cooperative post-action budgeting preserves that step's interaction anchor and any degraded observation evidence while the batch reports `timed_out` and skips remaining steps. A pre-dispatch timeout remains a failed step without an interaction record.
+
 The MCP surface provides composable standalone tools plus batching. Both derive actions and schemas from the same capability registry and shared domain contracts.
 
 Page-scoped requests select the current page when `target` is omitted. Click defaults to the left

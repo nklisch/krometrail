@@ -954,6 +954,230 @@ async fn batch_global_deadline_fails_the_active_step_and_skips_the_rest() {
 }
 
 #[tokio::test]
+async fn batch_deadline_after_dispatch_preserves_and_persists_degraded_record() {
+    let transport = ScriptedCdp::chrome();
+    let sink = Arc::new(support::RecordingEvidenceFake::default());
+    let session = scripted_session_with_sink(
+        transport.clone(),
+        Arc::clone(&sink) as Arc<dyn InteractionEvidenceSink>,
+    )
+    .await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    let input_calls_before = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Input.dispatchMouseEvent")
+        .count();
+    script_coordinate_click(&transport);
+    live_observation_script(&transport);
+
+    let runtime_evaluations = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Runtime.evaluate")
+        .count();
+    // Coordinate hit testing, the pre-dispatch URL read, and action completion are allowed to
+    // finish. The first compositor/observation command after input dispatch then ignores the
+    // cooperative deadline and exercises the degraded observation path.
+    transport.hold_method_after("Runtime.evaluate", runtime_evaluations + 3);
+    let request = BatchRequest::new(
+        PageSelection::Target(target),
+        vec![coordinate_click(target), page_wait(target, "false")],
+        std::time::Duration::from_millis(80),
+        BatchOptions::default(),
+    )
+    .unwrap();
+    let BrowserOperationResult::Batch(result) = tokio::time::timeout(
+        std::time::Duration::from_millis(400),
+        session.execute(
+            BrowserOperationRequest::Batch(request),
+            krometrail_core::BrowserOperationContext::default(),
+        ),
+    )
+    .await
+    .expect("cooperative post-dispatch timeout completes before the hard backstop")
+    .unwrap() else {
+        panic!("batch result")
+    };
+
+    assert_eq!(result.outcome, BatchOutcome::TimedOut, "{result:#?}");
+    assert_eq!(result.steps[0].status, BatchStepStatus::Failed);
+    assert_eq!(
+        result.steps[0].error.as_ref().map(|error| error.code),
+        Some(ErrorCode::WaitTimedOut)
+    );
+    assert!(result.steps[0].interaction.is_some());
+    let BrowserOperationResult::Click(click) = result.steps[0].result.as_ref().unwrap() else {
+        panic!("preserved click result")
+    };
+    assert!(matches!(
+        &click.observation.page,
+        ObservationPart::Unavailable(error)
+            if error.code == ErrorCode::PageObservationFailed
+                && error.message.as_str().contains("budget exhausted")
+    ));
+    assert!(matches!(
+        &click.observation.snapshot,
+        ObservationPart::Unavailable(error) if error.message.as_str().contains("budget exhausted")
+    ));
+    assert!(matches!(
+        &click.observation.screenshot,
+        ObservationPart::Unavailable(error) if error.message.as_str().contains("budget exhausted")
+    ));
+    assert_eq!(result.steps[1].status, BatchStepStatus::Skipped);
+    assert_eq!(
+        result.steps[1].skip_reason,
+        Some(BatchSkipReason::BatchTimedOut)
+    );
+    let persisted = sink.records();
+    assert_eq!(
+        persisted.len(),
+        1,
+        "the dispatched record must cross the evidence seam"
+    );
+    assert_eq!(persisted[0].id, click.record.id);
+    assert_eq!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Input.dispatchMouseEvent")
+            .count()
+            - input_calls_before,
+        3,
+        "input was dispatched exactly once before observation degraded"
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn batch_deadline_before_dispatch_keeps_the_current_no_record_timeout() {
+    let transport = ScriptedCdp::chrome();
+    let sink = Arc::new(support::RecordingEvidenceFake::default());
+    let session = scripted_session_with_sink(
+        transport.clone(),
+        Arc::clone(&sink) as Arc<dyn InteractionEvidenceSink>,
+    )
+    .await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    let input_calls_before = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Input.dispatchMouseEvent")
+        .count();
+    transport.hold_method("Page.getLayoutMetrics");
+    let request = BatchRequest::new(
+        PageSelection::Target(target),
+        vec![coordinate_click(target)],
+        std::time::Duration::from_millis(30),
+        BatchOptions::default(),
+    )
+    .unwrap();
+
+    let BrowserOperationResult::Batch(result) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        session.execute(
+            BrowserOperationRequest::Batch(request),
+            krometrail_core::BrowserOperationContext::default(),
+        ),
+    )
+    .await
+    .expect("pre-dispatch timeout reaches the batch hard backstop")
+    .unwrap() else {
+        panic!("batch result")
+    };
+
+    assert_eq!(result.outcome, BatchOutcome::TimedOut, "{result:#?}");
+    assert_eq!(result.steps[0].status, BatchStepStatus::Failed);
+    assert_eq!(
+        result.steps[0].error.as_ref().map(|error| error.code),
+        Some(ErrorCode::WaitTimedOut)
+    );
+    assert!(result.steps[0].result.is_none());
+    assert!(result.steps[0].interaction.is_none());
+    assert!(sink.records().is_empty());
+    assert_eq!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Input.dispatchMouseEvent")
+            .count()
+            - input_calls_before,
+        0,
+        "a pre-dispatch timeout must not send input: {:?}",
+        transport.command_calls()
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn batch_backstop_fires_when_post_dispatch_persistence_ignores_budget() {
+    let transport = ScriptedCdp::chrome();
+    let sink = GateEvidenceSink::new(false);
+    let session = scripted_session_with_sink(
+        transport.clone(),
+        Arc::clone(&sink) as Arc<dyn InteractionEvidenceSink>,
+    )
+    .await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    let input_calls_before = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Input.dispatchMouseEvent")
+        .count();
+    script_coordinate_click(&transport);
+    live_observation_script(&transport);
+    let started = tokio::time::Instant::now();
+    let request = BatchRequest::new(
+        PageSelection::Target(target),
+        vec![coordinate_click(target)],
+        std::time::Duration::from_millis(30),
+        BatchOptions::default(),
+    )
+    .unwrap();
+    let operation = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Batch(request),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        })
+    };
+    sink.wait_for_calls(1).await;
+    let BrowserOperationResult::Batch(result) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), operation)
+            .await
+            .expect("the batch hard backstop must terminate wedged persistence")
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("batch result")
+    };
+
+    assert!(started.elapsed() >= std::time::Duration::from_millis(400));
+    assert_eq!(result.outcome, BatchOutcome::TimedOut, "{result:#?}");
+    assert_eq!(result.steps[0].status, BatchStepStatus::Failed);
+    assert_eq!(
+        result.steps[0].error.as_ref().map(|error| error.code),
+        Some(ErrorCode::WaitTimedOut)
+    );
+    assert!(result.steps[0].result.is_none());
+    assert_eq!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Input.dispatchMouseEvent")
+            .count()
+            - input_calls_before,
+        3,
+        "the wedged path reached persistence after dispatch"
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn session_stop_cancels_an_active_batch_and_marks_remaining_steps() {
     let transport = ScriptedCdp::chrome();
     let session = scripted_session(transport.clone()).await;

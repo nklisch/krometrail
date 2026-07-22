@@ -9,12 +9,13 @@ use krometrail_core::{
 use serde_json::{Value, json};
 
 use super::{
-    BoundTarget, InteractionDispatchBaselines, PageControl, bind_target,
+    BoundTarget, InteractionDispatchBaselines, PageControl, bind_target, bounded_deadline,
     navigation::OperationCancellation,
     operation_error, post_action_observation_error,
     snapshot::{ReferenceRequirement, ResolvedNode, quad_bounds},
     transport_error,
 };
+use crate::session::OperationExecutionContext;
 use crate::{
     SupervisorState,
     events::{
@@ -98,7 +99,7 @@ impl PageControl {
         state: &SupervisorState,
         request: BrowserOperationRequest,
         cancel: &OperationCancellation,
-        parent_batch: Option<InteractionId>,
+        execution_context: OperationExecutionContext,
         interaction_id: InteractionId,
         dispatch_baselines: &(dyn Fn() -> InteractionDispatchBaselines + Sync),
     ) -> Result<(
@@ -112,7 +113,7 @@ impl PageControl {
             state,
             request,
             cancel,
-            parent_batch,
+            execution_context,
             interaction_id,
             dispatch_baselines,
         )
@@ -132,7 +133,7 @@ impl PageControl {
         state: &SupervisorState,
         request: BrowserOperationRequest,
         cancel: &OperationCancellation,
-        parent_batch: Option<InteractionId>,
+        execution_context: OperationExecutionContext,
         interaction_id: InteractionId,
         dispatch_baselines: &(dyn Fn() -> InteractionDispatchBaselines + Sync),
     ) -> Result<(
@@ -141,6 +142,7 @@ impl PageControl {
         InteractionDispatchBaselines,
     )> {
         let plan = interaction_plan(&request)?;
+        let deadline = execution_context.deadline;
         let bound = bind_target(state, plan.target)?;
         let generation = state.connection_generation;
         let prepared_visibility = if matches!(
@@ -280,9 +282,20 @@ impl PageControl {
                 dialog_events.take(),
                 cancel,
                 generation,
+                deadline,
             );
-            observation_blocked = if plan.kind == BrowserOperationKind::HandleDialog {
-                match completion.await {
+            let completion_result =
+                if plan.kind == BrowserOperationKind::HandleDialog && deadline.is_none() {
+                    Ok(completion.await)
+                } else {
+                    tokio::time::timeout_at(
+                        bounded_deadline(deadline, INTERACTION_PHASE_WINDOW),
+                        completion,
+                    )
+                    .await
+                };
+            observation_blocked = match completion_result {
+                Ok(result) => match result {
                     Ok(blocked) => blocked,
                     Err(_) => {
                         completion_degraded = Some(operation_error(
@@ -292,20 +305,14 @@ impl PageControl {
                         ));
                         false
                     }
+                },
+                Err(_)
+                    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) =>
+                {
+                    completion_degraded = Some(post_dispatch_budget_error(bound.target_id));
+                    false
                 }
-            } else {
-                match tokio::time::timeout(INTERACTION_PHASE_WINDOW, completion).await {
-                    Ok(Ok(blocked)) => blocked,
-                    Ok(Err(_)) => {
-                        completion_degraded = Some(operation_error(
-                            ErrorCode::PageObservationFailed,
-                            bound.target_id,
-                            "interaction was dispatched but completion evidence is unavailable",
-                        ));
-                        false
-                    }
-                    Err(_) => true,
-                }
+                Err(_) => true,
             };
         }
 
@@ -334,8 +341,8 @@ impl PageControl {
                         return None;
                     };
                     let scope = CommandScope::Session(bound.transport_session.clone());
-                    tokio::time::timeout(
-                        POSTCONDITION_PROBE_WINDOW,
+                    tokio::time::timeout_at(
+                        bounded_deadline(deadline, POSTCONDITION_PROBE_WINDOW),
                         cancel.race(
                             generation,
                             bound.target_id,
@@ -354,20 +361,45 @@ impl PageControl {
                 };
                 let observe = async {
                     let compositor_marker = self
-                        .await_compositor_ready(transport, &bound, cancel, generation)
-                        .await;
-                    let observed = self
-                        .observe_live(
-                            transport,
-                            &bound,
-                            LiveObservationRequest {
-                                target: plan.target,
-                            },
-                            observation_started,
-                            plan.kind == BrowserOperationKind::Scroll,
-                            Some((cancel, generation)),
+                        .await_compositor_ready_with_deadline(
+                            transport, &bound, cancel, generation, deadline,
                         )
                         .await;
+                    let observed = match deadline {
+                        Some(deadline) => {
+                            match tokio::time::timeout_at(
+                                deadline,
+                                self.observe_live(
+                                    transport,
+                                    &bound,
+                                    LiveObservationRequest {
+                                        target: plan.target,
+                                    },
+                                    observation_started,
+                                    plan.kind == BrowserOperationKind::Scroll,
+                                    Some((cancel, generation)),
+                                ),
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => Err(post_dispatch_budget_error(bound.target_id)),
+                            }
+                        }
+                        None => {
+                            self.observe_live(
+                                transport,
+                                &bound,
+                                LiveObservationRequest {
+                                    target: plan.target,
+                                },
+                                observation_started,
+                                plan.kind == BrowserOperationKind::Scroll,
+                                Some((cancel, generation)),
+                            )
+                            .await
+                        }
+                    };
                     (compositor_marker, observed)
                 };
                 tokio::pin!(probe);
@@ -471,7 +503,7 @@ impl PageControl {
             expectation_role,
             InteractionOutcome::Dispatched,
             postcondition,
-            parent_batch,
+            execution_context.parent_batch,
         )?;
         Ok((
             wrap_interaction_result(
@@ -893,6 +925,7 @@ impl PageControl {
         dialog_events: Option<PageSignalReceiver>,
         cancel: &OperationCancellation,
         generation: u64,
+        deadline: Option<tokio::time::Instant>,
     ) -> Result<bool> {
         match completion {
             CompletionKind::InputAcknowledged => Ok(false),
@@ -918,7 +951,10 @@ impl PageControl {
                     settle.await?;
                 }
                 if let Some(mut events) = navigation_events {
-                    let next = tokio::time::timeout(NAVIGATION_AWARE_WINDOW, events.recv());
+                    let next = tokio::time::timeout_at(
+                        bounded_deadline(deadline, NAVIGATION_AWARE_WINDOW),
+                        events.recv(),
+                    );
                     // Navigation awareness is an optional completion refinement. A bounded timeout
                     // means no lifecycle event was observed, not that the already-dispatched input
                     // failed. Cancellation and disconnect still win explicitly.
@@ -966,6 +1002,14 @@ impl PageControl {
             screenshot: krometrail_core::ObservationPart::Unavailable(error),
         })
     }
+}
+
+fn post_dispatch_budget_error(target_id: TargetId) -> krometrail_core::KrometrailError {
+    operation_error(
+        ErrorCode::PageObservationFailed,
+        target_id,
+        "post-dispatch observation budget exhausted; observation is unavailable",
+    )
 }
 
 fn dialog_event_opened(

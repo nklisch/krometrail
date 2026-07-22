@@ -93,6 +93,24 @@ impl PageControl {
         cancel: &OperationCancellation,
         connection_generation: u64,
     ) -> Option<KrometrailError> {
+        self.await_compositor_ready_with_deadline(
+            transport,
+            bound,
+            cancel,
+            connection_generation,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn await_compositor_ready_with_deadline(
+        &self,
+        transport: &dyn CdpTransport,
+        bound: &super::BoundTarget,
+        cancel: &OperationCancellation,
+        connection_generation: u64,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Option<KrometrailError> {
         let signal = transport.send_raw(
             &CommandScope::Session(bound.transport_session.clone()),
             "Runtime.evaluate",
@@ -103,8 +121,8 @@ impl PageControl {
                 "silent": true
             }),
         );
-        let ready = tokio::time::timeout(
-            COMPOSITOR_READY_TIMEOUT,
+        let ready = tokio::time::timeout_at(
+            super::bounded_deadline(deadline, COMPOSITOR_READY_TIMEOUT),
             cancel.race(connection_generation, bound.target_id, signal),
         )
         .await;

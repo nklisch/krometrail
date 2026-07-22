@@ -76,6 +76,14 @@ pub(crate) struct InteractionDispatchBaselines {
     pub(crate) download_cursor_before: Option<DownloadSequence>,
 }
 
+pub(crate) fn bounded_deadline(
+    deadline: Option<tokio::time::Instant>,
+    cap: Duration,
+) -> tokio::time::Instant {
+    let cap_deadline = tokio::time::Instant::now() + cap;
+    deadline.map_or(cap_deadline, |deadline| deadline.min(cap_deadline))
+}
+
 impl PageControl {
     pub(crate) fn new(
         clock: Arc<dyn MonotonicClock>,
