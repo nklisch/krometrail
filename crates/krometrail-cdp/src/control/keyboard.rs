@@ -8,6 +8,7 @@ use super::{
     interaction::{ResolvedTarget, send_cdp},
     navigation::OperationCancellation,
     pointer::modifier_mask,
+    snapshot::{ResolvedNode, TemporalInputKind},
 };
 use crate::transport::CdpTransport;
 
@@ -47,6 +48,8 @@ const KEY_DISPATCH: &[(NamedKey, KeyDispatch)] = &[
     (NamedKey::F11, key("F11", "F11", 122)),
     (NamedKey::F12, key("F12", "F12", 123)),
 ];
+
+const FILL_TEMPORAL_FUNCTION: &str = "function(value){const descriptor=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value');if(!descriptor||typeof descriptor.set!=='function')return false;const previous=this.value;descriptor.set.call(this,value);if(this.value!==value){descriptor.set.call(this,previous);return false;}this.dispatchEvent(new Event('input',{bubbles:true}));this.dispatchEvent(new Event('change',{bubbles:true}));return true;}";
 const fn key(key: &'static str, code: &'static str, keycode: u16) -> KeyDispatch {
     KeyDispatch {
         key,
@@ -64,6 +67,21 @@ pub(super) async fn fill(
     cancel: &OperationCancellation,
     generation: u64,
 ) -> Result<()> {
+    let node = target.node(bound.target_id)?;
+    if let Some(kind) = node.temporal_input {
+        if request.mode == FillMode::Append {
+            return Err(super::operation_error(
+                krometrail_core::ErrorCode::InvalidInput,
+                bound.target_id,
+                format!(
+                    "fill_mode_append_unsupported: {} input takes one complete value",
+                    kind.input_type()
+                ),
+            ));
+        }
+        focus(transport, bound, target, cancel, generation).await?;
+        return fill_temporal(transport, bound, request, node, kind, cancel, generation).await;
+    }
     focus(transport, bound, target, cancel, generation).await?;
     if request.mode == FillMode::Replace {
         clear_editable(transport, bound, target, cancel, generation).await?;
@@ -77,6 +95,70 @@ pub(super) async fn fill(
         generation,
     )
     .await?;
+    Ok(())
+}
+
+async fn fill_temporal(
+    transport: &dyn CdpTransport,
+    bound: &BoundTarget,
+    request: &FillRequest,
+    node: &ResolvedNode,
+    kind: TemporalInputKind,
+    cancel: &OperationCancellation,
+    generation: u64,
+) -> Result<()> {
+    let resolved = send_cdp(
+        transport,
+        bound,
+        "DOM.resolveNode",
+        json!({"backendNodeId":node.backend_node_id}),
+        cancel,
+        generation,
+    )
+    .await?;
+    let object_id = resolved
+        .pointer("/object/objectId")
+        .or_else(|| resolved.pointer("/result/object/objectId"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            super::operation_error(
+                krometrail_core::ErrorCode::StaleReference,
+                bound.target_id,
+                "temporal input no longer has a runtime object",
+            )
+        })?;
+    let response = send_cdp(
+        transport,
+        bound,
+        "Runtime.callFunctionOn",
+        json!({
+            "objectId": object_id,
+            "functionDeclaration": FILL_TEMPORAL_FUNCTION,
+            "arguments":[{"value":request.value.as_str()}],
+            "returnByValue": true,
+            "awaitPromise": false,
+            "silent": true,
+        }),
+        cancel,
+        generation,
+    )
+    .await?;
+    let accepted = response
+        .pointer("/result/value")
+        .or_else(|| response.pointer("/result/result/value"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if !accepted {
+        return Err(super::operation_error(
+            krometrail_core::ErrorCode::InvalidInput,
+            bound.target_id,
+            format!(
+                "fill_value_invalid: {} input requires {}",
+                kind.input_type(),
+                kind.expected_format()
+            ),
+        ));
+    }
     Ok(())
 }
 

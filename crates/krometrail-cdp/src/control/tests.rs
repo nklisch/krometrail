@@ -735,6 +735,108 @@ mod interactions {
     }
 
     #[tokio::test]
+    async fn temporal_fill_uses_native_setter_and_events() {
+        let transport = RecordingTransport::default();
+        let bound = bound();
+        let request = FillRequest::new(
+            PageSelection::Target(target()),
+            InteractionLocator::Element(krometrail_core::ElementLocator::CssSelector(
+                krometrail_core::NonEmptyText::new("#date").unwrap(),
+            )),
+            "2026-07-21",
+            FillMode::Replace,
+            false,
+        )
+        .unwrap();
+        transport.push("DOM.resolveNode", Ok(json!({"object":{"objectId":"date"}})));
+        transport.push(
+            "Runtime.callFunctionOn",
+            Ok(json!({"result":{"value":true}})),
+        );
+        keyboard::fill(
+            &transport,
+            &bound,
+            &request,
+            &temporal_element(TemporalInputKind::Date),
+            &OperationCancellation::default(),
+            0,
+        )
+        .await
+        .unwrap();
+        assert!(transport.calls("Input.insertText").is_empty());
+        let call = &transport.calls("Runtime.callFunctionOn")[0];
+        assert!(
+            call["functionDeclaration"]
+                .as_str()
+                .is_some_and(|value| value.contains("HTMLInputElement.prototype"))
+        );
+        assert_eq!(call["arguments"][0]["value"], json!("2026-07-21"));
+    }
+
+    #[tokio::test]
+    async fn temporal_fill_rejects_append_and_invalid_browser_assignment() {
+        let bound = bound();
+        let append = FillRequest::new(
+            PageSelection::Target(target()),
+            InteractionLocator::Element(krometrail_core::ElementLocator::CssSelector(
+                krometrail_core::NonEmptyText::new("#date").unwrap(),
+            )),
+            "2026-07-21",
+            FillMode::Append,
+            false,
+        )
+        .unwrap();
+        let append_transport = RecordingTransport::default();
+        let append_error = keyboard::fill(
+            &append_transport,
+            &bound,
+            &append,
+            &temporal_element(TemporalInputKind::Date),
+            &OperationCancellation::default(),
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(append_error.code, ErrorCode::InvalidInput);
+        assert!(
+            append_error
+                .message
+                .as_str()
+                .contains("fill_mode_append_unsupported")
+        );
+        assert!(append_transport.calls("DOM.focus").is_empty());
+
+        let invalid = FillRequest::new(
+            PageSelection::Target(target()),
+            InteractionLocator::Element(krometrail_core::ElementLocator::CssSelector(
+                krometrail_core::NonEmptyText::new("#date").unwrap(),
+            )),
+            "not-a-date",
+            FillMode::Replace,
+            false,
+        )
+        .unwrap();
+        let invalid_transport = RecordingTransport::default();
+        invalid_transport.push("DOM.resolveNode", Ok(json!({"object":{"objectId":"date"}})));
+        invalid_transport.push(
+            "Runtime.callFunctionOn",
+            Ok(json!({"result":{"value":false}})),
+        );
+        let invalid_error = keyboard::fill(
+            &invalid_transport,
+            &bound,
+            &invalid,
+            &temporal_element(TemporalInputKind::Date),
+            &OperationCancellation::default(),
+            0,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid_error.code, ErrorCode::InvalidInput);
+        assert!(invalid_error.message.as_str().contains("YYYY-MM-DD"));
+    }
+
+    #[tokio::test]
     async fn upload_and_dialog_failures_are_source_safe() {
         let transport = RecordingTransport::default();
         let bound = bound();
