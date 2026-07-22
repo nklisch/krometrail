@@ -50,7 +50,7 @@ async fn fixture_with_count(rotation_size: u64, count: usize) -> Fixture {
         })
         .unwrap(),
     );
-    let store = Arc::new(RecordingStore::new(writer, index).unwrap());
+    let store = Arc::new(RecordingStore::new(writer, index, store_test_clock()).unwrap());
     let session_id = SessionId::from_uuid(Uuid::from_u128(1));
     let target_id = TargetId::from_uuid(Uuid::from_u128(2));
     let frame_ids = (0..count)
@@ -506,4 +506,14 @@ async fn pin_serializes_with_concurrent_session_deletion_without_resurrection() 
         krometrail_core::ErrorCode::NotFound
     );
     assert_eq!(fixture.store.status().await.unwrap().pinned_usage_bytes, 0);
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

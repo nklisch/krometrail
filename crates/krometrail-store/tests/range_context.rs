@@ -50,7 +50,10 @@ impl Fixture {
             })
             .unwrap(),
         );
-        let store = Arc::new(RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap());
+        let store = Arc::new(
+            RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock())
+                .unwrap(),
+        );
         let session = SessionId::from_uuid(Uuid::from_u128(1));
         let target = TargetId::from_uuid(Uuid::from_u128(2));
         let mut frames = Vec::new();
@@ -565,7 +568,7 @@ async fn retained_frame_pin_survives_event_eviction_and_context_reports_unavaila
         ..
     } = fixture;
     drop(store);
-    let store = RecordingStore::with_budget(writer, index, budget).unwrap();
+    let store = RecordingStore::with_budget(writer, index, budget, store_test_clock()).unwrap();
     let _ = store.enforce_budget().await.unwrap();
     let context = store
         .context(TemporalContextRequest::compact(range, vec![]).unwrap())
@@ -810,4 +813,14 @@ async fn store_serves_capture_quality_without_loading_browser_events() {
     assert_eq!(quality.requested_range, range.requested_range);
     assert_eq!(quality.retained_range, range.resolved_range);
     assert_eq!(quality.frame_count, 3);
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

@@ -1469,7 +1469,8 @@ mod qualification {
             })
             .unwrap(),
         );
-        let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+        let store =
+            Arc::new(RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap());
         let session = SessionId::from_uuid(Uuid::from_u128(700));
         let target = TargetId::from_uuid(Uuid::from_u128(701));
 
@@ -2017,4 +2018,14 @@ mod qualification {
         .unwrap();
         assert_eq!(header.summary.as_str(), header2.summary.as_str());
     }
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

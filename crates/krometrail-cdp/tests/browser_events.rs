@@ -163,7 +163,7 @@ impl PersistentEventStore {
             })
             .unwrap(),
         );
-        let store = Arc::new(RecordingStore::new(writer, index).unwrap());
+        let store = Arc::new(RecordingStore::new(writer, index, store_test_clock()).unwrap());
         Self { root, store }
     }
 
@@ -955,4 +955,14 @@ async fn an_open_dialog_is_reported_state_that_recodes_blocked_observation() {
     assert!(!recovery.contains("compatibility"), "{recovery}");
 
     session.stop().await.unwrap();
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

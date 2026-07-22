@@ -454,6 +454,13 @@ pub enum RetentionWarning {
         requested: SessionTime,
         newest_retained: SessionTime,
     },
+    /// The requested end lies beyond the current session time of a live
+    /// session: the interval has not yet elapsed. Distinct from evidence loss.
+    RequestedEndNotYetElapsed {
+        requested: SessionTime,
+        newest_retained: SessionTime,
+        session_now: SessionTime,
+    },
     PartiallyEvicted {
         requested: SessionRange,
         retained: SessionRange,
@@ -990,9 +997,12 @@ fn interval_scope_context(scope: IntervalAnchorScope) -> ErrorContext {
     }
 }
 
+use std::sync::Arc;
+
 use crate::{
-    CaptureGapStore, CapturedFrame, FrameSource, InteractionAnchorSource, ObservationPayloadRef,
-    PortFuture, RecordingCatalog, TimelineAnchorSource, TimelineStore,
+    CaptureGapStore, CapturedFrame, FrameSource, InteractionAnchorSource, MonotonicClock,
+    ObservationPayloadRef, PortFuture, RecordingCatalog, SessionLifecycle, SessionOrigin,
+    TimelineAnchorSource, TimelineStore,
 };
 
 /// Resolves every temporal request through the same storage authorities before a
@@ -1003,16 +1013,27 @@ pub struct TemporalRangeResolver<C, F, G, T, I> {
     gaps: G,
     timeline: T,
     interactions: I,
+    /// The process monotonic clock, used only to refine a partial tail on a
+    /// live session as "not yet elapsed". Never compared across boots.
+    clock: Arc<dyn MonotonicClock>,
 }
 
 impl<C, F, G, T, I> TemporalRangeResolver<C, F, G, T, I> {
-    pub const fn new(catalog: C, frames: F, gaps: G, timeline: T, interactions: I) -> Self {
+    pub fn new(
+        catalog: C,
+        frames: F,
+        gaps: G,
+        timeline: T,
+        interactions: I,
+        clock: Arc<dyn MonotonicClock>,
+    ) -> Self {
         Self {
             catalog,
             frames,
             gaps,
             timeline,
             interactions,
+            clock,
         }
     }
 }
@@ -1305,6 +1326,9 @@ where
             .frames
             .frame_availability(seed.session_id, seed.target_id)
             .await?;
+        let session_now = self
+            .live_session_now(seed.session_id, &availability)
+            .await?;
         let frames = match seed.preloaded_frames.take() {
             Some(frames) => frames,
             None => {
@@ -1336,7 +1360,7 @@ where
         }
 
         let (resolved_range, retention_warnings) =
-            classify_retention(&seed, &frames, &availability, options)?;
+            classify_retention(&seed, &frames, &availability, options, session_now)?;
         let retained_frames: Vec<_> = frames
             .into_iter()
             .filter(|frame| resolved_range.contains(frame.session_time()))
@@ -1404,6 +1428,45 @@ where
             options,
         )
     }
+
+    /// The guarded current session time of a live session, used only to refine
+    /// a partial tail as "not yet elapsed".
+    ///
+    /// Returns `None` — silently omitting the refinement — whenever the session
+    /// is unknown, ended, stopping, its origin cannot normalize the current
+    /// monotonic clock (a cross-boot origin must never be compared with this
+    /// process's clock), or the computed now precedes the newest retained
+    /// frame time. On any doubt the refinement is omitted, never wrong.
+    async fn live_session_now(
+        &self,
+        session_id: SessionId,
+        availability: &FrameAvailability,
+    ) -> Result<Option<SessionTime>> {
+        let Some(session) = self.catalog.session(session_id).await? else {
+            return Ok(None);
+        };
+        if session.ended_at().is_some()
+            || !matches!(
+                session.lifecycle(),
+                SessionLifecycle::Starting
+                    | SessionLifecycle::Recording
+                    | SessionLifecycle::Reconnecting
+            )
+        {
+            return Ok(None);
+        }
+        let Ok(session_now) = SessionOrigin::new(session.origin()).normalize(self.clock.now())
+        else {
+            return Ok(None);
+        };
+        let Some(retained) = availability.retained_bounds else {
+            return Ok(None);
+        };
+        if session_now < retained.end() {
+            return Ok(None);
+        }
+        Ok(Some(session_now))
+    }
 }
 
 fn validate_frame_metadata(
@@ -1453,6 +1516,7 @@ fn classify_retention(
     frames: &[CapturedFrame],
     availability: &FrameAvailability,
     options: RangeResolutionOptions,
+    session_now: Option<SessionTime>,
 ) -> Result<(SessionRange, Vec<RetentionWarning>)> {
     let retained = availability.retained_bounds.ok_or_else(|| {
         persistence_range_error("frame availability omitted bounds for retained metadata")
@@ -1558,6 +1622,20 @@ fn classify_retention(
             requested: seed.requested_range.end(),
             newest_retained: resolved.end(),
         });
+        // Additive refinement: on a live session whose guarded current time
+        // has not yet reached the requested end, the missing tail is a future
+        // interval, not evidence loss. The guard `session_now >= resolved.end()`
+        // keeps the claim consistent with the retained truth.
+        if let Some(now) = session_now
+            && now >= resolved.end()
+            && seed.requested_range.end() > now
+        {
+            warnings.push(RetentionWarning::RequestedEndNotYetElapsed {
+                requested: seed.requested_range.end(),
+                newest_retained: resolved.end(),
+                session_now: now,
+            });
+        }
     }
     if has_evictions {
         warnings.push(RetentionWarning::PartiallyEvicted {

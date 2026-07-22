@@ -136,7 +136,8 @@ async fn indexed_segment(
 ) -> (Arc<SqliteIndex>, Vec<krometrail_core::FrameAddress>) {
     let index = fixture.index();
     let writer = fixture.writer();
-    let sink = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let sink =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let mut addresses = Vec::new();
     for frame in frames {
         addresses.push(sink.append_frame(frame.clone()).await.unwrap());
@@ -187,7 +188,8 @@ async fn duplicate_frame_orphan_is_stably_ignored_after_sealing() {
     let fixture = Fixture::new();
     let index = fixture.index();
     let writer = fixture.writer();
-    let sink = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let sink =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let session = SessionId::from_uuid(id(5));
     let target = TargetId::from_uuid(id(6));
     let first = frame(session, target, 7, 1);
@@ -220,7 +222,8 @@ async fn truncated_open_tail_is_removed_while_complete_frames_survive() {
     let fixture = Fixture::new();
     let index = fixture.index();
     let writer = fixture.writer();
-    let sink = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let sink =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let session = SessionId::from_uuid(id(10));
     let target = TargetId::from_uuid(id(11));
     let first = frame(session, target, 12, 1);
@@ -339,7 +342,8 @@ async fn absent_segment_removes_only_its_index_registration() {
     let fixture = Fixture::new();
     let index = fixture.index();
     let writer = fixture.writer();
-    let sink = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let sink =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let lost_session = SessionId::from_uuid(id(40));
     let kept_session = SessionId::from_uuid(id(41));
     let target = TargetId::from_uuid(id(42));
@@ -521,7 +525,8 @@ async fn reopen_recovers_all_unflushed_targets_and_reports_open_count() {
     let fixture = Fixture::new();
     let index = fixture.index();
     let writer = fixture.writer();
-    let sink = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let sink =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let session = SessionId::from_uuid(id(70));
     let first_target = TargetId::from_uuid(id(71));
     let second_target = TargetId::from_uuid(id(72));
@@ -559,7 +564,8 @@ async fn one_pass_repairs_orphan_and_dangling_directions_together() {
     let dangling_target = TargetId::from_uuid(id(82));
     let orphan = frame(session, orphan_target, 83, 1);
     writer.append_indexable(orphan.clone()).await.unwrap();
-    let sink = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let sink =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let dangling = frame(session, dangling_target, 84, 1);
     let dangling_address = sink.append_frame(dangling.clone()).await.unwrap();
     drop(sink);
@@ -730,4 +736,14 @@ fn unreadable_segment_root_is_a_shutdown_incomplete_boundary() {
     fs::write(fixture.segments_directory(), b"not a directory").unwrap();
     let error = recover(index.as_ref()).unwrap_err();
     assert_eq!(error.code, ErrorCode::ShutdownIncomplete);
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

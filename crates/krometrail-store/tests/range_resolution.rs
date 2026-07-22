@@ -53,7 +53,8 @@ impl Fixture {
             })
             .unwrap(),
         );
-        let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+        let store =
+            Arc::new(RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap());
         let session = SessionId::from_uuid(Uuid::from_u128(1));
         let target = TargetId::from_uuid(Uuid::from_u128(2));
         let mut frames = Vec::new();
@@ -118,12 +119,25 @@ impl Fixture {
     }
 
     fn resolver(&self) -> RangeResolver {
+        self.resolver_at(0)
+    }
+
+    /// A resolver whose injected monotonic clock reads exactly `now_nanos`.
+    /// The fixture session origin is 0, so session time equals observed time.
+    fn resolver_at(&self, now_nanos: u64) -> RangeResolver {
+        struct FixedClock(u64);
+        impl krometrail_core::MonotonicClock for FixedClock {
+            fn now(&self) -> ObservedTime {
+                ObservedTime::from_nanos(self.0)
+            }
+        }
         TemporalRangeResolver::new(
             Arc::clone(&self.index),
             Arc::clone(&self.index),
             Arc::clone(&self.index),
             Arc::clone(&self.index),
             Arc::clone(&self.index),
+            Arc::new(FixedClock(now_nanos)),
         )
     }
 
@@ -488,6 +502,121 @@ async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_not_partia
 }
 
 #[tokio::test]
+async fn live_session_partial_tail_is_refined_as_not_yet_elapsed() {
+    use krometrail_core::{
+        BrowserOperationKind, InteractionAnchor, InteractionEvidenceSink, InteractionTiming,
+        RetentionPolicy, RetentionWarning,
+    };
+
+    let fixture = Fixture::new().await;
+    let interaction_id = krometrail_core::InteractionId::from_uuid(Uuid::from_u128(50));
+    fixture
+        .store
+        .append_operation_evidence(
+            InteractionAnchor::new(
+                interaction_id,
+                fixture.session,
+                fixture.target,
+                BrowserOperationKind::Click,
+                InteractionTiming::new(
+                    SessionTime::from_nanos(5),
+                    SessionTime::from_nanos(5),
+                    SessionTime::from_nanos(5),
+                    Some(SessionTime::from_nanos(5)),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            None,
+            ObservedTime::from_nanos(6),
+            None,
+        )
+        .await
+        .unwrap();
+    let anchor = TemporalRangeAnchor::Interaction {
+        scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
+        interaction_id,
+        window: Some(
+            krometrail_core::InteractionWindow::new(Duration::ZERO, Duration::from_millis(1))
+                .unwrap(),
+        ),
+    };
+    let mut allow_partial = RangeResolutionOptions::DEFAULT;
+    allow_partial.retention = RetentionPolicy::AllowPartial;
+
+    // Requested end 1_000_005 ns; newest retained frame 10 ns; injected now
+    // 400_000 ns. The session is live and the requested end lies in the
+    // future, so the refinement is emitted alongside the retained truth.
+    let injected_now = 400_000_u64;
+    let resolved = fixture
+        .resolver_at(injected_now)
+        .resolve(anchor.clone(), allow_partial)
+        .await
+        .unwrap();
+    assert_eq!(resolved.resolved_range.end(), SessionTime::from_nanos(10));
+    assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        RetentionWarning::RequestedEndAfterNewestRetained { .. }
+    )));
+    assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        RetentionWarning::RequestedEndNotYetElapsed {
+            requested,
+            newest_retained,
+            session_now,
+        } if *requested == resolved.requested_range.end()
+            && *newest_retained == SessionTime::from_nanos(10)
+            && *session_now == SessionTime::from_nanos(injected_now)
+    )));
+
+    // Guard failure: an injected now behind the newest retained frame time is
+    // unsound evidence for a future-interval claim, so the refinement is
+    // silently omitted and resolution is otherwise unchanged.
+    let guarded = fixture
+        .resolver_at(4)
+        .resolve(anchor.clone(), allow_partial)
+        .await
+        .unwrap();
+    assert_eq!(guarded.resolved_range, resolved.resolved_range);
+    assert!(
+        !guarded
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::RequestedEndNotYetElapsed { .. }))
+    );
+
+    // Ended session: the same shape emits no refinement — a tail beyond an
+    // ended session is permanent absence, never a future interval.
+    let mut ended = fixture
+        .index
+        .session(fixture.session)
+        .await
+        .unwrap()
+        .unwrap();
+    for lifecycle in [
+        krometrail_core::SessionLifecycle::Recording,
+        krometrail_core::SessionLifecycle::Stopping,
+        krometrail_core::SessionLifecycle::Ended,
+    ] {
+        let ended_at = (lifecycle == krometrail_core::SessionLifecycle::Ended)
+            .then_some(SystemTime::UNIX_EPOCH + Duration::from_secs(1));
+        ended.transition(lifecycle, ended_at).unwrap();
+    }
+    fixture.index.put_session(ended).await.unwrap();
+    let after_end = fixture
+        .resolver_at(injected_now)
+        .resolve(anchor, allow_partial)
+        .await
+        .unwrap();
+    assert!(
+        !after_end
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::RequestedEndNotYetElapsed { .. }))
+    );
+}
+
+#[tokio::test]
 async fn source_frame_scope_mismatch_is_invalid_input() {
     let fixture = Fixture::new().await;
     let wrong_target = TargetId::from_uuid(Uuid::from_u128(99));
@@ -598,4 +727,14 @@ async fn marker_scope_mismatch_is_invalid_input_not_missing_data() {
         .await
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::InvalidInput);
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

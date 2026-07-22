@@ -198,7 +198,11 @@ pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
     });
     let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
     let data_directory = data_directory();
-    let storage = open_storage_with_budget(&data_directory, configured_disk_budget()?)?;
+    let storage = open_storage_with_budget(
+        &data_directory,
+        configured_disk_budget()?,
+        Arc::clone(&clock),
+    )?;
     let range_handles: Arc<dyn ResolvedRangeHandles> = Arc::new(ProcessResolvedRangeHandles::new(
         Arc::clone(&ids),
         Arc::clone(&storage.frames),
@@ -358,6 +362,7 @@ fn browser_event_config(capabilities: &McpConfig) -> BrowserEventConfig {
 fn open_storage_with_budget(
     data_directory: &std::path::Path,
     budget: DiskBudgetBytes,
+    clock: Arc<dyn MonotonicClock>,
 ) -> Result<StorageDependencies> {
     // Claim an exclusive instance root before touching any retained data. Every
     // destructive startup path below — legacy clearing, incompatible-cache
@@ -428,6 +433,7 @@ fn open_storage_with_budget(
         Arc::clone(&index),
         configured_retention(budget)?,
         Some(census),
+        clock,
     )?);
     Ok(StorageDependencies {
         store: Arc::clone(&store),
@@ -628,6 +634,13 @@ fn browser_not_found() -> KrometrailError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_process_clock() -> Arc<dyn MonotonicClock> {
+        Arc::new(ProcessMonotonicClock {
+            origin: Instant::now(),
+        })
+    }
+
     use krometrail_core::PortFuture;
     use std::{
         collections::HashSet,
@@ -667,8 +680,12 @@ mod tests {
         });
         let recording_directory =
             std::env::temp_dir().join(format!("krometrail-doctor-test-{}", Uuid::new_v4()));
-        let storage =
-            open_storage_with_budget(&recording_directory, DiskBudgetBytes::default()).unwrap();
+        let storage = open_storage_with_budget(
+            &recording_directory,
+            DiskBudgetBytes::default(),
+            test_process_clock(),
+        )
+        .unwrap();
         let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
         let artifact_generation: Arc<dyn ArtifactGeneration> = Arc::new(
             TemporalVisionArtifactService::new(
@@ -750,7 +767,9 @@ mod tests {
     #[tokio::test]
     async fn storage_composition_shares_lossless_gap_metadata_and_fails_before_runtime() {
         let root = std::env::temp_dir().join(format!("krometrail-storage-test-{}", Uuid::new_v4()));
-        let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
+        let storage =
+            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
+                .unwrap();
         let concrete = Arc::as_ptr(&storage.store) as *const ();
         assert_eq!(
             concrete,
@@ -824,7 +843,10 @@ mod tests {
         let occupied =
             std::env::temp_dir().join(format!("krometrail-storage-file-{}", Uuid::new_v4()));
         std::fs::write(&occupied, b"not a data directory").unwrap();
-        assert!(open_storage_with_budget(&occupied, DiskBudgetBytes::default()).is_err());
+        assert!(
+            open_storage_with_budget(&occupied, DiskBudgetBytes::default(), test_process_clock())
+                .is_err()
+        );
         std::fs::remove_file(occupied).unwrap();
     }
 
@@ -879,7 +901,9 @@ mod tests {
     fn one_startup_result_controls_video_capability_and_service_construction() {
         let root =
             std::env::temp_dir().join(format!("krometrail-video-composition-{}", Uuid::new_v4()));
-        let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
+        let storage =
+            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
+                .unwrap();
         let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
         let artifact_generation: Arc<dyn ArtifactGeneration> = Arc::new(
             TemporalVisionArtifactService::new(
@@ -998,7 +1022,9 @@ mod tests {
     async fn bundle_composition_shares_one_store_and_one_artifact_service() {
         let root =
             std::env::temp_dir().join(format!("krometrail-bundle-composition-{}", Uuid::new_v4()));
-        let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
+        let storage =
+            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
+                .unwrap();
         let concrete = Arc::as_ptr(&storage.store) as *const ();
         // Every store projection the bundle service receives points at the one
         // concrete RecordingStore.
@@ -1069,7 +1095,9 @@ mod tests {
         use tokio::sync::Notify;
 
         let root = std::env::temp_dir().join(format!("krometrail-bundle-gate-{}", Uuid::new_v4()));
-        let storage = open_storage_with_budget(&root, DiskBudgetBytes::default()).unwrap();
+        let storage =
+            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
+                .unwrap();
         let session = krometrail_core::SessionId::from_uuid(Uuid::from_u128(1));
         let target = krometrail_core::TargetId::from_uuid(Uuid::from_u128(2));
 

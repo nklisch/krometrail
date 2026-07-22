@@ -104,6 +104,7 @@ fn open_instance(data: &TempDir, total_budget: u64, shared: bool) -> Instance {
         )
         .unwrap(),
         census,
+        store_test_clock(),
     )
     .unwrap();
     Instance {
@@ -657,4 +658,14 @@ async fn an_instance_that_grew_alone_trims_on_its_next_operation() {
     );
 
     drop(second);
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

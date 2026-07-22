@@ -48,7 +48,8 @@ fn open(directory: &std::path::Path) -> (Arc<SqliteIndex>, Arc<SegmentWriter>, R
         })
         .unwrap(),
     );
-    let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let store =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     (index, writer, store)
 }
 
@@ -306,8 +307,20 @@ async fn reopen_fails_source_safely_on_unbounded_identity_or_time_corruption() {
         })
         .unwrap(),
     );
-    let error = RecordingStore::new(writer, index).err().unwrap();
+    let error = RecordingStore::new(writer, index, store_test_clock())
+        .err()
+        .unwrap();
     assert_eq!(error.code, krometrail_core::ErrorCode::PersistenceFailed);
     assert!(!error.message.as_str().contains("01"));
     assert!(!error.message.as_str().contains("browser_events"));
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

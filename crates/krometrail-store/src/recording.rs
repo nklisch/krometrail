@@ -14,17 +14,18 @@ use krometrail_core::{
     DiskBudgetBytes, EncodedFrame, ErrorCode, ErrorContext, EventCandidateLimit, EventPageLimit,
     EvidenceScope, FrameAddress, FrameId, FrameSource, InteractionAnchor, InteractionAnchorSource,
     InteractionEvidenceSink, InteractionId, InteractionRecord, InteractionRecordSource,
-    KrometrailError, NavigationId, NonEmptyText, ObservedTime, PersistenceOperation, PinChange,
-    PinProtectionScope, PinState, PortFuture, ProgressivePinChange, RecordingBudgetState,
-    RecordingSink, ResolvedRange, RetentionLifecycle, RetentionPinRequest, RetentionRange,
-    RetentionStatus, RetentionStore, RetrieveArtifactRequest, RetrieveSourceFrameRequest,
-    RetryAdvice, SessionDeletion, SessionId, SessionRange, SessionTime, Sha256Digest,
-    SourceFrameBatch, SourceFrameHandle, SourceFrameList, SourceFrameRead, SourceFrameSelection,
-    SourceFramesRequest, StorageUsage, StoredArtifact, StoredVideoArtifact, TargetId,
-    TemporalContext, TemporalContextQuery, TemporalContextRequest, TemporalContextService,
-    TemporalQuery, TemporalQueryRequest, TemporalQueryService, TemporalRangeResolver,
-    TimelineObservation, TimelineStore, VideoArtifactEvidenceHandle, VideoArtifactLookup,
-    VideoArtifactPublication, VideoArtifactPublish, VideoArtifactRead, VideoArtifactReadLookup,
+    KrometrailError, MonotonicClock, NavigationId, NonEmptyText, ObservedTime,
+    PersistenceOperation, PinChange, PinProtectionScope, PinState, PortFuture,
+    ProgressivePinChange, RecordingBudgetState, RecordingSink, ResolvedRange, RetentionLifecycle,
+    RetentionPinRequest, RetentionRange, RetentionStatus, RetentionStore, RetrieveArtifactRequest,
+    RetrieveSourceFrameRequest, RetryAdvice, SessionDeletion, SessionId, SessionRange, SessionTime,
+    Sha256Digest, SourceFrameBatch, SourceFrameHandle, SourceFrameList, SourceFrameRead,
+    SourceFrameSelection, SourceFramesRequest, StorageUsage, StoredArtifact, StoredVideoArtifact,
+    TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
+    TemporalContextService, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
+    TemporalRangeResolver, TimelineObservation, TimelineStore, VideoArtifactEvidenceHandle,
+    VideoArtifactLookup, VideoArtifactPublication, VideoArtifactPublish, VideoArtifactRead,
+    VideoArtifactReadLookup,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, watch};
@@ -94,6 +95,9 @@ struct ArtifactReadSnapshot {
 /// retention mutations behind one ordering gate.
 pub struct RecordingStore {
     mutations: Mutex<()>,
+    /// Injected process clock; the range resolver uses it to refine live-session
+    /// partial tails as "not yet elapsed". No default clock exists in the store.
+    clock: Arc<dyn MonotonicClock>,
     segments: Arc<SegmentWriter>,
     index: Arc<SqliteIndex>,
     removal: RemovalWorker,
@@ -119,20 +123,23 @@ impl RecordingStore {
     pub fn new(
         segments: Arc<SegmentWriter>,
         index: Arc<SqliteIndex>,
+        clock: Arc<dyn MonotonicClock>,
     ) -> krometrail_core::Result<Self> {
-        Self::with_retention(segments, index, RetentionLifecycle::default(), None)
+        Self::with_retention(segments, index, RetentionLifecycle::default(), None, clock)
     }
 
     pub fn with_budget(
         segments: Arc<SegmentWriter>,
         index: Arc<SqliteIndex>,
         budget: DiskBudgetBytes,
+        clock: Arc<dyn MonotonicClock>,
     ) -> krometrail_core::Result<Self> {
         Self::with_retention(
             segments,
             index,
             RetentionLifecycle::with_budget(budget),
             None,
+            clock,
         )
     }
 
@@ -148,6 +155,7 @@ impl RecordingStore {
         index: Arc<SqliteIndex>,
         retention: RetentionLifecycle,
         census: Option<crate::InstanceCensus>,
+        clock: Arc<dyn MonotonicClock>,
     ) -> krometrail_core::Result<Self> {
         let data_directory = index
             .database_path()
@@ -165,6 +173,7 @@ impl RecordingStore {
         };
         let store = Self {
             mutations: Mutex::new(()),
+            clock,
             open_overhead_limit: segments
                 .rotation_max_size()
                 .saturating_add(RECORD_ENVELOPE_ALLOWANCE),
@@ -2161,6 +2170,7 @@ impl TemporalQuery for RecordingStore {
                 Arc::clone(&self.index),
                 Arc::clone(&self.index),
                 Arc::clone(&self.index),
+                Arc::clone(&self.clock),
             ))
             .resolve_range(request)
             .await
@@ -2527,6 +2537,16 @@ fn budget_error(session_id: SessionId, target_id: krometrail_core::TargetId) -> 
 
 #[cfg(test)]
 mod tests {
+
+    fn recording_test_clock() -> Arc<dyn MonotonicClock> {
+        struct Fixed;
+        impl MonotonicClock for Fixed {
+            fn now(&self) -> ObservedTime {
+                ObservedTime::from_nanos(0)
+            }
+        }
+        Arc::new(Fixed)
+    }
     use std::{sync::Arc, time::Duration};
 
     use krometrail_core::{
@@ -2583,7 +2603,12 @@ mod tests {
             })
             .unwrap(),
         );
-        let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+        let store = RecordingStore::new(
+            Arc::clone(&writer),
+            Arc::clone(&index),
+            recording_test_clock(),
+        )
+        .unwrap();
         (index, writer, store)
     }
 
@@ -3022,7 +3047,12 @@ mod tests {
             }
             drop(store);
 
-            let reopened = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+            let reopened = RecordingStore::new(
+                Arc::clone(&writer),
+                Arc::clone(&index),
+                recording_test_clock(),
+            )
+            .unwrap();
             assert!(index.deletion_batches().unwrap().is_empty());
             assert!(
                 index

@@ -41,7 +41,8 @@ impl Fixture {
             })
             .unwrap(),
         );
-        let sink = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+        let sink =
+            Arc::new(RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap());
         Self {
             directory,
             index,
@@ -325,4 +326,14 @@ async fn missing_frame_ids_fail_the_whole_ordered_request() {
         .await
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::NotFound);
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

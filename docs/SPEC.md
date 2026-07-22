@@ -492,7 +492,7 @@ A temporal range can be specified by:
 - navigation or marker identifier;
 - a source-frame range.
 
-Natural anchors resolve to an explicit target and time range before artifact generation. When an interaction query omits an explicit range, Krometrail uses bounded pre-action context through the interaction lifecycle and post-action observation, plus bounded trailing context. Under `allow_partial`, an interaction or latest-interaction range that intersects retained capture may resolve to that exact intersection when its naturally derived edges extend beyond captured bounds. The response preserves the original requested range and interaction identity and reports affected-edge plus `partially_captured` warnings. Explicit ranges, `require_complete`, and wholly disjoint natural ranges remain exact failures. The resolved range is returned with every response.
+Natural anchors resolve to an explicit target and time range before artifact generation. When an interaction query omits an explicit range, Krometrail uses bounded pre-action context through the interaction lifecycle and post-action observation, plus bounded trailing context. Under `allow_partial`, an interaction or latest-interaction range that intersects retained capture may resolve to that exact intersection when its naturally derived edges extend beyond captured bounds. The response preserves the original requested range and interaction identity and reports affected-edge plus `partially_captured` warnings. When the session is live in the resolving process and its guarded current session time shows the requested end has not yet arrived, the partial tail additionally carries a `requested_end_not_yet_elapsed` warning distinguishing a future interval from evidence loss; when the current session time is unknown or unsound, the refinement is omitted and the retained-truth warnings stand alone. Explicit ranges, `require_complete`, and wholly disjoint natural ranges remain exact failures. The resolved range is returned with every response.
 
 Range resolution can also return an opaque session-scoped handle. Temporal artifact, event, source-frame,
 pinning, and video requests accept either the complete resolved range or that handle. A handle resolves to the
@@ -595,6 +595,7 @@ Krometrail degrades explicitly:
 - a saturated ingestion queue records dropped frames;
 - an exhausted disk budget pauses capture when protected data prevents eviction;
 - a dispatched interaction with unavailable post-action observation returns its interaction record as a degraded non-error result;
+- a requested post-action interval that has not yet elapsed on a live session is reported as not-yet-elapsed tail evidence, distinct from evidence loss;
 - invalid layout metrics can use the JavaScript-observed viewport size and report the fallback, while recovery-requiring metric failures name reload or navigation and are retryable after recovery;
 - an unsupported CDP command reports the detected browser and protocol versions.
 

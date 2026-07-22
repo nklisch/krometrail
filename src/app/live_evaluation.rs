@@ -396,10 +396,14 @@ pub fn build_qualification_runtime(
             "live qualification requires both explicit opt-in gates",
         ));
     }
-    let storage = open_storage_with_budget(&config.data_root(), config.retention_budget)?;
     let clock: Arc<dyn MonotonicClock> = Arc::new(super::ProcessMonotonicClock {
         origin: Instant::now(),
     });
+    let storage = open_storage_with_budget(
+        &config.data_root(),
+        config.retention_budget,
+        Arc::clone(&clock),
+    )?;
     let ids: Arc<dyn IdSource> = Arc::new(super::ProcessIdSource);
     let mcp_config = McpConfig::default();
     let artifact_generation: Arc<dyn krometrail_core::ArtifactGeneration> =

@@ -39,7 +39,7 @@ fn open_store(root: &std::path::Path) -> Arc<RecordingStore> {
         })
         .unwrap(),
     );
-    Arc::new(RecordingStore::new(writer, index).unwrap())
+    Arc::new(RecordingStore::new(writer, index, store_test_clock()).unwrap())
 }
 
 fn png(color: [u8; 4]) -> Vec<u8> {
@@ -271,4 +271,14 @@ async fn selected_real_ffmpeg_generates_both_policies_through_store_mcp_and_loca
     assert!(status.success(), "stderr: {stderr}");
     assert!(stderr.is_empty(), "stderr: {stderr}");
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

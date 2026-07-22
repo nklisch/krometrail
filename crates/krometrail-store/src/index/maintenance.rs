@@ -263,6 +263,16 @@ fn class_usage(
 
 #[cfg(test)]
 mod tests {
+
+    fn recording_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+        struct Fixed;
+        impl krometrail_core::MonotonicClock for Fixed {
+            fn now(&self) -> krometrail_core::ObservedTime {
+                krometrail_core::ObservedTime::from_nanos(0)
+            }
+        }
+        std::sync::Arc::new(Fixed)
+    }
     use std::{sync::Arc, time::Duration};
 
     use krometrail_core::{
@@ -321,6 +331,7 @@ mod tests {
                 .unwrap(),
             ),
             Arc::clone(&index),
+            recording_test_clock(),
         )
         .unwrap();
         let session = SessionId::from_uuid(Uuid::from_u128(1));

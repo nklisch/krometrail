@@ -679,7 +679,7 @@ fn recording_store() -> (TemporaryStoreRoot, Arc<RecordingStore>) {
         })
         .unwrap(),
     );
-    let store = Arc::new(RecordingStore::new(writer, index).unwrap());
+    let store = Arc::new(RecordingStore::new(writer, index, store_test_clock()).unwrap());
     (root, store)
 }
 
@@ -824,4 +824,14 @@ async fn successful_operation_is_immediately_queryable_through_the_same_recordin
         assert!(resolved.interaction_ids.contains(&interaction_id));
     }
     session.stop().await.unwrap();
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

@@ -119,6 +119,7 @@ async fn age_out_reclaims_expired_evidence_while_far_inside_budget() {
         )
         .unwrap(),
         None,
+        store_test_clock(),
     )
     .unwrap();
 
@@ -169,6 +170,7 @@ async fn pinned_evidence_survives_age_out() {
         )
         .unwrap(),
         None,
+        store_test_clock(),
     )
     .unwrap();
 
@@ -211,7 +213,8 @@ async fn pinned_evidence_survives_age_out() {
 async fn in_session_trimming_reclaims_before_the_budget_wall() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let probe = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let probe =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let baseline = probe.status().await.unwrap().usage.total_bytes().unwrap();
     drop(probe);
 
@@ -223,6 +226,7 @@ async fn in_session_trimming_reclaims_before_the_budget_wall() {
         Arc::clone(&index),
         RetentionLifecycle::new(budget, None, 50, Duration::ZERO).unwrap(),
         None,
+        store_test_clock(),
     )
     .unwrap();
 
@@ -263,7 +267,8 @@ async fn in_session_trimming_reclaims_before_the_budget_wall() {
 async fn retained_bounds_order_by_wall_clock_not_insertion_order() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let store =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
 
     // Inserted first, session clock near zero.
     let first = frame(1, 10, 100, 1, 1_000);
@@ -328,6 +333,7 @@ async fn age_out_without_an_expired_segment_leaves_events_alone() {
         )
         .unwrap(),
         None,
+        store_test_clock(),
     )
     .unwrap();
 
@@ -339,4 +345,14 @@ async fn age_out_without_an_expired_segment_leaves_events_alone() {
     let before = segment_count(&directory);
     store.enforce_budget().await.unwrap();
     assert_eq!(segment_count(&directory), before);
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

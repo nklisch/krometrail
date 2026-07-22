@@ -8,7 +8,7 @@
 
 use krometrail_core::{
     ArtifactOutcome, BundleEpochVisualSummary, MAX_BUNDLE_HEADER_BYTES, NonEmptyText,
-    ResolvedRange, Result, TemporalDebugHeader,
+    ResolvedRange, Result, RetentionWarning, TemporalDebugHeader,
 };
 use temporal_vision::ArtifactKind;
 
@@ -118,11 +118,24 @@ fn compose_summary(
             "Browser events were unavailable; no co-occurrence is asserted."
         }
     };
+    // A partial tail on a live session whose requested end has not yet elapsed
+    // is a future interval, not evidence loss; name it as such instead of
+    // leaving generic partial phrasing.
+    let tail_clause = if range
+        .retention_warnings
+        .iter()
+        .any(|warning| matches!(warning, RetentionWarning::RequestedEndNotYetElapsed { .. }))
+    {
+        "The requested end had not yet elapsed at resolution; \
+         the unretained tail is a not-yet-elapsed interval, not evidence loss. "
+    } else {
+        ""
+    };
     let text = format!(
         "Observed target {} from {} to {} ns. {} source frames retained. {} \
          {} \
-         Measurements and proximity do not establish diagnosis or causality.",
-        range.target_id, start, end, frame_count, change, events_clause
+         {}Measurements and proximity do not establish diagnosis or causality.",
+        range.target_id, start, end, frame_count, change, events_clause, tail_clause
     );
     if text.len() > MAX_BUNDLE_HEADER_BYTES {
         return Err(krometrail_core::KrometrailError::new(
@@ -300,6 +313,60 @@ mod tests {
         assert!(summary.contains("measured"));
         assert!(summary.contains("proximity"));
         assert!(summary.contains("do not establish"));
+        assert!(summary.len() <= MAX_BUNDLE_HEADER_BYTES);
+    }
+
+    #[test]
+    fn header_names_a_not_yet_elapsed_tail_instead_of_generic_partial_phrasing() {
+        let session = SessionId::from_uuid(Uuid::from_u128(1));
+        let target = TargetId::from_uuid(Uuid::from_u128(2));
+        let requested = SessionRange::new(
+            SessionTime::from_nanos(0),
+            SessionTime::from_nanos(1_000_000),
+        )
+        .unwrap();
+        let retained =
+            SessionRange::new(SessionTime::from_nanos(0), SessionTime::from_nanos(500_000))
+                .unwrap();
+        let range = ResolvedRange::new(
+            session,
+            target,
+            TemporalRangeAnchorKind::SessionTime,
+            requested,
+            retained,
+            vec![FrameId::from_uuid(Uuid::from_u128(3))],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                krometrail_core::RetentionWarning::RequestedEndAfterNewestRetained {
+                    requested: requested.end(),
+                    newest_retained: retained.end(),
+                },
+                krometrail_core::RetentionWarning::RequestedEndNotYetElapsed {
+                    requested: requested.end(),
+                    newest_retained: retained.end(),
+                    session_now: SessionTime::from_nanos(600_000),
+                },
+            ],
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                capture_gaps: CaptureGapPolicy::Include,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .unwrap();
+        let header = compose_header(
+            &range,
+            &[],
+            VisualEvidenceState::Unavailable,
+            BrowserEventEvidenceState::Unavailable,
+        )
+        .unwrap();
+        let summary = header.summary.as_str();
+        assert!(summary.contains("not yet elapsed"));
+        assert!(summary.contains("not evidence loss"));
         assert!(summary.len() <= MAX_BUNDLE_HEADER_BYTES);
     }
 

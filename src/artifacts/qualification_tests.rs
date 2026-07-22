@@ -72,7 +72,8 @@ async fn real_rig() -> RealRig {
         })
         .unwrap(),
     );
-    let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+    let store =
+        Arc::new(RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap());
     let session = SessionId::from_uuid(Uuid::from_u128(700));
     let target = TargetId::from_uuid(Uuid::from_u128(701));
     let frame_ids: Vec<_> = (0_u128..4)
@@ -570,7 +571,8 @@ async fn manual_1080p_workload_reports_artifact_and_ingestion_metrics() {
         })
         .unwrap(),
     );
-    let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+    let store =
+        Arc::new(RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap());
     let dimensions = PixelDimensions::new(1920, 1080).unwrap();
     let mut rgba = vec![0_u8; 1920 * 1080 * 4];
     for pixel in rgba.chunks_exact_mut(4) {
@@ -705,4 +707,14 @@ async fn manual_1080p_workload_reports_artifact_and_ingestion_metrics() {
         ingestion.as_micros(),
         first.outcomes.len(),
     );
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

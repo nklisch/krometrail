@@ -100,7 +100,7 @@ impl QualificationFixture {
             })
             .unwrap(),
         );
-        let store = Arc::new(RecordingStore::new(writer, index).unwrap());
+        let store = Arc::new(RecordingStore::new(writer, index, store_test_clock()).unwrap());
         let session = SessionId::from_uuid(Uuid::from_u128(10_000));
         let target = TargetId::from_uuid(Uuid::from_u128(10_001));
         let frame_ids = vec![frame_id(10_010), frame_id(10_011), frame_id(10_012)];
@@ -1305,4 +1305,14 @@ async fn blocked_current_geometry_leaves_frame_and_schema_v5_event_persistence_a
             .unwrap(),
         2
     );
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

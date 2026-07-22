@@ -69,8 +69,10 @@ fn open_store_with_budget(
         .unwrap(),
     );
     Arc::new(match budget {
-        Some(budget) => RecordingStore::with_budget(writer, index, budget).unwrap(),
-        None => RecordingStore::new(writer, index).unwrap(),
+        Some(budget) => {
+            RecordingStore::with_budget(writer, index, budget, store_test_clock()).unwrap()
+        }
+        None => RecordingStore::new(writer, index, store_test_clock()).unwrap(),
     })
 }
 
@@ -905,4 +907,14 @@ async fn session_deletion_removes_artifact_links_files_and_usage() {
             .unwrap(),
         ArtifactLookup::Miss
     );
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

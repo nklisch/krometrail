@@ -92,7 +92,8 @@ fn fixture(directory: &TempDir) -> (Arc<SqliteIndex>, Arc<SegmentWriter>) {
 async fn pinned_budget_pauses_then_unpin_evicts_and_resumes() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let probe = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let probe =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let baseline = probe.status().await.unwrap().usage.total_bytes().unwrap();
     drop(probe);
 
@@ -100,6 +101,7 @@ async fn pinned_budget_pauses_then_unpin_evicts_and_resumes() {
         Arc::clone(&writer),
         Arc::clone(&index),
         DiskBudgetBytes::new(baseline + 125_000).unwrap(),
+        store_test_clock(),
     )
     .unwrap();
     let first = frame(1, 10, 100, 1, 80_000);
@@ -167,7 +169,7 @@ async fn pinned_budget_pauses_then_unpin_evicts_and_resumes() {
 async fn global_retention_sequence_evicts_oldest_unpinned_session_first() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let baseline = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index))
+    let baseline = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock())
         .unwrap()
         .status()
         .await
@@ -179,6 +181,7 @@ async fn global_retention_sequence_evicts_oldest_unpinned_session_first() {
         Arc::clone(&writer),
         Arc::clone(&index),
         DiskBudgetBytes::new(baseline + 150_000).unwrap(),
+        store_test_clock(),
     )
     .unwrap();
 
@@ -230,7 +233,7 @@ async fn global_retention_sequence_evicts_oldest_unpinned_session_first() {
 async fn overlapping_pins_keep_a_segment_protected_until_the_last_unpin() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let store = RecordingStore::new(writer, Arc::clone(&index)).unwrap();
+    let store = RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap();
     let item = frame(14, 140, 141, 1, 1024);
     let request_a = RetentionRange {
         session_id: item.metadata().session_id(),
@@ -255,7 +258,7 @@ async fn overlapping_pins_keep_a_segment_protected_until_the_last_unpin() {
 async fn open_segment_usage_reports_a_single_bounded_overhead() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let baseline = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index))
+    let baseline = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock())
         .unwrap()
         .status()
         .await
@@ -264,8 +267,13 @@ async fn open_segment_usage_reports_a_single_bounded_overhead() {
         .total_bytes()
         .unwrap();
     let budget = DiskBudgetBytes::new(baseline + 50_000).unwrap();
-    let store =
-        RecordingStore::with_budget(Arc::clone(&writer), Arc::clone(&index), budget).unwrap();
+    let store = RecordingStore::with_budget(
+        Arc::clone(&writer),
+        Arc::clone(&index),
+        budget,
+        store_test_clock(),
+    )
+    .unwrap();
     store
         .append_frame(frame(15, 150, 151, 1, 20_000))
         .await
@@ -283,7 +291,7 @@ async fn open_segment_usage_reports_a_single_bounded_overhead() {
 async fn unpolled_append_has_no_storage_side_effect() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let store = RecordingStore::new(writer, Arc::clone(&index)).unwrap();
+    let store = RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap();
     let item = frame(16, 160, 161, 1, 1024);
     let frame_id = item.metadata().id();
     let future = store.append_frame(item);
@@ -297,7 +305,7 @@ async fn unpolled_append_has_no_storage_side_effect() {
 async fn destructive_session_deletion_preserves_another_session() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let store = RecordingStore::new(writer, Arc::clone(&index)).unwrap();
+    let store = RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap();
     let first = frame(17, 170, 171, 1, 1024);
     let second = frame(18, 180, 181, 1, 1024);
     store.append_frame(first.clone()).await.unwrap();
@@ -332,7 +340,7 @@ async fn destructive_session_deletion_preserves_another_session() {
 async fn destructive_session_deletion_removes_payload_and_rejects_resurrection() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let store = RecordingStore::new(writer, Arc::clone(&index)).unwrap();
+    let store = RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap();
     let frame = frame(3, 30, 300, 1, 1024);
     let session = frame.metadata().session_id();
     let frame_id = frame.metadata().id();
@@ -359,7 +367,8 @@ async fn destructive_session_deletion_removes_payload_and_rejects_resurrection()
 async fn pinned_source_frames_survive_older_event_eviction_with_tombstones() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let store =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let event = browser_event(401, 400, 410, 1, 1);
     let second_event = browser_event(402, 400, 410, 2, 2);
     let third_event = browser_event(403, 400, 410, 3, 3);
@@ -393,8 +402,13 @@ async fn pinned_source_frames_survive_older_event_eviction_with_tombstones() {
     .unwrap();
     drop(store);
 
-    let store =
-        RecordingStore::with_budget(Arc::clone(&writer), Arc::clone(&index), budget).unwrap();
+    let store = RecordingStore::with_budget(
+        Arc::clone(&writer),
+        Arc::clone(&index),
+        budget,
+        store_test_clock(),
+    )
+    .unwrap();
     let _ = store.enforce_budget().await.unwrap();
     assert_eq!(
         store
@@ -435,7 +449,8 @@ async fn pinned_source_frames_survive_older_event_eviction_with_tombstones() {
 async fn event_append_under_file_backed_pressure_fails_without_deleting_segments() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let store =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let item = frame(450, 460, 461, 1, 20_000);
     store.append_frame(item.clone()).await.unwrap();
     store.flush(item.metadata().session_id()).await.unwrap();
@@ -443,8 +458,13 @@ async fn event_append_under_file_backed_pressure_fails_without_deleting_segments
     let budget = DiskBudgetBytes::new(status.usage.total_bytes().unwrap() - 1).unwrap();
     drop(store);
 
-    let store =
-        RecordingStore::with_budget(Arc::clone(&writer), Arc::clone(&index), budget).unwrap();
+    let store = RecordingStore::with_budget(
+        Arc::clone(&writer),
+        Arc::clone(&index),
+        budget,
+        store_test_clock(),
+    )
+    .unwrap();
     let event = browser_event(451, 450, 460, 1, 1);
     assert_eq!(
         store
@@ -490,7 +510,8 @@ async fn event_append_under_file_backed_pressure_fails_without_deleting_segments
 async fn older_unpinned_segment_is_removed_before_newer_event() {
     let directory = TempDir::new().unwrap();
     let (index, writer) = fixture(&directory);
-    let store = RecordingStore::new(Arc::clone(&writer), Arc::clone(&index)).unwrap();
+    let store =
+        RecordingStore::new(Arc::clone(&writer), Arc::clone(&index), store_test_clock()).unwrap();
     let item = frame(500, 510, 511, 1, 150_000);
     store.append_frame(item.clone()).await.unwrap();
     store.flush(item.metadata().session_id()).await.unwrap();
@@ -508,7 +529,8 @@ async fn older_unpinned_segment_is_removed_before_newer_event() {
     .unwrap();
     drop(store);
 
-    let store = RecordingStore::with_budget(writer, Arc::clone(&index), budget).unwrap();
+    let store = RecordingStore::with_budget(writer, Arc::clone(&index), budget, store_test_clock())
+        .unwrap();
     let _ = store.enforce_budget().await.unwrap();
     assert!(
         index
@@ -523,4 +545,14 @@ async fn older_unpinned_segment_is_removed_before_newer_event() {
             .unwrap(),
         1
     );
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

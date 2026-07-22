@@ -239,7 +239,8 @@ async fn run_case(config: Config, repetition: usize) -> RunReport {
         })
         .unwrap(),
     );
-    let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+    let store =
+        Arc::new(RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap());
     let session = SessionId::from_uuid(Uuid::from_u128(0x7000 + repetition as u128));
     let target = TargetId::from_uuid(Uuid::from_u128(0x8000 + repetition as u128));
     let dimensions = PixelDimensions::new(1_920, 1_080).unwrap();
@@ -657,4 +658,14 @@ fn proc_status_kib(prefix: &str) -> u64 {
                 .and_then(|value| value.parse().ok())
         })
         .unwrap_or(0)
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

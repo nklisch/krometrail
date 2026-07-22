@@ -61,7 +61,8 @@ impl Fixture {
             })
             .unwrap(),
         );
-        let store = Arc::new(RecordingStore::new(writer, Arc::clone(&index)).unwrap());
+        let store =
+            Arc::new(RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap());
         let session = SessionId::from_uuid(Uuid::from_u128(1));
         let target = TargetId::from_uuid(Uuid::from_u128(2));
         let other_target = TargetId::from_uuid(Uuid::from_u128(3));
@@ -787,4 +788,14 @@ async fn persisted_browser_sanitization_survives_storage_and_session_deletion_re
             .evicted_ranges
             .is_empty()
     );
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }

@@ -42,7 +42,7 @@ fn fixture() -> Fixture {
         })
         .unwrap(),
     );
-    let store = RecordingStore::new(writer, Arc::clone(&index)).unwrap();
+    let store = RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap();
     Fixture {
         _directory: directory,
         database,
@@ -396,4 +396,14 @@ impl SessionFromU128 for u128 {
     fn into_session(self) -> SessionId {
         SessionId::from_uuid(Uuid::from_u128(self))
     }
+}
+
+fn store_test_clock() -> std::sync::Arc<dyn krometrail_core::MonotonicClock> {
+    struct Fixed;
+    impl krometrail_core::MonotonicClock for Fixed {
+        fn now(&self) -> krometrail_core::ObservedTime {
+            krometrail_core::ObservedTime::from_nanos(0)
+        }
+    }
+    std::sync::Arc::new(Fixed)
 }
