@@ -425,9 +425,9 @@ fn same_epoch(
     left: &krometrail_core::CapturedFrame,
     right: &krometrail_core::CapturedFrame,
 ) -> bool {
-    left.image() == right.image()
-        && left.viewport() == right.viewport()
-        && left.device_scale_factor().get().to_bits() == right.device_scale_factor().get().to_bits()
+    // Delegates to the single visual-epoch authority so artifact partitioning
+    // and capture-quality epoch summaries cannot drift apart.
+    left.same_visual_epoch(right)
 }
 
 fn clipped_markers(

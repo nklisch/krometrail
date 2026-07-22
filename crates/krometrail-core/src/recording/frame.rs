@@ -227,6 +227,17 @@ impl CapturedFrame {
         &self.warnings
     }
 
+    /// Single visual-epoch authority: two frames share a visual epoch exactly
+    /// when their image dimensions, viewport dimensions, and device scale
+    /// factor bits are identical. Capture-quality summaries and artifact epoch
+    /// partitioning both delegate here so the partitions cannot drift apart.
+    pub fn same_visual_epoch(&self, other: &Self) -> bool {
+        self.image() == other.image()
+            && self.viewport() == other.viewport()
+            && self.device_scale_factor().get().to_bits()
+                == other.device_scale_factor().get().to_bits()
+    }
+
     /// A normalized frame timestamp cannot be later than the observed timestamp.
     /// The source clock remains independent and is intentionally not compared here.
     pub fn validate(&self) -> Result<()> {

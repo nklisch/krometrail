@@ -1309,6 +1309,7 @@ mod tests {
                     has_unknown_missing_estimate: false,
                 },
                 retention_warnings: vec![],
+                epochs: vec![],
                 capture_status: CaptureStatusEvidence {
                     at_range_start: None,
                     at_range_end: None,

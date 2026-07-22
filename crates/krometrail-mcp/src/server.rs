@@ -920,6 +920,7 @@ mod tests {
                         "has_unknown_missing_estimate": false
                     },
                     "retention_warnings": [],
+                    "epochs": [],
                     "capture_status": {
                         "at_range_start": null,
                         "at_range_end": null,

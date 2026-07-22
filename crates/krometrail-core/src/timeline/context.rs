@@ -6,10 +6,10 @@ use crate::{
     BrowserEvent, BrowserEventClass, BrowserEventCollectionGap, BrowserEventCursor,
     BrowserEventPayload, BrowserEventSelector, BrowserEventSeverity, BrowserEventSource,
     BrowserEventUnavailableRange, CapabilityId, CaptureGap, CaptureStatusSamples,
-    CaptureStreamState, CaptureWarning, CapturedFrame, ErrorCode, ErrorContext,
+    CaptureStreamState, CaptureWarning, CapturedFrame, DeviceScaleFactor, ErrorCode, ErrorContext,
     EventCandidateLimit, EventPageLimit, FrameId, FrameSource, KrometrailError, NonEmptyText,
-    OperationMutability, PortFuture, ResolvedRange, Result, RetentionWarning, RetryAdvice,
-    SessionRange, SessionTime, TargetCaptureStatus, validation::deserialize_validated,
+    OperationMutability, PixelDimensions, PortFuture, ResolvedRange, Result, RetentionWarning,
+    RetryAdvice, SessionRange, SessionTime, TargetCaptureStatus, validation::deserialize_validated,
 };
 
 pub const MAX_CAPTURE_QUALITY_FRAMES: usize = 20_000;
@@ -493,6 +493,21 @@ pub enum CaptureQualityWarning {
     CaptureStatusTruncated,
 }
 
+/// One contiguous run of frames sharing a visual epoch (identical image
+/// dimensions, viewport dimensions, and device scale factor). Metadata-only:
+/// computed from already-loaded frame metadata without decoding pixels.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EpochSummary {
+    pub epoch_index: u32,
+    pub range: SessionRange,
+    pub frame_count: u64,
+    pub first_frame: FramePoint,
+    pub last_frame: FramePoint,
+    pub image: PixelDimensions,
+    pub viewport: PixelDimensions,
+    pub device_scale_factor: DeviceScaleFactor,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CaptureQuality {
     pub requested_range: SessionRange,
@@ -505,6 +520,9 @@ pub struct CaptureQuality {
     pub gaps: Vec<CaptureGap>,
     pub gap_summary: CaptureGapSummary,
     pub retention_warnings: Vec<RetentionWarning>,
+    /// Exact visual-epoch runs over the resolved frame metadata. The domain
+    /// vector is exact; bounded presentation is the response projector's job.
+    pub epochs: Vec<EpochSummary>,
     pub capture_status: CaptureStatusEvidence,
     pub warnings: Vec<CaptureQualityWarning>,
 }
@@ -1058,9 +1076,55 @@ fn capture_quality(
         gaps: range.gaps.clone(),
         gap_summary: gap_summary(&range.gaps, range.resolved_range),
         retention_warnings: range.retention_warnings.clone(),
+        epochs: epoch_summaries(metadata)?,
         capture_status,
         warnings,
     })
+}
+
+/// One O(n) pass splitting the ordered frame metadata into contiguous
+/// visual-epoch runs on `CapturedFrame::same_visual_epoch`. Exact by design:
+/// adversarial per-frame geometry churn yields epochs == frames, which is
+/// truthful and cheap; the projector bounds presentation.
+fn epoch_summaries(metadata: &[CapturedFrame]) -> Result<Vec<EpochSummary>> {
+    let mut epochs: Vec<EpochSummary> = Vec::new();
+    let mut previous: Option<&CapturedFrame> = None;
+    for frame in metadata {
+        let same_epoch = previous.is_some_and(|prev| frame.same_visual_epoch(prev));
+        previous = Some(frame);
+        if same_epoch && let Some(current) = epochs.last_mut() {
+            current.frame_count = current.frame_count.saturating_add(1);
+            current.last_frame = frame_point(frame);
+            current.range = SessionRange::new(current.range.start(), frame.session_time())
+                .map_err(|_| {
+                    KrometrailError::new(
+                        ErrorCode::PersistenceFailed,
+                        NonEmptyText::new("epoch frame metadata is not in session-time order")
+                            .expect("static epoch error is non-empty"),
+                    )
+                })?;
+            continue;
+        }
+        let index = u32::try_from(epochs.len()).map_err(|_| {
+            KrometrailError::new(
+                ErrorCode::ResourceLimitExceeded,
+                NonEmptyText::new("epoch count exceeds the summary format")
+                    .expect("static epoch error is non-empty"),
+            )
+        })?;
+        epochs.push(EpochSummary {
+            epoch_index: index,
+            range: SessionRange::new(frame.session_time(), frame.session_time())
+                .expect("a single frame forms a valid range"),
+            frame_count: 1,
+            first_frame: frame_point(frame),
+            last_frame: frame_point(frame),
+            image: frame.image(),
+            viewport: frame.viewport(),
+            device_scale_factor: frame.device_scale_factor(),
+        });
+    }
+    Ok(epochs)
 }
 
 fn frame_point(frame: &CapturedFrame) -> FramePoint {
@@ -1361,6 +1425,76 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn epoch_frame(ordinal: u64, at: u64, width: u32) -> CapturedFrame {
+        CapturedFrame::new(
+            crate::FrameId::from_uuid(Uuid::from_u128(ordinal as u128 + 100)),
+            crate::SessionId::from_uuid(Uuid::from_u128(1)),
+            crate::TargetId::from_uuid(Uuid::from_u128(2)),
+            crate::CaptureOrdinal::new(ordinal).unwrap(),
+            None,
+            crate::ObservedTime::from_nanos(at),
+            SessionTime::from_nanos(at),
+            crate::ImageFormat::Png,
+            PixelDimensions::new(width, 10).unwrap(),
+            PixelDimensions::new(width, 10).unwrap(),
+            DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn uniform_geometry_yields_one_exact_epoch() {
+        let frames = vec![
+            epoch_frame(1, 10, 20),
+            epoch_frame(2, 20, 20),
+            epoch_frame(3, 30, 20),
+        ];
+        let epochs = epoch_summaries(&frames).unwrap();
+        assert_eq!(epochs.len(), 1);
+        let epoch = &epochs[0];
+        assert_eq!(epoch.epoch_index, 0);
+        assert_eq!(epoch.frame_count, 3);
+        assert_eq!(
+            epoch.range,
+            SessionRange::new(SessionTime::from_nanos(10), SessionTime::from_nanos(30)).unwrap()
+        );
+        assert_eq!(epoch.first_frame.frame_id, frames[0].id());
+        assert_eq!(epoch.last_frame.frame_id, frames[2].id());
+        assert_eq!(epoch.image, PixelDimensions::new(20, 10).unwrap());
+    }
+
+    #[test]
+    fn one_mid_range_geometry_change_yields_exactly_two_epochs() {
+        let frames = vec![
+            epoch_frame(1, 10, 20),
+            epoch_frame(2, 20, 20),
+            epoch_frame(3, 30, 40),
+            epoch_frame(4, 40, 40),
+            epoch_frame(5, 50, 40),
+        ];
+        let epochs = epoch_summaries(&frames).unwrap();
+        assert_eq!(epochs.len(), 2);
+        assert_eq!(epochs[0].epoch_index, 0);
+        assert_eq!(epochs[0].frame_count, 2);
+        assert_eq!(
+            epochs[0].range,
+            SessionRange::new(SessionTime::from_nanos(10), SessionTime::from_nanos(20)).unwrap()
+        );
+        assert_eq!(epochs[0].first_frame.frame_id, frames[0].id());
+        assert_eq!(epochs[0].last_frame.frame_id, frames[1].id());
+        assert_eq!(epochs[1].epoch_index, 1);
+        assert_eq!(epochs[1].frame_count, 3);
+        assert_eq!(
+            epochs[1].range,
+            SessionRange::new(SessionTime::from_nanos(30), SessionTime::from_nanos(50)).unwrap()
+        );
+        assert_eq!(epochs[1].first_frame.frame_id, frames[2].id());
+        assert_eq!(epochs[1].last_frame.frame_id, frames[4].id());
+        assert_eq!(epochs[1].image, PixelDimensions::new(40, 10).unwrap());
+        assert!(epochs[0].image != epochs[1].image);
     }
 
     #[test]
