@@ -775,3 +775,29 @@ Feature-level summary against the design:
   per-interaction cost (+1 `Target.getTargets`, +3 passive subscriptions,
   and inside batch steps the reconcile shares the step deadline) routes to a
   `[perf]` item if measured.
+
+## Review adjudication (standard weight, cross-model gpt-5.6-sol, one pass)
+
+Nine areas verified clean (enrichment placement, Unobserved handling, pre-URL
+bound, eager activation ordering, cursor contract, bounded collections,
+clipboard privacy, schema v10 exact-version replacement, gated qualification).
+Five findings, all accepted; fixes routed to the implementation worker,
+closure is fix-verification only:
+
+1. (blocker) Reconciliation timeout wraps a state-mutating phase — a timeout
+   during `Target.attachToTarget` can drop the future after authoritative
+   state replacement, stranding a discovered target. Bounded phase must be
+   read-only or cancellation-safe; stalled-attach regression test required.
+2. (blocker) The new `TransportError::Timeout` bypasses the
+   ambiguous-but-dispatched pointer policy (`pointer.rs` treats only
+   `CommandFailed` as dispatched) — a real timeout now hard-fails popup
+   clicks. Include `Timeout` in that branch; test it directly.
+3. (significant) Page/download baselines captured at `execute_operation`
+   entry, before preflight — popups/downloads begun during preflight are
+   misattributed. Capture baselines immediately before input dispatch.
+4. (significant) Signal fencing stamps pump-dequeue time, not event
+   occurrence — pump backlog can leak a prior interaction's event past the
+   floor. Fix at transport ingress; park with rationale if invasive.
+5. (significant) `tokio::join!` waits out a stalled 2s probe after
+   observation completes — probe becomes subordinate to observation
+   completion (optional evidence never extends the result).
