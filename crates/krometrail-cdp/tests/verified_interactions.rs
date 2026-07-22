@@ -1083,6 +1083,86 @@ async fn opt_in_real_chrome_synchronizes_dialog_open_and_close() {
 }
 
 #[tokio::test]
+async fn opt_in_real_chrome_checkbox_click_reports_a_checked_postcondition_delta() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome postcondition qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("verified-postcondition");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(support::chrome::verified_interactions_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::default(),
+            },
+        ))
+        .await
+        .expect("postcondition fixture");
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    await_fixture_ready(&session, target).await;
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    selector("#checkbox"),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("checkbox click");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(
+        postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::Present
+    );
+    assert_eq!(postcondition.target.checked.before, Some(false));
+    assert_eq!(postcondition.target.checked.after, Some(true));
+    assert_eq!(postcondition.target.checked.changed, Some(true));
+    assert_eq!(postcondition.page.url_changed, Some(false));
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "document.querySelector('#checkbox').checked"
+        )
+        .await,
+        json!(true)
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn opt_in_real_chrome_qualifies_explicit_clipboard_without_sentinel_leaks() {
     if !support::chrome::real_browser_tests_enabled() {
         eprintln!(

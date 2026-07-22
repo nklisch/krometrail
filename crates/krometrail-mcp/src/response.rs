@@ -1172,7 +1172,15 @@ fn project_operation(
                 response,
                 novelty,
             )?;
-            let mut result = json!({"observation": observation});
+            // The bounded postcondition block is on-by-default at every
+            // detail level; the expanded/full record echo carries the same
+            // field because the concise block IS the record field.
+            let postcondition = serde_json::to_value(value.record.postcondition)
+                .map_err(|_| ResponseInvariantError)?;
+            let mut result = json!({
+                "observation": observation,
+                "postcondition": postcondition,
+            });
             if response.detail != ResponseDetail::Concise {
                 result["record"] =
                     serde_json::to_value(value.record).map_err(|_| ResponseInvariantError)?;
@@ -4686,6 +4694,16 @@ mod tests {
     #[test]
     fn concise_interactions_omit_record_but_expanded_and_full_retain_it() {
         let operation = || {
+            let pre = krometrail_core::NodeStateFacts {
+                connected: true,
+                checked: Some(false),
+                ..krometrail_core::NodeStateFacts::default()
+            };
+            let post = krometrail_core::NodeStateFacts {
+                connected: true,
+                checked: Some(true),
+                ..krometrail_core::NodeStateFacts::default()
+            };
             let record = InteractionRecord::new(
                 interaction_id(),
                 context(),
@@ -4695,7 +4713,12 @@ mod tests {
                 SanitizedParameters::new(json!({"button": "left"})).unwrap(),
                 LocatorSummary::from_locator(None),
                 InteractionOutcome::Dispatched,
-                krometrail_core::InteractionPostcondition::unobserved(),
+                krometrail_core::InteractionPostcondition::from_facts(
+                    Some(&pre),
+                    Some(&post),
+                    Some(false),
+                    false,
+                ),
                 None,
             )
             .unwrap();
@@ -4741,6 +4764,28 @@ mod tests {
         assert!(concise.response.result.get("record").is_none());
         assert!(expanded.response.result.get("record").is_some());
         assert!(full.response.result.get("record").is_some());
+
+        // The bounded postcondition block is on-by-default at every detail
+        // level, concise included, and the expanded/full record echo carries
+        // the identical field: one authority projected twice.
+        let expected = json!({
+            "page": {"url_changed": false, "navigation_lifecycle_observed": false},
+            "target": {
+                "node": "present",
+                "checked": {"before": false, "after": true, "changed": true},
+                "expanded": {"before": null, "after": null, "changed": null},
+                "selected": {"before": null, "after": null, "changed": null},
+                "pressed": {"before": null, "after": null, "changed": null},
+                "value_length_changed": null,
+            },
+        });
+        for projection in [&concise, &expanded, &full] {
+            assert_eq!(projection.response.result["postcondition"], expected);
+        }
+        assert_eq!(
+            expanded.response.result["record"]["postcondition"],
+            expected
+        );
     }
 
     #[test]
