@@ -352,7 +352,7 @@ summary
           → complete retained frame range
 ```
 
-Every level references the level beneath it. The agent does not need to request the complete recording to verify a generated view.
+Every level references the level beneath it. The agent does not need to request the complete recording to verify a generated view. Compact levels never inline the complete retained identifier enumeration; they present bounded slices with exact omission counts and name the drill-down authority for the rest.
 
 ## Capture Gaps
 

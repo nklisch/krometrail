@@ -47,6 +47,18 @@ const MAX_FULL_ASSETS: usize = 256;
 const MAX_FULL_ASSET_JSON_BYTES: usize = 64 * 1024;
 const MAX_SEMANTIC_OUTCOMES: usize = 8;
 const MAX_SEMANTIC_OUTCOME_JSON_BYTES: usize = 4 * 1024;
+// Bounded temporal identifier presentation. Domain values stay exact; only the
+// serialized presentation caps id enumeration, always with exact omission
+// accounting and named drill-down (range handle, paginated listings, manifest
+// resources).
+const MAX_EXPANDED_RANGE_EVENT_IDS: usize = 32; // per kind: interaction/navigation/marker
+const MAX_FULL_RANGE_EVENT_IDS: usize = 128;
+const MAX_FULL_RANGE_FRAME_IDS: usize = 256;
+const MAX_FULL_MANIFEST_IDS: usize = 256;
+const MAX_CONCISE_PROJECTED_EPOCHS: usize = 8;
+const MAX_PROJECTED_EPOCHS: usize = 32;
+const MAX_PROJECTED_PIN_FRAME_IDS: usize = 32;
+const MAX_FULL_PROJECTED_PIN_FRAME_IDS: usize = 256;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -321,6 +333,13 @@ pub struct BundleArtifactHandle {
     pub analyzed_frame_count: u32,
     pub selected_frame_count: u32,
     pub omitted_frame_count: u32,
+    /// The manifest's disclosed analysis-sampling mode when the analysis was
+    /// decimated (for example `uniform_bounded`); absent for exhaustive or
+    /// non-analysis artifacts. Together with `analyzed_frame_count` and
+    /// `source_frame_count` this is the structured sampling accounting —
+    /// by-design bounded sampling is not a degradation warning.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampling_mode: Option<String>,
     pub output_dimensions: PixelDimensions,
     pub output_hash: String,
     pub manifest_uri: String,
@@ -816,7 +835,9 @@ pub(crate) fn map_temporal_video_result(
         add_resource(&mut projection, manifest_resource)?;
     }
     projection.result = json!({
-        "range": result.range,
+        // Video responses are compact handle surfaces; the range presentation
+        // is bounded at the expanded tier with exact omission accounting.
+        "range": bounded_resolved_range(&result.range, ResponseDetail::Expanded)?,
         "clips": clips,
     });
     Ok(mapped(
@@ -1718,6 +1739,249 @@ fn compact_resolved_range(
     })
 }
 
+/// A bounded head slice of an identifier vector with its exact omission count.
+#[derive(Serialize)]
+struct BoundedIds<T: Serialize> {
+    ids: Vec<T>,
+    /// Exact count of identifiers beyond the presented head slice.
+    omitted_count: u64,
+}
+
+fn bounded_ids<T: Serialize + Clone>(ids: &[T], cap: usize) -> BoundedIds<T> {
+    BoundedIds {
+        ids: ids.iter().take(cap).cloned().collect(),
+        omitted_count: u64::try_from(ids.len().saturating_sub(cap)).unwrap_or(u64::MAX),
+    }
+}
+
+const fn projected_epoch_cap(detail: ResponseDetail) -> usize {
+    match detail {
+        ResponseDetail::Concise => MAX_CONCISE_PROJECTED_EPOCHS,
+        ResponseDetail::Expanded | ResponseDetail::Full => MAX_PROJECTED_EPOCHS,
+    }
+}
+
+/// One resolved-range projection for every detail tier; replaces every direct
+/// serialization of a complete `ResolvedRange`. Concise keeps the compact
+/// counts-only shape; expanded adds the anchor, first/last frame ids, bounded
+/// per-kind event-id lists, and a drill-down block; full adds a bounded
+/// frame-id head slice with the `list_source_frames` continuation offset. The
+/// complete sets stay reachable through the range handle, paginated listings,
+/// and re-resolution.
+fn bounded_resolved_range(
+    range: &krometrail_core::ResolvedRange,
+    detail: ResponseDetail,
+) -> Result<Value, ResponseInvariantError> {
+    let mut value =
+        serde_json::to_value(compact_resolved_range(range)?).map_err(|_| ResponseInvariantError)?;
+    let event_cap = match detail {
+        ResponseDetail::Concise => return Ok(value),
+        ResponseDetail::Expanded => MAX_EXPANDED_RANGE_EVENT_IDS,
+        ResponseDetail::Full => MAX_FULL_RANGE_EVENT_IDS,
+    };
+    let object = value.as_object_mut().ok_or(ResponseInvariantError)?;
+    object.insert(
+        "resolved_anchor".into(),
+        serde_json::to_value(&range.resolved_anchor).map_err(|_| ResponseInvariantError)?,
+    );
+    object.insert(
+        "first_frame_id".into(),
+        serde_json::to_value(range.frame_ids.first()).map_err(|_| ResponseInvariantError)?,
+    );
+    object.insert(
+        "last_frame_id".into(),
+        serde_json::to_value(range.frame_ids.last()).map_err(|_| ResponseInvariantError)?,
+    );
+    object.insert(
+        "interaction_ids".into(),
+        serde_json::to_value(bounded_ids(&range.interaction_ids, event_cap))
+            .map_err(|_| ResponseInvariantError)?,
+    );
+    object.insert(
+        "navigation_ids".into(),
+        serde_json::to_value(bounded_ids(&range.navigation_ids, event_cap))
+            .map_err(|_| ResponseInvariantError)?,
+    );
+    object.insert(
+        "marker_ids".into(),
+        serde_json::to_value(bounded_ids(&range.marker_ids, event_cap))
+            .map_err(|_| ResponseInvariantError)?,
+    );
+    object.insert(
+        "gaps".into(),
+        serde_json::to_value(&range.gaps).map_err(|_| ResponseInvariantError)?,
+    );
+    object.insert(
+        "retention_warnings".into(),
+        serde_json::to_value(&range.retention_warnings).map_err(|_| ResponseInvariantError)?,
+    );
+    let mut drill_down = serde_json::Map::new();
+    drill_down.insert(
+        "complete_frame_ids".into(),
+        json!("list_source_frames pages the complete resolved frame order with offset"),
+    );
+    drill_down.insert(
+        "range_reference".into(),
+        json!(
+            "pass the returned range_handle wherever a temporal request accepts a resolved range"
+        ),
+    );
+    if detail == ResponseDetail::Full {
+        let frames = bounded_ids(&range.frame_ids, MAX_FULL_RANGE_FRAME_IDS);
+        let next_offset =
+            (frames.omitted_count > 0).then(|| u64::try_from(frames.ids.len()).unwrap_or(u64::MAX));
+        drill_down.insert(
+            "next_offset".into(),
+            serde_json::to_value(next_offset).map_err(|_| ResponseInvariantError)?,
+        );
+        object.insert(
+            "frame_ids".into(),
+            serde_json::to_value(frames).map_err(|_| ResponseInvariantError)?,
+        );
+    }
+    object.insert("drill_down".into(), Value::Object(drill_down));
+    Ok(value)
+}
+
+/// Bounds the `epochs` rows already present in a serialized capture-quality
+/// object, recording the exact omitted count. No-op on unexpected shapes.
+fn bound_capture_quality_epochs(quality: &mut Value, detail: ResponseDetail) {
+    let cap = projected_epoch_cap(detail);
+    let Some(object) = quality.as_object_mut() else {
+        return;
+    };
+    let Some(Value::Array(epochs)) = object.get_mut("epochs") else {
+        return;
+    };
+    let omitted = epochs.len().saturating_sub(cap);
+    epochs.truncate(cap);
+    object.insert("omitted_epoch_count".into(), json!(omitted));
+}
+
+/// Bounded visual-epoch presentation for artifact generations: per-epoch
+/// geometry and exact frame counts without inlining the per-epoch frame-id
+/// vectors, plus the exact omitted-epoch count.
+fn bounded_visual_epochs_value(
+    epochs: &[krometrail_core::VisualEpoch],
+    detail: ResponseDetail,
+) -> Result<(Value, u64), ResponseInvariantError> {
+    let cap = projected_epoch_cap(detail);
+    let rows = epochs
+        .iter()
+        .take(cap)
+        .map(|epoch| {
+            Ok(json!({
+                "index": epoch.index,
+                "frame_count": epoch.frame_ids.len(),
+                "image": serde_json::to_value(epoch.image).map_err(|_| ResponseInvariantError)?,
+                "viewport": serde_json::to_value(epoch.viewport)
+                    .map_err(|_| ResponseInvariantError)?,
+                "device_scale_factor": serde_json::to_value(epoch.device_scale_factor)
+                    .map_err(|_| ResponseInvariantError)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, ResponseInvariantError>>()?;
+    let omitted = u64::try_from(epochs.len().saturating_sub(cap)).unwrap_or(u64::MAX);
+    Ok((Value::Array(rows), omitted))
+}
+
+/// The manifest's disclosed analysis-sampling mode, present only when the
+/// manifest carries a validated `analysis_sampling` disclosure.
+fn manifest_sampling_mode(manifest: &krometrail_core::ArtifactManifest) -> Option<String> {
+    match manifest.parameters().get("analysis_sampling") {
+        Some(temporal_vision::ParameterValue::Object(values)) => match values.get("mode") {
+            Some(temporal_vision::ParameterValue::Text(mode)) => Some(mode.as_ref().to_owned()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Inline manifest presentation with capped id vectors and the canonical
+/// manifest resource URI; the persisted manifest resource stays complete. The
+/// presented manifest object carries `omitted_id_counts` with the exact number
+/// of identifiers removed from each bounded array, and `manifest_uri` names
+/// the complete provenance authority.
+fn bounded_manifest_value(
+    scope: krometrail_core::EvidenceScope,
+    manifest: &krometrail_core::ArtifactManifest,
+) -> Result<Value, ResponseInvariantError> {
+    let mut value = serde_json::to_value(manifest).map_err(|_| ResponseInvariantError)?;
+    let object = value.as_object_mut().ok_or(ResponseInvariantError)?;
+    let mut omitted = serde_json::Map::new();
+    for key in [
+        "source_frame_ids",
+        "analyzed_frame_ids",
+        "selected_frame_ids",
+    ] {
+        let Some(Value::Array(ids)) = object.get_mut(key) else {
+            continue;
+        };
+        let omitted_count = ids.len().saturating_sub(MAX_FULL_MANIFEST_IDS);
+        ids.truncate(MAX_FULL_MANIFEST_IDS);
+        omitted.insert(key.into(), json!(omitted_count));
+    }
+    if let Some(Value::Array(indices)) = object
+        .get_mut("parameters")
+        .and_then(|parameters| parameters.get_mut("analysis_sampling"))
+        .and_then(|sampling| sampling.get_mut("analyzed_source_indices"))
+    {
+        let omitted_count = indices.len().saturating_sub(MAX_FULL_MANIFEST_IDS);
+        indices.truncate(MAX_FULL_MANIFEST_IDS);
+        omitted.insert("analyzed_source_indices".into(), json!(omitted_count));
+    }
+    object.insert("omitted_id_counts".into(), Value::Object(omitted));
+    object.insert(
+        "manifest_uri".into(),
+        json!(
+            crate::resources::EvidenceResourceUri::artifact_manifest(
+                scope,
+                *manifest.artifact_id()
+            )
+            .canonical_uri()
+        ),
+    );
+    Ok(value)
+}
+
+/// The per-tier artifact presentation: the compact handle at every tier, with
+/// the bounded inline manifest added only at full.
+fn projected_artifact_value(
+    scope: krometrail_core::EvidenceScope,
+    artifact: &ArtifactHandle,
+    detail: ResponseDetail,
+) -> Result<Value, ResponseInvariantError> {
+    let mut value = serde_json::to_value(compact_artifact_handle(scope, artifact)?)
+        .map_err(|_| ResponseInvariantError)?;
+    if detail == ResponseDetail::Full {
+        value["manifest"] = bounded_manifest_value(scope, &artifact.manifest)?;
+    }
+    Ok(value)
+}
+
+/// Bounds the pinned-frame enumeration inside a serialized pin state or pin
+/// change, recording the exact omitted count. No-op on unexpected shapes.
+fn bound_pin_value(value: &mut Value, detail: ResponseDetail) {
+    let cap = if detail == ResponseDetail::Full {
+        MAX_FULL_PROJECTED_PIN_FRAME_IDS
+    } else {
+        MAX_PROJECTED_PIN_FRAME_IDS
+    };
+    let state = match value.get_mut("state") {
+        Some(state) => state,
+        None => value,
+    };
+    let Some(request) = state.get_mut("request").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(Value::Array(ids)) = request.get_mut("expected_frame_ids") else {
+        return;
+    };
+    let omitted = ids.len().saturating_sub(cap);
+    ids.truncate(cap);
+    request.insert("omitted_expected_frame_id_count".into(), json!(omitted));
+}
+
 fn exact_target(
     node: &krometrail_core::SnapshotNode,
     concise: bool,
@@ -2146,6 +2410,24 @@ fn project_temporal_value(
 ) -> Result<(), ResponseInvariantError> {
     if detail == ResponseDetail::Concise {
         *value = compact_temporal_value(value)?;
+        return Ok(());
+    }
+    // Expanded and full temporal-context values are bounded at final
+    // presentation: the embedded resolved range keeps exact counts while its
+    // identifier enumeration is capped with exact omission accounting.
+    let Some(object) = value.as_object_mut() else {
+        return Ok(());
+    };
+    if !(object.contains_key("capture_quality") || object.contains_key("browser_events")) {
+        return Ok(());
+    }
+    if let Some(range_value) = object.get("range") {
+        let range: krometrail_core::ResolvedRange =
+            serde_json::from_value(range_value.clone()).map_err(|_| ResponseInvariantError)?;
+        object.insert("range".into(), bounded_resolved_range(&range, detail)?);
+    }
+    if let Some(quality) = object.get_mut("capture_quality") {
+        bound_capture_quality_epochs(quality, detail);
     }
     Ok(())
 }
@@ -2202,15 +2484,20 @@ fn compact_temporal_context(context: Option<&Value>) -> Option<Value> {
     let events = context.get("browser_events").and_then(Value::as_object);
     Some(json!({
         "status": context.get("status"),
-        "capture_quality": capture.map(|capture| json!({
-            "requested_range": capture.get("requested_range"),
-            "retained_range": capture.get("retained_range"),
-            "frame_count": capture.get("frame_count"),
-            "cadence": capture.get("cadence"),
-            "gap_summary": capture.get("gap_summary"),
-            "retention_warnings": capture.get("retention_warnings"),
-            "warnings": capture.get("warnings"),
-        })),
+        "capture_quality": capture.map(|capture| {
+            let mut quality = json!({
+                "requested_range": capture.get("requested_range"),
+                "retained_range": capture.get("retained_range"),
+                "frame_count": capture.get("frame_count"),
+                "cadence": capture.get("cadence"),
+                "gap_summary": capture.get("gap_summary"),
+                "retention_warnings": capture.get("retention_warnings"),
+                "epochs": capture.get("epochs"),
+                "warnings": capture.get("warnings"),
+            });
+            bound_capture_quality_epochs(&mut quality, ResponseDetail::Concise);
+            quality
+        }),
         "browser_events": events.map(|events| json!({
             "effective_range": events.get("effective_range"),
             "matched_count": events.get("matched_count"),
@@ -2305,9 +2592,8 @@ pub(crate) async fn map_temporal_bundle_result(
     let scope = artifact_scope(&bundle.range)?;
     let result = match response.detail {
         ResponseDetail::Concise => concise_bundle_value(&bundle, scope)?,
-        ResponseDetail::Expanded => compact_bundle_value(&bundle, scope)?,
-        ResponseDetail::Full => {
-            serde_json::to_value(&bundle).map_err(|_| ResponseInvariantError)?
+        ResponseDetail::Expanded | ResponseDetail::Full => {
+            bounded_bundle_value(&bundle, scope, response.detail)?
         }
     };
     let mut projection = Projection::success(result);
@@ -2317,7 +2603,6 @@ pub(crate) async fn map_temporal_bundle_result(
     };
     let candidate = generation.and_then(primary_artifact);
     if let Some(generation) = generation {
-        add_analysis_sampling_warnings(&mut projection, generation);
         match response.detail {
             ResponseDetail::Concise => {
                 if let Some((_, _, artifact)) = candidate {
@@ -2351,16 +2636,13 @@ pub(crate) fn map_temporal_range_resolution_result(
     resolution: TemporalRangeResolution,
     response: ResponseRequest,
 ) -> Result<MappedResult, ResponseInvariantError> {
-    let range = match response.detail {
-        ResponseDetail::Concise => serde_json::to_value(compact_resolved_range(&resolution.range)?)
-            .map_err(|_| ResponseInvariantError)?,
-        ResponseDetail::Expanded | ResponseDetail::Full => {
-            serde_json::to_value(&resolution.range).map_err(|_| ResponseInvariantError)?
-        }
-    };
+    let range = bounded_resolved_range(&resolution.range, response.detail)?;
+    let mut capture_quality =
+        serde_json::to_value(&resolution.capture_quality).map_err(|_| ResponseInvariantError)?;
+    bound_capture_quality_epochs(&mut capture_quality, response.detail);
     let mut projection = Projection::success(json!({
         "range": range,
-        "capture_quality": resolution.capture_quality,
+        "capture_quality": capture_quality,
         "artifacts": {"status": "not_requested"},
         "browser_events": {"status": "not_requested"},
     }));
@@ -2428,12 +2710,7 @@ pub(crate) async fn map_progressive_result(
             let omitted_frame_count = list
                 .omitted_frame_count
                 .saturating_add(u64::try_from(local_omitted_frame_count).unwrap_or(u64::MAX));
-            let range = if response.detail == ResponseDetail::Concise {
-                serde_json::to_value(compact_resolved_range(&list.range)?)
-                    .map_err(|_| ResponseInvariantError)?
-            } else {
-                serde_json::to_value(&list.range).map_err(|_| ResponseInvariantError)?
-            };
+            let range = bounded_resolved_range(&list.range, response.detail)?;
             let frames = if response.detail == ResponseDetail::Concise {
                 serde_json::to_value(
                     list.frames
@@ -2462,13 +2739,12 @@ pub(crate) async fn map_progressive_result(
         ProgressiveEvidenceResult::GenerateArtifacts(generation) => {
             let generation = *generation;
             let scope = artifact_scope(&generation.range)?;
-            let mut projection = if response.detail == ResponseDetail::Concise {
-                Projection::success(compact_generation_value(&generation, scope)?)
-            } else {
-                serializable(generation.clone())?
-            };
+            let mut projection = Projection::success(projected_generation_value(
+                &generation,
+                scope,
+                response.detail,
+            )?);
             add_artifact_generation_resources(&mut projection, &generation, scope, false)?;
-            add_analysis_sampling_warnings(&mut projection, &generation);
             projection
         }
         ProgressiveEvidenceResult::GenerateRegionFilmstrip(evidence) => {
@@ -2476,28 +2752,25 @@ pub(crate) async fn map_progressive_result(
             let region = evidence.region;
             let generation = evidence.generation;
             let scope = artifact_scope(&generation.range)?;
-            let generation_for_links = generation.clone();
-            let generation_value = if response.detail == ResponseDetail::Concise {
-                compact_generation_value(&generation, scope)?
-            } else {
-                serde_json::to_value(&generation).map_err(|_| ResponseInvariantError)?
-            };
+            let generation_value = projected_generation_value(&generation, scope, response.detail)?;
             let mut projection = Projection::success(json!({
                 "region": region,
                 "generation": generation_value,
             }));
-            add_artifact_generation_resources(
-                &mut projection,
-                &generation_for_links,
-                scope,
-                false,
-            )?;
-            add_analysis_sampling_warnings(&mut projection, &generation_for_links);
+            add_artifact_generation_resources(&mut projection, &generation, scope, false)?;
             projection
         }
         ProgressiveEvidenceResult::PinResolvedRange(change)
-        | ProgressiveEvidenceResult::UnpinResolvedRange(change) => serializable(*change)?,
-        ProgressiveEvidenceResult::QueryPinState(state) => serializable(*state)?,
+        | ProgressiveEvidenceResult::UnpinResolvedRange(change) => {
+            let mut projection = serializable(*change)?;
+            bound_pin_value(&mut projection.result, response.detail);
+            projection
+        }
+        ProgressiveEvidenceResult::QueryPinState(state) => {
+            let mut projection = serializable(*state)?;
+            bound_pin_value(&mut projection.result, response.detail);
+            projection
+        }
     };
     if let Some((scope, artifact)) = inline_artifact {
         add_inline_artifact(
@@ -2529,71 +2802,6 @@ fn add_artifact_generation_resources(
         }
     }
     Ok(())
-}
-
-fn add_analysis_sampling_warnings(
-    projection: &mut Projection,
-    generation: &ArtifactGenerationResult,
-) {
-    let warnings = generation
-        .outcomes
-        .iter()
-        .filter_map(|outcome| match outcome {
-            ArtifactOutcome::Available { artifact, .. } => {
-                let kind = artifact.manifest.artifact_kind();
-                if !matches!(
-                    kind,
-                    ArtifactKind::DifferenceMap | ArtifactKind::MotionHistory
-                ) {
-                    return None;
-                }
-                let values = match artifact.manifest.parameters().get("analysis_sampling") {
-                    Some(temporal_vision::ParameterValue::Object(values)) => values,
-                    _ => return None,
-                };
-                let source = match values.get("source_frame_count") {
-                    Some(temporal_vision::ParameterValue::Unsigned(source)) => *source,
-                    _ => return None,
-                };
-                let analyzed = match values.get("analyzed_frame_count") {
-                    Some(temporal_vision::ParameterValue::Unsigned(analyzed)) => *analyzed,
-                    _ => return None,
-                };
-                analysis_sampling_warning(kind, source, analyzed)
-            }
-            ArtifactOutcome::Unavailable { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    projection.degrade_with_stage(warnings, "artifact_generation");
-}
-
-fn analysis_sampling_warning(
-    kind: ArtifactKind,
-    source_frame_count: u64,
-    analyzed_frame_count: u64,
-) -> Option<KrometrailError> {
-    if !matches!(
-        kind,
-        ArtifactKind::DifferenceMap | ArtifactKind::MotionHistory
-    ) || source_frame_count == analyzed_frame_count
-    {
-        return None;
-    }
-    Some(
-        KrometrailError::new(
-            ErrorCode::ResourceLimitExceeded,
-            NonEmptyText::new(format!(
-                "{kind} analysis sampled {analyzed_frame_count} of {source_frame_count} source frames with uniform spacing"
-            ))
-            .expect("sampling warning is non-empty"),
-        )
-        .with_recovery(
-            NonEmptyText::new(
-                "set sampling to exhaustive when an exact all-frame analysis is required",
-            )
-            .expect("sampling warning recovery is non-empty"),
-        ),
-    )
 }
 
 fn primary_artifact(generation: &ArtifactGenerationResult) -> Option<(u32, u32, &ArtifactHandle)> {
@@ -2698,27 +2906,35 @@ fn concise_bundle_value(
     }))
 }
 
-fn compact_bundle_value(
+/// The expanded/full bundle presentation: the complete bundle structure with
+/// every embedded resolved-range and epoch enumeration bounded, compact
+/// artifact handles at expanded, and bounded inline manifests at full.
+fn bounded_bundle_value(
     bundle: &TemporalDebugBundle,
     scope: krometrail_core::EvidenceScope,
+    detail: ResponseDetail,
 ) -> Result<Value, ResponseInvariantError> {
     let mut value = serde_json::to_value(bundle).map_err(|_| ResponseInvariantError)?;
-    let Some(outcomes) = value
-        .get_mut("artifacts")
-        .and_then(|artifacts| artifacts.get_mut("outcomes"))
-        .and_then(Value::as_array_mut)
-    else {
-        if matches!(
-            bundle.artifacts,
-            krometrail_core::BundleArtifactEvidence::Unavailable { .. }
-        ) {
-            return Ok(value);
+    value["range"] = bounded_resolved_range(&bundle.range, detail)?;
+    if let krometrail_core::BundleContextEvidence::Available(context) = &bundle.context {
+        let context_value = value.get_mut("context").ok_or(ResponseInvariantError)?;
+        context_value["range"] = bounded_resolved_range(&context.range, detail)?;
+        if let Some(quality) = context_value.get_mut("capture_quality") {
+            bound_capture_quality_epochs(quality, detail);
         }
-        return Err(ResponseInvariantError);
-    };
+    }
     let krometrail_core::BundleArtifactEvidence::Available(generation) = &bundle.artifacts else {
-        return Err(ResponseInvariantError);
+        return Ok(value);
     };
+    let artifacts = value.get_mut("artifacts").ok_or(ResponseInvariantError)?;
+    artifacts["range"] = bounded_resolved_range(&generation.range, detail)?;
+    let (epochs, omitted_epoch_count) = bounded_visual_epochs_value(&generation.epochs, detail)?;
+    artifacts["epochs"] = epochs;
+    artifacts["omitted_epoch_count"] = json!(omitted_epoch_count);
+    let outcomes = artifacts
+        .get_mut("outcomes")
+        .and_then(Value::as_array_mut)
+        .ok_or(ResponseInvariantError)?;
     if outcomes.len() != generation.outcomes.len() {
         return Err(ResponseInvariantError);
     }
@@ -2729,15 +2945,18 @@ fn compact_bundle_value(
         let artifact_value = projected
             .get_mut("artifact")
             .ok_or(ResponseInvariantError)?;
-        *artifact_value = serde_json::to_value(compact_artifact_handle(scope, artifact)?)
-            .map_err(|_| ResponseInvariantError)?;
+        *artifact_value = projected_artifact_value(scope, artifact, detail)?;
     }
     Ok(value)
 }
 
-fn compact_generation_value(
+/// The per-tier artifact-generation presentation: bounded range, bounded
+/// epoch rows at expanded/full, and per-tier artifact presentations. Concise
+/// keeps the counts-only range and compact handles without epoch rows.
+fn projected_generation_value(
     generation: &ArtifactGenerationResult,
     scope: krometrail_core::EvidenceScope,
+    detail: ResponseDetail,
 ) -> Result<Value, ResponseInvariantError> {
     let outcomes = generation
         .outcomes
@@ -2751,7 +2970,7 @@ fn compact_generation_value(
                 "available": {
                     "epoch_index": epoch_index,
                     "generator_index": generator_index,
-                    "artifact": compact_artifact_handle(scope, artifact)?,
+                    "artifact": projected_artifact_value(scope, artifact, detail)?,
                 }
             })),
             ArtifactOutcome::Unavailable {
@@ -2769,10 +2988,17 @@ fn compact_generation_value(
             })),
         })
         .collect::<Result<Vec<_>, ResponseInvariantError>>()?;
-    Ok(json!({
-        "range": compact_resolved_range(&generation.range)?,
+    let mut value = json!({
+        "range": bounded_resolved_range(&generation.range, detail)?,
         "outcomes": outcomes,
-    }))
+    });
+    if detail != ResponseDetail::Concise {
+        let (epochs, omitted_epoch_count) =
+            bounded_visual_epochs_value(&generation.epochs, detail)?;
+        value["epochs"] = epochs;
+        value["omitted_epoch_count"] = json!(omitted_epoch_count);
+    }
+    Ok(value)
 }
 
 fn compact_artifact_handle(
@@ -2795,6 +3021,7 @@ fn compact_artifact_handle(
             .map_err(|_| ResponseInvariantError)?,
         omitted_frame_count: u32::try_from(manifest.omitted_frame_count())
             .map_err(|_| ResponseInvariantError)?,
+        sampling_mode: manifest_sampling_mode(manifest),
         output_dimensions: manifest.output_dimensions(),
         output_hash: manifest.output_hash().to_string(),
         manifest_uri: crate::resources::EvidenceResourceUri::artifact_manifest(
@@ -3235,33 +3462,72 @@ mod tests {
         }
     }
 
-    #[test]
-    fn analysis_sampling_warning_reads_parameters_from_generated_manifest() {
-        let generation = generated_sampled_difference_generation();
-        let mut projection = Projection::success(json!({}));
-        add_analysis_sampling_warnings(&mut projection, &generation);
-        assert_eq!(projection.status, ToolResponseStatus::Degraded);
-        assert_eq!(projection.warnings.len(), 1);
-        assert!(projection.warnings[0].message.as_str().contains("3 of 4"));
+    #[tokio::test]
+    async fn sampled_analysis_success_carries_structured_accounting_without_degradation() {
+        // A by-design bounded (uniform-sampled) analysis is a successful
+        // response with structured sampling accounting at every tier — never a
+        // `resource_limit_exceeded` degradation warning. Exhaustive over-limit
+        // requests keep their hard failure in the artifact service.
+        for detail in [
+            ResponseDetail::Concise,
+            ResponseDetail::Expanded,
+            ResponseDetail::Full,
+        ] {
+            let mapped = map_progressive_result(
+                "generate_artifacts",
+                ProgressiveEvidenceResult::GenerateArtifacts(Box::new(
+                    generated_sampled_difference_generation(),
+                )),
+                &UnusedProgressive,
+                Instant::now() + Duration::from_secs(1),
+                test_cancellation(),
+                ResponseRequest {
+                    detail,
+                    inline_images: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(mapped.response.status, ToolResponseStatus::Succeeded);
+            assert!(
+                mapped
+                    .response
+                    .warnings
+                    .iter()
+                    .all(|warning| warning.code != ErrorCode::ResourceLimitExceeded),
+                "sampling accounting must not be misreported as a resource limit"
+            );
+            let artifact = &mapped.response.result["outcomes"][0]["available"]["artifact"];
+            assert_eq!(artifact["sampling_mode"], "uniform_bounded");
+            assert_eq!(artifact["source_frame_count"], 4);
+            assert_eq!(artifact["analyzed_frame_count"], 3);
+            if detail == ResponseDetail::Full {
+                let manifest = &artifact["manifest"];
+                assert!(manifest.get("omitted_id_counts").is_some());
+                assert!(manifest["manifest_uri"].is_string());
+            } else {
+                assert!(artifact.get("manifest").is_none());
+            }
+        }
     }
 
     #[test]
-    fn analysis_sampling_warning_is_limited_to_analysis_generators() {
-        let warning = analysis_sampling_warning(ArtifactKind::DifferenceMap, 744, 43)
-            .expect("sampled analysis must warn");
-        assert!(warning.message.as_str().contains("43 of 744"));
-        assert!(warning.message.as_str().contains("uniform spacing"));
-        assert!(
-            warning
-                .recovery
-                .as_ref()
-                .is_some_and(|recovery| recovery.as_str().contains("exhaustive"))
+    fn bounded_manifest_presentation_caps_ids_with_exact_omission_accounting() {
+        let generation = generated_sampled_difference_generation();
+        let ArtifactOutcome::Available { artifact, .. } = &generation.outcomes[0] else {
+            unreachable!()
+        };
+        let scope = artifact_scope(&generation.range).unwrap();
+        let value = bounded_manifest_value(scope, &artifact.manifest).unwrap();
+        // Small fixture: nothing omitted, and every omission exactly counted.
+        assert_eq!(value["omitted_id_counts"]["source_frame_ids"], 0);
+        assert_eq!(value["omitted_id_counts"]["analyzed_frame_ids"], 0);
+        assert_eq!(value["omitted_id_counts"]["selected_frame_ids"], 0);
+        assert_eq!(
+            value["source_frame_ids"],
+            serde_json::to_value(artifact.manifest.source_frame_ids()).unwrap()
         );
-
-        for kind in [ArtifactKind::Storyboard, ArtifactKind::RegionFilmstrip] {
-            assert!(analysis_sampling_warning(kind, 744, 43).is_none());
-        }
-        assert!(analysis_sampling_warning(ArtifactKind::MotionHistory, 43, 43).is_none());
+        assert!(value["manifest_uri"].is_string());
     }
 
     fn video_result() -> TemporalVideoGenerationResult {
@@ -4821,7 +5087,7 @@ mod tests {
     }
 
     #[test]
-    fn temporal_detail_defaults_to_concise_and_full_preserves_rows() {
+    fn temporal_detail_defaults_to_concise_and_every_tier_bounds_the_range() {
         let range = video_result().range;
         let value = json!({
             "range": range,
@@ -4835,10 +5101,18 @@ mod tests {
         assert!(concise["range"].get("frame_ids").is_none());
         let mut expanded = value.clone();
         project_temporal_value(&mut expanded, ResponseDetail::Expanded).unwrap();
-        assert_eq!(expanded, value);
+        assert_eq!(expanded["browser_events"], value["browser_events"]);
+        assert_eq!(expanded["range"]["frame_count"], 2);
+        assert!(expanded["range"].get("frame_ids").is_none());
+        assert!(expanded["range"]["first_frame_id"].is_string());
         let mut full = value.clone();
         project_temporal_value(&mut full, ResponseDetail::Full).unwrap();
-        assert_eq!(full, value);
+        assert_eq!(full["browser_events"], value["browser_events"]);
+        assert_eq!(
+            full["range"]["frame_ids"]["ids"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(full["range"]["frame_ids"]["omitted_count"], 0);
     }
 
     #[tokio::test]
@@ -4921,6 +5195,109 @@ mod tests {
 
         let full = serde_json::to_value(range).unwrap();
         assert_eq!(full["frame_ids"], serde_json::to_value(frame_ids).unwrap());
+    }
+
+    fn large_synthetic_range(frame_count: u128) -> krometrail_core::ResolvedRange {
+        let interval = SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(100)).unwrap();
+        krometrail_core::ResolvedRange::new(
+            session_id(),
+            target_id(),
+            TemporalRangeAnchorKind::SessionTime,
+            interval,
+            interval,
+            (1..=frame_count)
+                .map(|value| FrameId::from_uuid(uuid::Uuid::from_u128(value)))
+                .collect(),
+            (1..=60)
+                .map(|value| InteractionId::from_uuid(uuid::Uuid::from_u128(10_000 + value)))
+                .collect(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            RangeResolutionOptions::DEFAULT,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn expanded_range_projection_never_enumerates_frames_and_accounts_omissions_exactly() {
+        // Regression for issue #14 finding #7: the expanded response of a
+        // long every-frame range must not enumerate thousands of identifiers.
+        let range = large_synthetic_range(1_000);
+        let expanded = bounded_resolved_range(&range, ResponseDetail::Expanded).unwrap();
+        assert_eq!(expanded["frame_count"], 1_000);
+        assert!(expanded.get("frame_ids").is_none());
+        assert_eq!(
+            expanded["first_frame_id"],
+            serde_json::to_value(range.frame_ids.first()).unwrap()
+        );
+        assert_eq!(
+            expanded["last_frame_id"],
+            serde_json::to_value(range.frame_ids.last()).unwrap()
+        );
+        assert_eq!(
+            expanded["interaction_ids"]["ids"].as_array().unwrap().len(),
+            MAX_EXPANDED_RANGE_EVENT_IDS
+        );
+        assert_eq!(
+            expanded["interaction_ids"]["omitted_count"],
+            60 - MAX_EXPANDED_RANGE_EVENT_IDS as u64
+        );
+        assert!(expanded["drill_down"]["complete_frame_ids"].is_string());
+        assert!(serde_json::to_vec(&expanded).unwrap().len() < 16 * 1024);
+    }
+
+    #[test]
+    fn full_range_projection_caps_the_frame_head_with_exact_omission_and_offset() {
+        let range = large_synthetic_range(1_000);
+        let full = bounded_resolved_range(&range, ResponseDetail::Full).unwrap();
+        assert_eq!(
+            full["frame_ids"]["ids"].as_array().unwrap().len(),
+            MAX_FULL_RANGE_FRAME_IDS
+        );
+        assert_eq!(
+            full["frame_ids"]["omitted_count"],
+            1_000 - MAX_FULL_RANGE_FRAME_IDS as u64
+        );
+        assert_eq!(
+            full["drill_down"]["next_offset"],
+            MAX_FULL_RANGE_FRAME_IDS as u64
+        );
+        assert_eq!(full["interaction_ids"]["ids"].as_array().unwrap().len(), 60);
+        assert_eq!(full["interaction_ids"]["omitted_count"], 0);
+        assert!(serde_json::to_vec(&full).unwrap().len() < 32 * 1024);
+
+        // Short ranges keep their complete head with zero omissions and no
+        // continuation offset.
+        let short = large_synthetic_range(3);
+        let full = bounded_resolved_range(&short, ResponseDetail::Full).unwrap();
+        assert_eq!(full["frame_ids"]["ids"].as_array().unwrap().len(), 3);
+        assert_eq!(full["frame_ids"]["omitted_count"], 0);
+        assert!(full["drill_down"]["next_offset"].is_null());
+    }
+
+    #[test]
+    fn capture_quality_epoch_presentation_is_bounded_with_exact_accounting() {
+        let epochs = (0..50)
+            .map(|index| {
+                json!({
+                    "epoch_index": index,
+                    "range": {"start": index, "end": index},
+                    "frame_count": 1,
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut quality = json!({"frame_count": 50, "epochs": epochs});
+        bound_capture_quality_epochs(&mut quality, ResponseDetail::Concise);
+        assert_eq!(
+            quality["epochs"].as_array().unwrap().len(),
+            MAX_CONCISE_PROJECTED_EPOCHS
+        );
+        assert_eq!(
+            quality["omitted_epoch_count"],
+            50 - MAX_CONCISE_PROJECTED_EPOCHS as u64
+        );
     }
 
     #[test]

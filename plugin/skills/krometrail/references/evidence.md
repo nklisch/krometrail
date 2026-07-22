@@ -86,7 +86,9 @@ deterministic selection between spans. The full resolved range and gaps remain a
 
 The bundle favors context-sized evidence and includes one primary inline image by default. Concise publishes one primary
 compact handle/resource plus exact selected-epoch and omitted outcome/resource counts. Expanded publishes compact
-handles/resources for every generated outcome; full preserves complete structures. Compact artifact handles summarize identity, type,
+handles/resources for every generated outcome; full adds bounded inline manifests. Every tier caps identifier
+enumeration with exact omitted counts; complete frame sets stay reachable through the range handle, paginated
+`list_source_frames`, and canonical manifest resources. Compact artifact handles summarize identity, type,
 geometry, hash, and frame counts. Read a handle's `manifest_uri` resource for the exact full manifest
 when a claim depends on ordered source and selected frame IDs, omissions, gaps, normalization, or
 generator parameters. Full-resolution images and exact source frames remain behind their adjacent MCP

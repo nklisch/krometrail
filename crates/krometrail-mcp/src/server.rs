@@ -3644,11 +3644,15 @@ mod tests {
         )
         .await
         .unwrap();
+        let inline_manifest =
+            &generic.response.result["outcomes"][0]["available"]["artifact"]["manifest"];
         assert_eq!(
-            generic.response.result["outcomes"][0]["artifact"]["manifest"],
-            serde_json::to_value(&spy.artifact_read.handle.provenance).unwrap(),
-            "generic artifact generation must retain the complete manifest"
+            inline_manifest["source_frame_ids"],
+            serde_json::to_value(spy.artifact_read.handle.provenance.source_frame_ids()).unwrap(),
+            "full inlines the bounded manifest presentation"
         );
+        assert_eq!(inline_manifest["omitted_id_counts"]["source_frame_ids"], 0);
+        assert!(inline_manifest["manifest_uri"].is_string());
         assert_eq!(generic.response.resources.len(), 1);
         let generic_with_image = crate::response::map_progressive_result(
             "generate_artifacts",
@@ -3696,6 +3700,16 @@ mod tests {
             "temporal: full retains the pre-existing bundle projection"
         );
         assert!(structured["result"]["effective"]["artifact_generators"].is_array());
+        // Regression for issue #14 finding #7: the expanded bundle range is a
+        // bounded presentation — exact counts, no complete frame-id array.
+        assert!(structured["result"]["range"]["frame_count"].is_number());
+        assert!(structured["result"]["range"].get("frame_ids").is_none());
+        assert!(structured["result"]["range"]["first_frame_id"].is_string());
+        assert!(
+            structured["result"]["artifacts"]["range"]
+                .get("frame_ids")
+                .is_none()
+        );
         assert_eq!(
             structured["result"]["artifacts"]["outcomes"]
                 .as_array()
