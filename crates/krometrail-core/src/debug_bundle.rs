@@ -589,7 +589,11 @@ fn validate_degradation(degradation: &BundleDegradation) -> Result<()> {
 }
 
 fn validate_query_resolution(request: &TemporalQueryRequest, range: &ResolvedRange) -> Result<()> {
-    if request.anchor.kind() != range.anchor_kind || request.options() != range.options {
+    // A resolved range carries the resolver-selected kind: the request-only
+    // `latest_interaction` anchor has already collapsed to `interaction`.
+    if request.anchor.kind().resolved_kind() != range.anchor_kind
+        || request.options() != range.options
+    {
         return Err(invalid(
             "resolved range must preserve the exact temporal query options",
         ));

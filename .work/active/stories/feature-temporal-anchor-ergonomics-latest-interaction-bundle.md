@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-anchor-ergonomics-latest-interaction-bundle
 kind: story
-stage: implementing
+stage: done
 tags: [visual, agent-ux, bug]
 parent: feature-temporal-anchor-ergonomics
 depends_on: []
@@ -56,3 +56,44 @@ on a documented anchor.
   collapsed/resolved anchor kind rather than the request-only anchor, matching
   how `resolve_temporal_range` already handles the collapse.
 - A regression test bundles via `latest_interaction` successfully.
+
+## Implementation
+
+Root cause matched the hypothesis exactly. The resolver collapses
+`latest_interaction` to an `interaction` anchor at
+`crates/krometrail-core/src/timeline/range.rs` (the `LatestInteraction` arm calls
+`seed_from_interaction(..., TemporalRangeAnchorKind::Interaction)`), and a
+`ResolvedRange` can never carry `LatestInteraction`: `validate_anchor_kind`
+rejects it and the wire enum `ResolvedRangeAnchorKindWire` excludes it by
+design, with a doc comment documenting the collapse. The bundle's
+post-resolution invariant `validate_query_resolution` in
+`crates/krometrail-core/src/debug_bundle.rs` compared the raw request anchor
+kind (`latest_interaction`) against the collapsed resolved kind
+(`interaction`), tripping "resolved range must preserve the exact temporal
+query options". The anchor-identity arm of the same function already tolerated
+the collapse (`LatestInteraction` request vs `Interaction` reference), so only
+the kind-equality clause was broken. `resolve_temporal_range` never runs this
+cross-check, which is why it accepted the identical anchor.
+
+Fix: added `TemporalRangeAnchorKind::resolved_kind()` in
+`crates/krometrail-core/src/timeline/range.rs` — the one domain statement of
+the collapse (`LatestInteraction` maps to `Interaction`; every other kind maps
+to itself) — and made `validate_query_resolution` compare
+`request.anchor.kind().resolved_kind()` against `range.anchor_kind`. No wire
+schema changes; `ResolvedRangeAnchorKind` already excluded `latest_interaction`
+and the request schema is untouched (`check-wire-enum-schemas.sh` green).
+
+Files changed:
+- `crates/krometrail-core/src/timeline/range.rs` — `resolved_kind()` plus a
+  registry test asserting the mapping for every anchor kind.
+- `crates/krometrail-core/src/debug_bundle.rs` — invariant compares the
+  collapsed kind.
+- `src/debug_bundle/tests.rs` — regression test
+  `latest_interaction_anchor_resolves_through_bundle_service` in the
+  qualification module: bundles via `latest_interaction` against the real
+  store rig and asserts the collapsed `interaction` resolved kind, exact
+  interaction identity, and the mandatory anchor marker. Verified to fail with
+  the pre-fix invariant and pass with the fix.
+
+Full gate green: fmt, wire-enum schema check, check, test (workspace, all
+targets), clippy `-D warnings`.

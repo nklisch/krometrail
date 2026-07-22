@@ -59,6 +59,16 @@ impl TemporalRangeAnchorKind {
             .copied()
             .find(|kind| kind.as_str() == value)
     }
+
+    /// The kind a resolver records for this requested kind. The request-only
+    /// `latest_interaction` anchor collapses to `interaction` during
+    /// resolution; every other kind resolves as itself.
+    pub const fn resolved_kind(self) -> Self {
+        match self {
+            Self::LatestInteraction => Self::Interaction,
+            other => other,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1765,6 +1775,14 @@ mod tests {
             );
         }
         assert_eq!(TemporalRangeAnchorKind::from_stable_name("future"), None);
+        for kind in TemporalRangeAnchorKind::ALL {
+            let expected = if *kind == TemporalRangeAnchorKind::LatestInteraction {
+                TemporalRangeAnchorKind::Interaction
+            } else {
+                *kind
+            };
+            assert_eq!(kind.resolved_kind(), expected);
+        }
         let (session, target, _, _, _, _) = ids();
         let anchor = TemporalRangeAnchor::SessionTime {
             scope: IntervalAnchorScope::new(session, target),

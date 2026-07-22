@@ -1820,6 +1820,56 @@ mod qualification {
     }
 
     #[tokio::test]
+    async fn latest_interaction_anchor_resolves_through_bundle_service() {
+        let rig = qual_rig().await;
+        let service = rig.bundle_service();
+        // The request-only `latest_interaction` anchor collapses to
+        // `interaction` during resolution; the bundle invariant must accept
+        // the collapsed resolved kind (regression: the bundle previously
+        // failed with "resolved range must preserve the exact temporal query
+        // options" while resolve_temporal_range accepted the same anchor).
+        let request = TemporalDebugBundleRequest::default_policy(
+            TemporalQueryRequest::new(
+                TemporalRangeAnchor::LatestInteraction {
+                    session_id: rig.session,
+                    target_id: rig.target,
+                    window: Some(
+                        krometrail_core::InteractionWindow::new(
+                            std::time::Duration::from_millis(0),
+                            std::time::Duration::from_millis(0),
+                        )
+                        .unwrap(),
+                    ),
+                },
+                RetentionPolicy::AllowPartial,
+                CaptureGapPolicy::Include,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let bundle = service
+            .bundle(request, TemporalDebugBundleContext::default())
+            .await
+            .unwrap();
+        // The resolved range carries the collapsed resolver-selected kind and
+        // the latest interaction's exact identity.
+        assert_eq!(
+            bundle.range.anchor_kind,
+            krometrail_core::TemporalRangeAnchorKind::Interaction
+        );
+        assert!(matches!(
+            bundle.range.resolved_anchor.reference,
+            ResolvedAnchorReference::Interaction { interaction_id } if interaction_id == InteractionId::from_uuid(Uuid::from_u128(730))
+        ));
+        // The mandatory anchor marker is present for the collapsed interaction.
+        assert!(bundle.markers.iter().any(|m| matches!(
+            m.id(),
+            ArtifactMarkerId::Interaction(id) if *id == InteractionId::from_uuid(Uuid::from_u128(730))
+        )));
+        std::fs::remove_dir_all(&rig.root).unwrap();
+    }
+
+    #[tokio::test]
     async fn orientation_omitted_changes_only_include_orientation_field() {
         let rig = qual_rig().await;
         let svc_include = rig.bundle_service();
