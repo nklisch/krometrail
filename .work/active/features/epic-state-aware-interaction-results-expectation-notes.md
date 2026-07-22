@@ -531,3 +531,37 @@ existing test should be removed.
   CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 cargo clippy --workspace --all-targets
   --locked -- -D warnings` all passed. The temporary target directory was used
   because the environment's default Cargo target path is read-only.
+
+## Review adjudication (standard weight, fresh-context Opus, one pass)
+
+Verified clean: completeness-gate truth table (no note with any unavailable
+required channel), any-positive-satisfies, structural no-fall-through and
+one-note cap, single registry table, closed role authority (selector/
+coordinate structurally role-less), seam placement in code, off-seam record
+consistency, v11 persistence, bounded wording/privacy, projection scope.
+
+Accepted findings, routed to a follow-up fix batch (closure is
+fix-verification only):
+1. (significant) Seam-ordering and the link rule are untested on an executed
+   path — the only note test (checkbox) has all channels available before the
+   seam; deleting `finalize_expectation_note` would pass the suite. Add the
+   scripted link-click pair: `NavigationOutcomeUnobserved` with observed-
+   unchanged channels + empty reconciliation, and note `None` when
+   reconciliation fails.
+2. (design-consistent) The evaluator ignores `SideChannelSignals`: a link
+   click with `window_open_attempts > 0` and reconciled-empty pages emits the
+   note, contradicting the binding side-channel risk note ("attempts with
+   empty pages must not read as contradiction"). Observed attempts demote the
+   NewPage/Download channels to unavailable → not-evaluated.
+3. (minor) Wire decode accepts `target_role` on non-reference locators (the
+   store fixture exploits it) — reject at the wire closure; fix the fixture.
+4. (minor) The note-mismatch decode guard is untested — add flipped/forged
+   note rejection cases.
+5. (minor) The pre-existing checked-delta deterministic test was repurposed —
+   restore it as its own case; add one-line assertions for selector/
+   coordinate `target_role: None`/note suppression and concise key omission.
+6. (nit) Comment on the expectation tables that edits require a schema bump;
+   dedupe the double `bindings.get` lookup.
+
+Rejected (no action): already-selected radio emits `CheckedStateUnchanged` —
+inherent to the declared rule; wording stays observational.
