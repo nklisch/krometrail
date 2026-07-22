@@ -1,14 +1,14 @@
 ---
 id: feature-native-control-actionability
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-22
 ---
 
 # Native control actionability
@@ -281,8 +281,8 @@ async fn fill_temporal(
   events. Regenerate `docs/public/llms-full.txt` via `bun run docs:build`.
 
 **Acceptance Criteria**:
-- [ ] Real-browser qualification passes for both upload patterns and date fill.
-- [ ] SPEC describes the new behavior; no command examples beyond current `src/cli.rs`.
+- [x] Real-browser qualification passes for both upload patterns and date fill.
+- [x] SPEC describes the new behavior; no command examples beyond current `src/cli.rs`.
 
 ---
 
@@ -327,3 +327,32 @@ async fn fill_temporal(
 - **Ambiguity policy at the sibling fallback** (unique-input requirement) may reject a
   legitimate multi-uploader container; the guided error names the CSS-selector escape
   hatch, so no capability is lost.
+
+## Implementation notes
+
+- Implemented the upload affordance slice in
+  `feature-native-control-actionability-upload-affordance`: FileInput resolution
+  now skips hidden/geometry checks while preserving connected, disabled, and
+  post-action fact semantics; bounded association canonicalization resolves
+  wrapping labels, contained inputs, ARIA relationships, and unique
+  sibling-hidden inputs, with explicit ambiguity guidance.
+- Implemented the temporal fill slice in
+  `feature-native-control-actionability-temporal-fill`: native temporal input
+  kinds pass editable actionability, complete values use the browser's native
+  setter and bubbled events, append mode is rejected, invalid assignments name
+  the expected format, and one editable-host promotion handles Chrome's native
+  date spinbutton segments.
+- Required reconciliation: the design's earlier `ResolvedNode` shape was
+  updated against the landed `facts: NodeStateFacts` and post-action probe path.
+  The new optional geometry and canonical backend identities preserve those
+  facts, so upload and temporal targets retain precondition and postcondition
+  fact capture through the existing path.
+- Added deterministic scripted-CDP tests, upload/date fixture coverage, SPEC
+  alignment, and generated documentation. Both opt-in real-Chrome
+  qualifications passed: upload affordances landed on hidden native inputs;
+  date selector/reference fills emitted both events, invalid/append paths were
+  guided failures, and the tested spinbutton segment canonicalized successfully.
+- Full Rust gates passed for each story commit and this parent closeout. The
+  first Feature 4 workspace-test attempt hit `/tmp` exhaustion while linking an
+  unrelated store test; only the task-owned target was removed, then the serial
+  rerun passed.
