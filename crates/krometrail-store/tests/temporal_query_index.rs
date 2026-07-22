@@ -1,11 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
 use krometrail_core::{
-    BrowserOperationKind, InteractionAnchor, InteractionAnchorSource, InteractionEvidenceSink,
-    InteractionId, InteractionOutcome, InteractionPostcondition, InteractionRecord,
-    InteractionRecordSource, InteractionTiming, LocatorSummary, NavigationId, NodeStateFacts,
-    ObservationContext, ObservationKind, ObservedTime, SanitizedParameters, SessionId,
-    SessionRange, SessionTime, TargetId, TargetNodeOutcome, TimelineStore,
+    BrowserOperationKind, ElementLocator, InteractionAnchor, InteractionAnchorSource,
+    InteractionEvidenceSink, InteractionId, InteractionLocator, InteractionOutcome,
+    InteractionPostcondition, InteractionRecord, InteractionRecordSource, InteractionTiming,
+    LocatorSummary, NavigationId, NodeReference, NodeStateFacts, ObservationContext,
+    ObservationKind, ObservedTime, SanitizedParameters, SessionId, SessionRange, SessionTime,
+    SnapshotGeneration, SnapshotNodeId, TargetId, TargetNodeOutcome, TimelineStore,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -116,6 +117,12 @@ impl Fixture {
     }
 
     fn action_record(&self, id: u128) -> InteractionRecord {
+        let reference = NodeReference {
+            target_id: self.target,
+            generation: SnapshotGeneration::new(1).unwrap(),
+            node_id: SnapshotNodeId::new(1).unwrap(),
+        };
+        let locator = InteractionLocator::Element(ElementLocator::Reference(reference));
         InteractionRecord::new(
             InteractionId::from_uuid(Uuid::from_u128(id)),
             ObservationContext::new(
@@ -131,10 +138,10 @@ impl Fixture {
             BrowserOperationKind::Click,
             SanitizedParameters::new(serde_json::json!({
                 "button": "left",
-                "locator": {"kind": "target_wide"}
+                "locator": {"kind": "reference"}
             }))
             .unwrap(),
-            LocatorSummary::from_locator(None),
+            LocatorSummary::from_locator(Some(&locator)),
             Some(krometrail_core::ExpectationTargetRole::Checkbox),
             InteractionOutcome::Dispatched,
             populated_postcondition(),

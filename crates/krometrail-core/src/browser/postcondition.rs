@@ -265,6 +265,11 @@ fn channel_observation(
                 ChannelObservation::Unavailable
             }
         }
+        ExpectationChannel::NewPage
+            if facts.signals.window_open_attempts.is_some_and(|n| n > 0) =>
+        {
+            ChannelObservation::Unavailable
+        }
         ExpectationChannel::NewPage => match facts.new_pages.as_ref() {
             Some(value) if !value.pages.is_empty() || value.omitted > 0 => {
                 ChannelObservation::Changed {
@@ -276,6 +281,9 @@ fn channel_observation(
             },
             None => ChannelObservation::Unavailable,
         },
+        ExpectationChannel::Download if facts.signals.download_requests.is_some_and(|n| n > 0) => {
+            ChannelObservation::Unavailable
+        }
         ExpectationChannel::Download => match facts.downloads.as_ref() {
             Some(value) if !value.downloads.is_empty() || value.omitted > 0 => {
                 ChannelObservation::Changed {
@@ -971,6 +979,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn observed_side_channel_attempts_demote_empty_inventories() {
+        let expectation = link_expectation();
+
+        let mut window_attempt = link_facts(Some(false), Some(false), Some(false));
+        window_attempt.signals.window_open_attempts = Some(1);
+        assert_eq!(
+            evaluate_expectations(
+                &[expectation],
+                Some(ExpectationTargetRole::Link),
+                &window_attempt,
+            ),
+            ExpectationEvaluation::NotEvaluated
+        );
+
+        let mut window_attempt_with_navigation = link_facts(Some(true), Some(false), Some(false));
+        window_attempt_with_navigation.signals.window_open_attempts = Some(1);
+        assert_eq!(
+            evaluate_expectations(
+                &[expectation],
+                Some(ExpectationTargetRole::Link),
+                &window_attempt_with_navigation,
+            ),
+            ExpectationEvaluation::Held
+        );
+
+        let mut download_attempt = link_facts(Some(false), Some(false), Some(false));
+        download_attempt.signals.download_requests = Some(1);
+        assert_eq!(
+            evaluate_expectations(
+                &[expectation],
+                Some(ExpectationTargetRole::Link),
+                &download_attempt,
+            ),
+            ExpectationEvaluation::NotEvaluated
+        );
+
+        assert_eq!(
+            evaluate_expectations(
+                &[expectation],
+                Some(ExpectationTargetRole::Link),
+                &link_facts(Some(false), Some(false), Some(false)),
+            ),
+            ExpectationEvaluation::DidNotHold(ExpectationNote::NavigationOutcomeUnobserved)
+        );
     }
 
     #[test]

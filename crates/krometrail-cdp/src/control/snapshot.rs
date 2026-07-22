@@ -820,27 +820,17 @@ impl SnapshotRegistry {
                 "target attachment changed after the snapshot",
             ));
         }
-        let backend = active
-            .bindings
-            .get(&reference.node_id)
-            .map(|binding| binding.backend_node_id)
-            .ok_or_else(|| {
-                stale(
-                    bound.target_id,
-                    "snapshot node has no backing document node",
-                )
-            })?;
-        let expectation_role = active
-            .bindings
-            .get(&reference.node_id)
-            .map(|binding| binding.expectation_role)
-            .ok_or_else(|| {
-                stale(
-                    bound.target_id,
-                    "snapshot node has no backing document node",
-                )
-            })?;
-        Ok((&active.document, backend, expectation_role))
+        let binding = active.bindings.get(&reference.node_id).ok_or_else(|| {
+            stale(
+                bound.target_id,
+                "snapshot node has no backing document node",
+            )
+        })?;
+        Ok((
+            &active.document,
+            binding.backend_node_id,
+            binding.expectation_role,
+        ))
     }
 }
 

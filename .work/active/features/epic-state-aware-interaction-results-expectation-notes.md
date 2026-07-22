@@ -565,3 +565,28 @@ fix-verification only):
 
 Rejected (no action): already-selected radio emits `CheckedStateUnchanged` —
 inherent to the declared rule; wording stays observational.
+
+## Review fixes
+
+- Finding 1: added the scripted managed-session reference-link pair. The
+  observed unchanged main-frame navigation, empty reconciled page inventory,
+  and empty active download authority persist and project
+  `NavigationOutcomeUnobserved`; a scripted `Target.getTargets` failure leaves
+  the page channel unavailable and persists no note. The persisted record is
+  retained by the evidence fake in both cases.
+- Finding 2: positive `window_open_attempts` demotes the new-page channel and
+  positive `download_requests` demotes the download channel to unavailable.
+  The truth table covers empty-attempt suppression, navigation-positive hold,
+  download-attempt suppression, and the unchanged no-attempt note.
+- Finding 3: wire decoding now rejects target-role provenance on every
+  non-reference locator; the store round-trip fixture now uses a reference.
+- Finding 4: wire tests cover both inserting a note where none is derivable
+  and replacing a derived note with the wrong note kind.
+- Finding 5: restored the deterministic checked false-to-true case, retained
+  the unchanged checkbox case, asserted selector/coordinate role and note
+  suppression, and asserted concise omission of a note field when absent.
+- Finding 6: documented the registry-to-record schema dependency and removed
+  the duplicate active-binding lookup.
+- The persisted format advances from v11 to v12 because attempt demotion
+  changes registry-derived note consistency at decode; v11 records are
+  incompatible recording cache and are cleared rather than migrated.

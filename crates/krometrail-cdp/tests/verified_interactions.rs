@@ -3,6 +3,9 @@
 mod support;
 
 use std::{
+    future::Future,
+    pin::Pin,
+    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -12,8 +15,9 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_cdp::{
-    CaptureConfig, CdpTransport, CdpTransportFactory, ProductionBrowserConnector, TransportError,
-    TransportFuture,
+    CaptureConfig, CdpTransport, CdpTransportFactory, ChromeLauncher, LaunchError, LaunchedChrome,
+    LocalCdpEndpoint, ManagedChromeProcess, ProductionBrowserConnector, ProfileLease,
+    TransportError, TransportFuture,
 };
 use krometrail_core::{
     BrowserActionRequest, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
@@ -33,6 +37,7 @@ use krometrail_core::{
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
+use tempfile::TempDir;
 use uuid::Uuid;
 
 #[derive(Default)]
@@ -87,6 +92,80 @@ impl CdpTransportFactory for ScriptedFactory {
         let transport = self.0.clone();
         Box::pin(async move { Ok(Arc::new(transport) as Arc<dyn CdpTransport>) })
     }
+}
+
+type LauncherFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+struct ManagedScriptedLauncher {
+    profile_root: TempDir,
+    download_root: TempDir,
+}
+
+impl ChromeLauncher for ManagedScriptedLauncher {
+    fn installations(
+        &self,
+    ) -> LauncherFuture<'_, Result<Vec<krometrail_core::BrowserInstallation>, LaunchError>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+
+    fn managed_profiles(
+        &self,
+    ) -> LauncherFuture<'_, Result<Vec<krometrail_core::ManagedProfileSummary>, LaunchError>> {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+
+    fn launch(
+        &self,
+        request: &krometrail_core::LaunchBrowser,
+    ) -> LauncherFuture<'_, Result<LaunchedChrome, LaunchError>> {
+        let profile_root = self.profile_root.path().to_path_buf();
+        let profile = request.profile.clone();
+        Box::pin(async move {
+            let profile = ProfileLease::acquire(profile_root, &profile)
+                .map_err(|_| LaunchError::SpawnFailed)?;
+            let executable = std::env::current_exe().map_err(|_| LaunchError::SpawnFailed)?;
+            let mut command = Command::new(executable);
+            command
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let process =
+                ManagedChromeProcess::spawn(&mut command).map_err(|_| LaunchError::SpawnFailed)?;
+            let endpoint = LocalCdpEndpoint::from_websocket_url(
+                "ws://127.0.0.1:9222/devtools/browser/scripted",
+            )
+            .await
+            .map_err(|_| LaunchError::EndpointUnavailable)?;
+            Ok(LaunchedChrome::from_test_parts(endpoint, profile, process))
+        })
+    }
+}
+
+async fn managed_scripted_session(
+    transport: ScriptedCdp,
+    evidence: Arc<dyn krometrail_core::InteractionEvidenceSink>,
+) -> Arc<dyn krometrail_core::BrowserSessionPort> {
+    let launcher = ManagedScriptedLauncher {
+        profile_root: TempDir::new().unwrap(),
+        download_root: TempDir::new().unwrap(),
+    };
+    let download_root = launcher.download_root.path().to_path_buf();
+    let connector =
+        ProductionBrowserConnector::new(Arc::new(launcher), Arc::new(ScriptedFactory(transport)))
+            .with_managed_download_root(download_root)
+            .with_interaction_evidence(evidence);
+    connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: None,
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::Foreground,
+            },
+        ))
+        .await
+        .unwrap()
 }
 
 fn layout() -> Value {
@@ -483,6 +562,83 @@ fn script_post_probe(transport: &ScriptedCdp, state: Value) {
     transport.push_response("Runtime.callFunctionOn", state);
 }
 
+async fn run_scripted_reference_link_click(
+    reconciliation_failure: bool,
+) -> (
+    krometrail_core::InteractionRecord,
+    krometrail_core::InteractionRecord,
+) {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        json!({"nodes":[
+            {"nodeId":"root","ignored":false,"role":{"value":"document"},"childIds":["link"]},
+            {"nodeId":"link","ignored":false,"role":{"value":"link"},"name":{"value":"Stay here"},"backendDOMNodeId":42,"properties":[{"name":"focusable","value":{"value":true}}]}
+        ]}),
+    );
+    let evidence = Arc::new(support::RecordingEvidenceFake::default());
+    let session = managed_scripted_session(transport.clone(), evidence.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let snapshot = session
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("link snapshot result");
+    let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
+        panic!("link snapshot result")
+    };
+    let reference = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.role == "link")
+        .and_then(|node| node.reference)
+        .expect("link reference");
+    let link_state = actionability_state(json!({"tagName":"A"}));
+    // Pointer preparation resolves twice (before and after scroll), then the
+    // post-dispatch probe reads the same backing node.
+    transport.push_response("Page.getFrameTree", frame_tree());
+    script_reference_resolution(&transport, link_state.clone());
+    transport.push_response("Page.getFrameTree", frame_tree());
+    script_reference_resolution(&transport, link_state.clone());
+    script_post_probe(&transport, link_state);
+    observation_script(&transport);
+    if reconciliation_failure {
+        transport.push_failure("Target.getTargets", TransportError::CommandFailed);
+    }
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    InteractionLocator::Element(ElementLocator::Reference(reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("link click remains a dispatched interaction");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("link click result")
+    };
+    let persisted = evidence
+        .records()
+        .last()
+        .cloned()
+        .expect("persisted interaction record");
+    let record = result.record.clone();
+    session.stop().await.unwrap();
+    (record, persisted)
+}
+
 fn selector_click(target: krometrail_core::TargetId, css: &str) -> ClickRequest {
     ClickRequest::new(
         PageSelection::Target(target),
@@ -591,6 +747,76 @@ async fn reference_checkbox_click_with_unchanged_state_adds_an_expectation_note(
 }
 
 #[tokio::test]
+async fn reference_checkbox_click_with_checked_delta_has_no_expectation_note() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        json!({"nodes":[
+            {"nodeId":"root","ignored":false,"role":{"value":"document"},"childIds":["checkbox"]},
+            {"nodeId":"checkbox","ignored":false,"role":{"value":"checkbox"},"name":{"value":"Agree"},"backendDOMNodeId":42,"properties":[{"name":"focusable","value":{"value":true}}]}
+        ]}),
+    );
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let snapshot = session
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("snapshot result");
+    let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
+        panic!("snapshot result")
+    };
+    let reference = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.role == "checkbox")
+        .and_then(|node| node.reference)
+        .expect("checkbox reference");
+    let unchecked =
+        actionability_state(json!({"checked": false, "tagName": "INPUT", "inputType": "checkbox"}));
+    // Pointer preparation resolves twice (before and after scroll).
+    transport.push_response("Page.getFrameTree", frame_tree());
+    script_reference_resolution(&transport, unchecked.clone());
+    transport.push_response("Page.getFrameTree", frame_tree());
+    script_reference_resolution(&transport, unchecked);
+    script_post_probe(
+        &transport,
+        actionability_state(json!({"checked": true, "tagName": "INPUT", "inputType": "checkbox"})),
+    );
+    observation_script(&transport);
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    InteractionLocator::Element(ElementLocator::Reference(reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(
+        result.record.postcondition.target.checked.changed,
+        Some(true)
+    );
+    assert_eq!(result.record.expectation_note, None);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn same_route_click_postcondition_reports_no_url_change_or_lifecycle_signal() {
     let transport = ScriptedCdp::chrome();
     startup_script(&transport);
@@ -622,6 +848,8 @@ async fn same_route_click_postcondition_reports_no_url_change_or_lifecycle_signa
         postcondition.target.node,
         krometrail_core::TargetNodeOutcome::NotEvaluated
     );
+    assert_eq!(result.record.target_role, None);
+    assert_eq!(result.record.expectation_note, None);
     session.stop().await.unwrap();
 }
 
@@ -688,6 +916,8 @@ async fn fill_postcondition_reports_a_value_length_change() {
         postcondition.target.checked,
         krometrail_core::FlagObservation::unobserved()
     );
+    assert_eq!(result.record.target_role, None);
+    assert_eq!(result.record.expectation_note, None);
     session.stop().await.unwrap();
 }
 
@@ -3472,6 +3702,60 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
     session.stop().await.unwrap();
     cross_origin_fixture.shutdown();
     fixture.shutdown();
+}
+
+#[tokio::test]
+async fn reference_link_click_with_observed_empty_side_channels_persists_an_expectation_note() {
+    let (record, persisted) = run_scripted_reference_link_click(false).await;
+    assert_eq!(
+        record.postcondition.page.main_frame_navigation_observed,
+        Some(false)
+    );
+    let new_pages = record
+        .postcondition
+        .new_pages
+        .as_ref()
+        .expect("post-dispatch reconciliation attaches an empty page delta");
+    assert!(new_pages.pages.is_empty());
+    assert_eq!(new_pages.omitted, 0);
+    let downloads = record
+        .postcondition
+        .downloads
+        .as_ref()
+        .expect("managed download authority attaches an empty delta");
+    assert!(downloads.downloads.is_empty());
+    assert_eq!(downloads.omitted, 0);
+    assert_eq!(
+        record.expectation_note,
+        Some(krometrail_core::ExpectationNote::NavigationOutcomeUnobserved)
+    );
+    assert_eq!(persisted.expectation_note, record.expectation_note);
+    assert_eq!(
+        serde_json::to_value(persisted).unwrap()["expectation_note"],
+        "navigation_outcome_unobserved"
+    );
+}
+
+#[tokio::test]
+async fn reference_link_click_with_failed_reconciliation_suppresses_expectation_note() {
+    let (record, persisted) = run_scripted_reference_link_click(true).await;
+    assert_eq!(
+        record.postcondition.page.main_frame_navigation_observed,
+        Some(false)
+    );
+    assert!(record.postcondition.new_pages.is_none());
+    let downloads = record
+        .postcondition
+        .downloads
+        .as_ref()
+        .expect("managed download authority remains available");
+    assert!(downloads.downloads.is_empty());
+    assert_eq!(record.expectation_note, None);
+    assert_eq!(persisted.expectation_note, None);
+    assert_eq!(
+        serde_json::to_value(persisted).unwrap()["expectation_note"],
+        Value::Null
+    );
 }
 
 #[tokio::test]

@@ -5202,7 +5202,7 @@ mod tests {
 
     #[test]
     fn concise_interactions_omit_record_but_expanded_and_full_retain_it() {
-        let operation = || {
+        let operation = |checked_after| {
             let pre = krometrail_core::NodeStateFacts {
                 connected: true,
                 checked: Some(false),
@@ -5210,7 +5210,7 @@ mod tests {
             };
             let post = krometrail_core::NodeStateFacts {
                 connected: true,
-                checked: Some(false),
+                checked: Some(checked_after),
                 ..krometrail_core::NodeStateFacts::default()
             };
             let reference = NodeReference {
@@ -5248,7 +5248,7 @@ mod tests {
         };
         let concise = map_operation_result_with_capture(
             "click",
-            operation(),
+            operation(false),
             &[],
             ResponseRequest {
                 inline_images: Some(false),
@@ -5258,7 +5258,7 @@ mod tests {
         .unwrap();
         let expanded = map_operation_result_with_capture(
             "click",
-            operation(),
+            operation(false),
             &[],
             ResponseRequest {
                 detail: ResponseDetail::Expanded,
@@ -5268,7 +5268,7 @@ mod tests {
         .unwrap();
         let full = map_operation_result_with_capture(
             "click",
-            operation(),
+            operation(false),
             &[],
             ResponseRequest {
                 detail: ResponseDetail::Full,
@@ -5325,6 +5325,18 @@ mod tests {
             full.response.result["record"]["expectation_note"],
             "checked_state_unchanged"
         );
+
+        let no_note = map_operation_result_with_capture(
+            "click",
+            operation(true),
+            &[],
+            ResponseRequest {
+                inline_images: Some(false),
+                ..ResponseRequest::default()
+            },
+        )
+        .unwrap();
+        assert!(no_note.response.result.get("expectation_note").is_none());
     }
 
     #[test]

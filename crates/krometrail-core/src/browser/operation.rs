@@ -226,6 +226,8 @@ const EXPANDED_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[ExpectationChanne
 const VALUE_LENGTH_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[ExpectationChannel::ValueLength];
 const SELECTED_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[ExpectationChannel::Selected];
 
+// These declarations derive persisted interaction records; changing them requires
+// a CURRENT_SCHEMA_VERSION bump for the current record format.
 const CLICK_EXPECTATIONS: [InteractionExpectation; 4] = [
     InteractionExpectation {
         target: ExpectationTarget::Role(ExpectationTargetRole::Link),

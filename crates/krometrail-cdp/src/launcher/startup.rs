@@ -99,6 +99,22 @@ pub struct LaunchedChrome {
 }
 
 impl LaunchedChrome {
+    /// Constructs managed launch ownership for deterministic adapter tests. The caller supplies
+    /// the already validated endpoint and owned guards; production launch paths use `launch_owned`.
+    #[doc(hidden)]
+    pub fn from_test_parts(
+        endpoint: LocalCdpEndpoint,
+        profile: ProfileLease,
+        process: ManagedChromeProcess,
+    ) -> Self {
+        Self {
+            endpoint,
+            profile,
+            process,
+            shutdown_timeout: Duration::from_secs(1),
+        }
+    }
+
     /// Transfers the three owned resources to a session supervisor without running the launch
     /// guard's emergency Drop cleanup. The caller becomes responsible for their shutdown order.
     pub fn into_parts(self) -> (LocalCdpEndpoint, ProfileLease, ManagedChromeProcess) {

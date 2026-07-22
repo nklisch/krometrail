@@ -2,10 +2,10 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-// Version 11: persisted interaction records carry target-role provenance and
-// the registry-derived expectation note; older rows decode incompatibly and
-// must be cleared with the incompatible cache.
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 11;
+// Version 12: expectation-channel attempt demotion changes registry-derived
+// interaction-note decoding; older rows are incompatible and must be cleared
+// with the incompatible cache.
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 12;
 
 // `created_unix_ms` on `segments` and `artifacts` is the age-out clock.
 //
@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn incompatible_versions_are_classified_without_mutation() {
-        for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, u32::MAX] {
+        for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, u32::MAX] {
             let mut connection = Connection::open_in_memory().unwrap();
             connection
                 .execute("CREATE TABLE retained(value TEXT) STRICT", [])

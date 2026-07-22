@@ -973,6 +973,11 @@ request_wire!(
     InteractionRecordWire,
     |w: InteractionRecordWire| {
         let serialized_note = w.expectation_note;
+        if w.target_role.is_some() && w.locator.kind != LocatorKind::Reference {
+            return Err(invalid(
+                "interaction target role requires a reference locator",
+            ));
+        }
         let record = Self::new(
             w.id,
             w.context,
@@ -1131,7 +1136,9 @@ impl BrowserActionRequest for HandleDialogRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SnapshotGeneration, SnapshotNodeId, TargetId};
+    use crate::{
+        NodeStateFacts, SessionId, SideChannelSignals, SnapshotGeneration, SnapshotNodeId, TargetId,
+    };
     use uuid::Uuid;
     fn target() -> crate::TargetId {
         TargetId::from_uuid(Uuid::from_u128(1))
@@ -1142,6 +1149,48 @@ mod tests {
             generation: SnapshotGeneration::new(1).unwrap(),
             node_id: SnapshotNodeId::new(1).unwrap(),
         }
+    }
+
+    fn checkbox_record(checked_after: bool) -> InteractionRecord {
+        let pre = NodeStateFacts {
+            connected: true,
+            checked: Some(false),
+            ..NodeStateFacts::default()
+        };
+        let post = NodeStateFacts {
+            connected: true,
+            checked: Some(checked_after),
+            ..NodeStateFacts::default()
+        };
+        let locator = InteractionLocator::Element(ElementLocator::Reference(reference()));
+        InteractionRecord::new(
+            InteractionId::from_uuid(Uuid::from_u128(2)),
+            ObservationContext::new(
+                SessionId::from_uuid(Uuid::from_u128(3)),
+                target(),
+                1,
+                SessionTime::from_nanos(10),
+                SessionTime::from_nanos(20),
+            )
+            .unwrap(),
+            SessionTime::from_nanos(12),
+            SessionTime::from_nanos(15),
+            BrowserOperationKind::Click,
+            SanitizedParameters::new(json!({"button":"left"})).unwrap(),
+            LocatorSummary::from_locator(Some(&locator)),
+            Some(crate::ExpectationTargetRole::Checkbox),
+            InteractionOutcome::Dispatched,
+            InteractionPostcondition::from_facts(
+                Some(&pre),
+                Some(&post),
+                Some(false),
+                false,
+                Some(false),
+                SideChannelSignals::unobserved(),
+            ),
+            None,
+        )
+        .unwrap()
     }
     #[test]
     fn key_chords_are_closed_and_round_trip() {
@@ -1271,5 +1320,35 @@ mod tests {
         assert!(encoded.contains("upload.txt"));
         assert!(!encoded.contains("private"));
         assert!(!encoded.contains("secret"));
+    }
+
+    #[test]
+    fn interaction_wire_rejects_derived_note_mismatches() {
+        let mut absent_note = serde_json::to_value(checkbox_record(true)).unwrap();
+        absent_note["expectation_note"] = json!("checked_state_unchanged");
+        let error = serde_json::from_value::<InteractionRecord>(absent_note)
+            .expect_err("a note cannot be inserted when the facts derive none");
+        assert!(error.to_string().contains(
+            "interaction expectation note does not match its action, role, or postcondition facts"
+        ));
+
+        let mut wrong_note = serde_json::to_value(checkbox_record(false)).unwrap();
+        wrong_note["expectation_note"] = json!("value_length_unchanged");
+        let error = serde_json::from_value::<InteractionRecord>(wrong_note)
+            .expect_err("a different derived note kind cannot be retained");
+        assert!(error.to_string().contains(
+            "interaction expectation note does not match its action, role, or postcondition facts"
+        ));
+
+        let mut role_on_target_wide = serde_json::to_value(checkbox_record(false)).unwrap();
+        role_on_target_wide["locator"]["kind"] = json!("target_wide");
+        role_on_target_wide["locator"]["reference"] = serde_json::Value::Null;
+        let error = serde_json::from_value::<InteractionRecord>(role_on_target_wide)
+            .expect_err("target roles require reference locator summaries");
+        assert!(
+            error
+                .to_string()
+                .contains("interaction target role requires a reference locator")
+        );
     }
 }
