@@ -203,7 +203,11 @@ fn map_error(error: CdpError) -> TransportError {
         | CdpError::HttpStatus(_)
         | CdpError::InvalidDiscoveryResponse(_) => TransportError::ConnectFailed,
         CdpError::Protocol { .. } | CdpError::Serialization(_) => TransportError::Protocol,
-        CdpError::Timeout => TransportError::CommandFailed,
+        // A timeout is not a command failure: the browser never answered, so
+        // the command may still be pending (e.g. behind an unresolved
+        // permission decision). Collapsing it into CommandFailed hid the #8
+        // clipboard root cause.
+        CdpError::Timeout => TransportError::Timeout,
         _ => TransportError::CommandFailed,
     }
 }
@@ -218,5 +222,14 @@ mod tests {
     fn adapter_is_send_sync_and_does_not_advertise_reconnect() {
         assert_send_sync::<CdpkitTransport>();
         assert_send_sync::<CdpkitTransportFactory>();
+    }
+
+    /// The #8 root-cause fence: a cdpkit command timeout maps to the distinct
+    /// timeout category, never to the answered-rejection CommandFailed class.
+    #[test]
+    fn command_timeout_keeps_its_own_transport_category() {
+        assert_eq!(map_error(CdpError::Timeout), TransportError::Timeout);
+        assert!(!TransportError::Timeout.is_retryable());
+        assert_ne!(map_error(CdpError::Timeout), TransportError::CommandFailed);
     }
 }

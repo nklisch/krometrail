@@ -94,7 +94,9 @@ fn project_result(
             SanitizedParameters::new(serde_json::json!({"utf8_bytes": value.utf8_bytes}))?,
             LocatorSummary::from_locator(None),
             InteractionOutcome::Dispatched,
-            InteractionPostcondition::unobserved(),
+            // A confirmed fact, not an inference: this projection only runs
+            // after the in-page bridge returned true for the write.
+            InteractionPostcondition::clipboard_confirmed(),
             None,
         )?;
         return Ok(Some(EvidenceProjection {
@@ -337,6 +339,13 @@ mod tests {
         assert_eq!(
             record.sanitized_parameters.as_json(),
             &serde_json::json!({"utf8_bytes":17})
+        );
+        // The bridge-confirmed write is the one recorded clipboard fact; the
+        // record still never contains clipboard text.
+        assert_eq!(record.postcondition.clipboard_write_confirmed, Some(true));
+        assert_eq!(
+            record.postcondition.target.node,
+            krometrail_core::TargetNodeOutcome::NotEvaluated
         );
         assert!(
             !serde_json::to_string(&record)

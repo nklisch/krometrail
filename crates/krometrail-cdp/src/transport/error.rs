@@ -15,6 +15,13 @@ pub enum TransportError {
     CommandFailed,
     #[error("transport protocol response is invalid")]
     Protocol,
+    /// The command was sent but no response arrived within the command
+    /// deadline. Distinct from [`Self::CommandFailed`] (an answered
+    /// rejection): the browser may still be working on — or holding — the
+    /// command, e.g. behind an unresolved permission decision. Not
+    /// transport-retryable: the connection itself is healthy.
+    #[error("transport command timed out")]
+    Timeout,
     #[error("transport disconnected")]
     Disconnected,
     #[error("transport event subscription closed")]

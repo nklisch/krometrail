@@ -176,20 +176,45 @@ fn clipboard_transport_error(
     }
 }
 
+/// Classifies a clipboard bridge dispatch death by what is actually knowable
+/// from the transport outcome. A command timeout means the in-page clipboard
+/// promise never settled — consistent with a pending/suppressed permission
+/// decision or an OS-unfocused window — and is named as such rather than
+/// blamed on the transport (the #8 root cause). A browser command rejection
+/// means the document or isolated world died mid-flight.
 fn clipboard_dispatch_error(error: TransportError, bound: &BoundTarget) -> KrometrailError {
-    let transport_class = transport_error_class(&error);
-    let error = transport_error(error, ErrorCode::InteractionFailed, bound.target_id);
-    if error.code == ErrorCode::BrowserDisconnected {
-        error
-    } else {
-        clipboard_failure(
+    match error {
+        TransportError::Timeout => clipboard_failure(
             ErrorCode::InteractionFailed,
             bound,
-            format!(
-                "clipboard script dispatch failed before the page could respond (transport error: {transport_class})"
-            ),
-            "focus the visible page, allow clipboard access if prompted, and retry",
-        )
+            "clipboard operation did not settle before the command deadline — the browser may be \
+             holding an unresolved clipboard permission decision or the window is not focused at \
+             the OS level (class: command_timeout)",
+            "focus the managed browser window at the OS level, resolve any pending clipboard \
+             permission prompt, and retry",
+        ),
+        TransportError::Protocol => clipboard_failure(
+            ErrorCode::StaleReference,
+            bound,
+            "clipboard document or isolated world was destroyed while the operation was in flight",
+            "re-inspect the page and retry the explicit clipboard operation",
+        ),
+        error => {
+            let transport_class = transport_error_class(&error);
+            let mapped = transport_error(error, ErrorCode::InteractionFailed, bound.target_id);
+            if mapped.code == ErrorCode::BrowserDisconnected {
+                mapped
+            } else {
+                clipboard_failure(
+                    ErrorCode::InteractionFailed,
+                    bound,
+                    format!(
+                        "clipboard script dispatch failed before the page could respond (transport error: {transport_class})"
+                    ),
+                    "focus the visible page, allow clipboard access if prompted, and retry",
+                )
+            }
+        }
     }
 }
 
@@ -199,6 +224,7 @@ fn transport_error_class(error: &TransportError) -> &'static str {
         TransportError::ConnectFailed => "connect_failed",
         TransportError::CommandFailed => "command_failed",
         TransportError::Protocol => "protocol",
+        TransportError::Timeout => "command_timeout",
         TransportError::Disconnected => "disconnected",
         TransportError::SubscriptionClosed => "subscription_closed",
         TransportError::Closed => "closed",
@@ -445,6 +471,39 @@ mod tests {
         assert!(error.recovery.is_some());
         let error = clipboard_dispatch_error(TransportError::Disconnected, &bound);
         assert_eq!(error.code, ErrorCode::BrowserDisconnected);
+    }
+
+    /// The #8 classification fence: a command timeout names the unsettled
+    /// clipboard operation and the pending-permission/OS-focus possibility
+    /// instead of claiming a transport error, and a browser command
+    /// rejection classifies as a stale document/world.
+    #[test]
+    fn timeout_and_rejection_dispatch_deaths_classify_what_is_knowable() {
+        let bound = bound(TargetVisibility::Visible);
+
+        let timeout = clipboard_dispatch_error(TransportError::Timeout, &bound);
+        assert_eq!(timeout.code, ErrorCode::InteractionFailed);
+        assert!(timeout.message.as_str().contains("did not settle"));
+        assert!(timeout.message.as_str().contains("permission decision"));
+        assert!(
+            timeout
+                .message
+                .as_str()
+                .contains("not focused at the OS level")
+        );
+        assert!(timeout.message.as_str().contains("command_timeout"));
+        assert!(!timeout.message.as_str().contains("transport error:"));
+        assert!(!timeout.message.as_str().contains("script dispatch failed"));
+        assert!(
+            timeout
+                .recovery
+                .as_ref()
+                .is_some_and(|recovery| recovery.as_str().contains("OS level"))
+        );
+
+        let rejected = clipboard_dispatch_error(TransportError::Protocol, &bound);
+        assert_eq!(rejected.code, ErrorCode::StaleReference);
+        assert!(rejected.message.as_str().contains("destroyed"));
     }
 
     #[tokio::test]
