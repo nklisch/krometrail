@@ -1,7 +1,7 @@
 ---
 id: feature-instance-ownership-lifetime
 kind: feature
-stage: review
+stage: done
 tags: [storage, security]
 parent: null
 depends_on: []

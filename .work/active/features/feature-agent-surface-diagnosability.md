@@ -1,7 +1,7 @@
 ---
 id: feature-agent-surface-diagnosability
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
