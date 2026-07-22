@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-scale-compact-responses
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, visual, storage]
 parent: null
 depends_on: []
@@ -424,3 +424,43 @@ fn bounded_manifest_value(
 - **Adversarial epoch counts**: per-frame geometry churn yields epochs ==
   frames in the domain vec; presentation is bounded with exact omission counts,
   and the O(n) pass adds no measurable cost at 5k frames.
+
+## Implementation notes
+
+All three child stories implemented in dependency order and closed
+2026-07-21; the full gate (fmt, wire-enum schema check, check, test, clippy
+`-D warnings`) is green after each story and at feature close.
+
+- **Unit 1 (`…-not-yet-elapsed-tail`)**: `RetentionWarning::
+  RequestedEndNotYetElapsed` emitted additively by the resolver from a
+  guarded live-session current time (`live_session_now`: live lifecycle, no
+  `ended_at`, normalizable origin, `session_now >=` newest retained frame
+  time; emission additionally requires `session_now >= resolved.end()` and a
+  future requested end). `TemporalRangeResolver` and `RecordingStore` take
+  an injected `Arc<dyn MonotonicClock>` — no default clock in the store;
+  the composition root passes the process clock and every test injects a
+  fixed clock. Bundle header names the tail "not yet elapsed … not evidence
+  loss". SPEC rolled forward. The design's optional exact-failure-message
+  refinement was skipped as a second emission path for the same signal
+  (marked optional in the design).
+- **Unit 2 (`…-epoch-capture-summary`)**: `CapturedFrame::same_visual_epoch`
+  is the single epoch predicate authority (artifact `same_epoch` delegates);
+  `CaptureQuality.epochs: Vec<EpochSummary>` computed in one metadata-only
+  O(n) pass. Domain vector exact; presentation bounded by Unit 3.
+- **Unit 3 (`…-bounded-projection`)**: `bounded_resolved_range` is the
+  single per-tier range projection (counts-only concise; bounded event ids
+  + drill-down at expanded; 256-frame head + exact omitted count + paging
+  offset at full); generation/bundle/context/video/pin presentations all
+  bound identifier enumeration with exact accounting; full inlines bounded
+  manifests while canonical manifest resources stay complete. The two
+  receiver-accepted behavior reductions are implemented as designed:
+  bounded `full` (SPEC/ARCHITECTURE/VISUAL-EVIDENCE + plugin skill rolled
+  forward in-stride) and the retirement of the success-path
+  `resource_limit_exceeded` sampling warning in favor of structured
+  sampling accounting (`sampling_mode` + analyzed/source counts on
+  `BundleArtifactHandle`); `Exhaustive` over-limit keeps its hard failure.
+- **Simplification outcome**: uniform-sample degradation acquisition was
+  kept (statistical-bias rationale in the design decision); what was retired
+  is the misreporting warning. `CompactResolvedRange` is now the concise
+  tier of the single projection entry point rather than a parallel path.
+- Commits: `bdc5a59c` (Unit 1), `83e8e725` (Unit 2), `86ef49f4` (Unit 3).
