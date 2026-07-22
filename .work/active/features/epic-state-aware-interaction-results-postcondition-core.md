@@ -59,6 +59,29 @@ completeness (the visual-completeness feature).
 - `docs/ARCHITECTURE.md` — Interaction Execution, MCP Boundary
 - GitHub issue #14, finding #1 (correlation `a7ee197f-01b8-470a-af45-481b978f6445`)
 
+## Review adjudication (standard weight, cross-model gpt-5.6-sol, one pass)
+
+Five areas verified clean (delta assembly, passive-subscription wait
+neutrality, privacy discipline, v9 cache clearing, projection shape). Four
+findings, all accepted; closure is fix-verification only:
+
+1. **False detachment claim** — probe failure degrades to `DetachedOrReplaced`
+   instead of a typed unobserved outcome. Fix routed to the in-flight
+   side-channel stride (single-writer on the affected files; shape change
+   rides its v10 schema bump).
+2. **Unfenced passive lifecycle signal** — cross-interaction leakage possible.
+   Fix folded into the side-channel signal upgrade (interval fencing +
+   identity), which replaces this surface.
+3. **Serial probe budget** — pre-URL capped at 250 ms, post-probe made
+   concurrent with observation (routed to the same stride). The pre-existing
+   residual (batch deadline can drop a dispatched step's record) is parked as
+   `idea-batch-timeout-preserves-dispatched-record`.
+4. **Future-schema test seeds the current version** — made version-agnostic in
+   the same stride as the v10 bump.
+
+This feature stays at `review` until the side-channel stride lands the fixes
+and the closure verification confirms them.
+
 ## Design decisions
 
 - **Assembly lives in the CDP control path, types in core**: the projection
