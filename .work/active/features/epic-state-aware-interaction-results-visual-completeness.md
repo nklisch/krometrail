@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results-visual-completeness
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser, visual]
 parent: epic-state-aware-interaction-results
 depends_on: []
@@ -394,3 +394,9 @@ viewport lane) has no test — add one scripted navigate/reload marker test;
 - Added a scripted navigation test covering the `pages.rs` attach site and
   exactly one warning on an available screenshot after a compositor failure.
 - Added the requested `#[must_use]` annotation to `await_compositor_ready`.
+
+## Review closure
+
+Closure verified 2026-07-22: all accepted findings landed in commit d7b04559
+(full gate + docs build + real-Chrome qualifications green) and were spot-
+verified in-tree. Review complete.

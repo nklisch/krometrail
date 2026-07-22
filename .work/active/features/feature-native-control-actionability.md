@@ -1,7 +1,7 @@
 ---
 id: feature-native-control-actionability
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -394,3 +394,9 @@ is fix-verification only):
   `ResolvedNode.temporal_input` threading.
 - Editable kind-miss guidance is now date/time-specific only for temporal
   probes; other misses retain generic not-editable guidance.
+
+## Review closure
+
+Closure verified 2026-07-22: all accepted findings landed in commit d7b04559
+(full gate + docs build + real-Chrome qualifications green) and were spot-
+verified in-tree. Review complete.

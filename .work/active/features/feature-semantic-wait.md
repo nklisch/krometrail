@@ -1,7 +1,7 @@
 ---
 id: feature-semantic-wait
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -353,3 +353,9 @@ polls were inconclusive — pre-existing shape the design accepted.
 - Documented the 100 ms semantic poll floor in the wire comment and plugin
   guidance, and changed schema-test repair to clamp existing intervals rather
   than overwrite values above the floor.
+
+## Review closure
+
+Closure verified 2026-07-22: all accepted findings landed in commit d7b04559
+(full gate + docs build + real-Chrome qualifications green) and were spot-
+verified in-tree. Review complete.

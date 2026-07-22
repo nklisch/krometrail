@@ -1,7 +1,7 @@
 ---
 id: feature-exact-query-native-control-miss
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser, bug]
 parent: null
 depends_on: []
@@ -293,3 +293,9 @@ batch; closure is fix-verification only.
   qualification loop and now unconditionally pins `NoMatch` for both exact
   role/name and exact-text forms, preserving the intentional decorated-name
   boundary.
+
+## Review closure
+
+Closure verified 2026-07-22: all accepted findings landed in commit d7b04559
+(full gate + docs build + real-Chrome qualifications green) and were spot-
+verified in-tree. Review complete.
