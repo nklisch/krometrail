@@ -460,6 +460,19 @@ fn script_selector_resolution(transport: &ScriptedCdp, state: Value) {
     );
 }
 
+fn script_reference_resolution(transport: &ScriptedCdp, state: Value) {
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response(
+        "DOM.resolveNode",
+        json!({"object":{"objectId":"private-object"}}),
+    );
+    transport.push_response("Runtime.callFunctionOn", state);
+    transport.push_response(
+        "DOM.getBoxModel",
+        json!({"model":{"border":[120.0,80.0,220.0,80.0,220.0,120.0,120.0,120.0]}}),
+    );
+}
+
 /// The post-action state re-probe of the pre-resolved backing node.
 fn script_post_probe(transport: &ScriptedCdp, state: Value) {
     transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
@@ -483,25 +496,60 @@ fn selector_click(target: krometrail_core::TargetId, css: &str) -> ClickRequest 
 }
 
 #[tokio::test]
-async fn checkbox_click_postcondition_reports_the_checked_delta() {
+async fn reference_checkbox_click_with_unchanged_state_adds_an_expectation_note() {
     let transport = ScriptedCdp::chrome();
     startup_script(&transport);
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        json!({"nodes":[
+            {"nodeId":"root","ignored":false,"role":{"value":"document"},"childIds":["checkbox"]},
+            {"nodeId":"checkbox","ignored":false,"role":{"value":"checkbox"},"name":{"value":"Agree"},"backendDOMNodeId":42,"properties":[{"name":"focusable","value":{"value":true}}]}
+        ]}),
+    );
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let snapshot = session
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("snapshot result");
+    let BrowserOperationResult::SnapshotPage(snapshot) = snapshot else {
+        panic!("snapshot result")
+    };
+    let reference = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.role == "checkbox")
+        .and_then(|node| node.reference)
+        .expect("checkbox reference");
     let unchecked =
         actionability_state(json!({"checked": false, "tagName": "INPUT", "inputType": "checkbox"}));
     // Pointer preparation resolves twice (before and after scroll).
-    script_selector_resolution(&transport, unchecked.clone());
-    script_selector_resolution(&transport, unchecked);
+    transport.push_response("Page.getFrameTree", frame_tree());
+    script_reference_resolution(&transport, unchecked.clone());
+    transport.push_response("Page.getFrameTree", frame_tree());
+    script_reference_resolution(&transport, unchecked);
     script_post_probe(
         &transport,
-        actionability_state(json!({"checked": true, "tagName": "INPUT", "inputType": "checkbox"})),
+        actionability_state(json!({"checked": false, "tagName": "INPUT", "inputType": "checkbox"})),
     );
     observation_script(&transport);
-    let session = scripted_session(transport.clone()).await;
-    let target = session.status().await.unwrap().pages[0].target.target.id();
-
     let result = session
         .execute(
-            BrowserOperationRequest::Click(selector_click(target, "#checkbox")),
+            BrowserOperationRequest::Click(
+                ClickRequest::new(
+                    PageSelection::Target(target),
+                    InteractionLocator::Element(ElementLocator::Reference(reference)),
+                    MouseButton::Left,
+                    Modifiers::default(),
+                    1,
+                    false,
+                )
+                .unwrap(),
+            ),
             krometrail_core::BrowserOperationContext::default(),
         )
         .await
@@ -515,8 +563,16 @@ async fn checkbox_click_postcondition_reports_the_checked_delta() {
         krometrail_core::TargetNodeOutcome::Present
     );
     assert_eq!(postcondition.target.checked.before, Some(false));
-    assert_eq!(postcondition.target.checked.after, Some(true));
-    assert_eq!(postcondition.target.checked.changed, Some(true));
+    assert_eq!(postcondition.target.checked.after, Some(false));
+    assert_eq!(postcondition.target.checked.changed, Some(false));
+    assert_eq!(
+        result.record.target_role,
+        Some(krometrail_core::ExpectationTargetRole::Checkbox)
+    );
+    assert_eq!(
+        result.record.expectation_note,
+        Some(krometrail_core::ExpectationNote::CheckedStateUnchanged)
+    );
     assert_eq!(postcondition.target.value_length_changed, None);
     assert_eq!(postcondition.page.url_changed, Some(false));
     assert!(!postcondition.page.navigation_lifecycle_observed);
@@ -1509,6 +1565,8 @@ async fn opt_in_real_chrome_checkbox_click_reports_a_checked_postcondition_delta
     assert_eq!(postcondition.target.checked.before, Some(false));
     assert_eq!(postcondition.target.checked.after, Some(true));
     assert_eq!(postcondition.target.checked.changed, Some(true));
+    assert_eq!(result.record.target_role, None);
+    assert_eq!(result.record.expectation_note, None);
     assert_eq!(postcondition.page.url_changed, Some(false));
     assert_eq!(
         evaluate(

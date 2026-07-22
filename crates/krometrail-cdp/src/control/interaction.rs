@@ -455,6 +455,10 @@ impl PageControl {
             started_at,
             live_observation_time,
         )?;
+        let expectation_role = match &resolved {
+            ResolvedTarget::Element { node, .. } => node.expectation_role,
+            ResolvedTarget::Coordinate { .. } | ResolvedTarget::TargetWide => None,
+        };
         let record = InteractionRecord::new(
             interaction_id,
             context,
@@ -463,6 +467,7 @@ impl PageControl {
             plan.kind,
             plan.sanitized,
             LocatorSummary::from_locator(plan.locator.as_ref()),
+            expectation_role,
             InteractionOutcome::Dispatched,
             postcondition,
             parent_batch,

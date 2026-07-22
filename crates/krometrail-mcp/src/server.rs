@@ -2115,6 +2115,7 @@ mod tests {
             BrowserOperationKind::Click,
             request.sanitize(),
             LocatorSummary::from_locator(request.locator()),
+            None,
             InteractionOutcome::Dispatched,
             krometrail_core::InteractionPostcondition::unobserved(),
             None,

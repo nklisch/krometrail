@@ -7,8 +7,9 @@ use super::{
     ActivatePageRequest, BatchRequest, BatchResult, CancelDownloadRequest, CancelDownloadResult,
     ClickRequest, ClipboardRead, ClipboardWriteResult, ClosePageRequest, CompletionKind,
     CreatePageRequest, DownloadInventory, DragRequest, EncodedScreenshot, EvaluationResult,
-    FillRequest, GoBackRequest, GoForwardRequest, HandleDialogRequest, HoverRequest,
-    InspectPageRequest, InteractionResult, ListDownloadsRequest, ListFramesRequest,
+    ExpectationChannel, ExpectationNote, ExpectationTarget, ExpectationTargetRole, FillRequest,
+    GoBackRequest, GoForwardRequest, HandleDialogRequest, HoverRequest, InspectPageRequest,
+    InteractionExpectation, InteractionResult, ListDownloadsRequest, ListFramesRequest,
     ListPageAssetsRequest, ListPageContextsRequest, ListPagesRequest, LiveObservation,
     LiveObservationRequest, NavigatePageRequest, PageAssetInventory, PageContextInventory,
     PageFrameInventory, PageOperationResult, PageSelection, PageSnapshot, PageState, PageStatus,
@@ -215,12 +216,56 @@ macro_rules! define_browser_operations {
     };
 }
 
+const LINK_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[
+    ExpectationChannel::Navigation,
+    ExpectationChannel::NewPage,
+    ExpectationChannel::Download,
+];
+const CHECKED_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[ExpectationChannel::Checked];
+const EXPANDED_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[ExpectationChannel::Expanded];
+const VALUE_LENGTH_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[ExpectationChannel::ValueLength];
+const SELECTED_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[ExpectationChannel::Selected];
+
+const CLICK_EXPECTATIONS: [InteractionExpectation; 4] = [
+    InteractionExpectation {
+        target: ExpectationTarget::Role(ExpectationTargetRole::Link),
+        required_channels: LINK_EXPECTATION_CHANNELS,
+        note: ExpectationNote::NavigationOutcomeUnobserved,
+    },
+    InteractionExpectation {
+        target: ExpectationTarget::Role(ExpectationTargetRole::Checkbox),
+        required_channels: CHECKED_EXPECTATION_CHANNELS,
+        note: ExpectationNote::CheckedStateUnchanged,
+    },
+    InteractionExpectation {
+        target: ExpectationTarget::Role(ExpectationTargetRole::Radio),
+        required_channels: CHECKED_EXPECTATION_CHANNELS,
+        note: ExpectationNote::CheckedStateUnchanged,
+    },
+    InteractionExpectation {
+        target: ExpectationTarget::AnyObservedRole,
+        required_channels: EXPANDED_EXPECTATION_CHANNELS,
+        note: ExpectationNote::ExpandedStateUnchanged,
+    },
+];
+const FILL_EXPECTATIONS: [InteractionExpectation; 1] = [InteractionExpectation {
+    target: ExpectationTarget::AnyObservedRole,
+    required_channels: VALUE_LENGTH_EXPECTATION_CHANNELS,
+    note: ExpectationNote::ValueLengthUnchanged,
+}];
+const SELECT_OPTION_EXPECTATIONS: [InteractionExpectation; 1] = [InteractionExpectation {
+    target: ExpectationTarget::AnyObservedRole,
+    required_channels: SELECTED_EXPECTATION_CHANNELS,
+    note: ExpectationNote::SelectedStateUnchanged,
+}];
+
 const ACTION_CLICK: ActionDefinition = ActionDefinition {
     category: ActionCategory::Pointer,
     actionability: ActionabilityRequirement::Actionable,
     locator: AcceptedLocator::ElementOrCoordinate,
     completion: CompletionKind::Settled,
     display_name: "Click",
+    expectations: &CLICK_EXPECTATIONS,
 };
 const ACTION_FILL: ActionDefinition = ActionDefinition {
     category: ActionCategory::Form,
@@ -228,6 +273,7 @@ const ACTION_FILL: ActionDefinition = ActionDefinition {
     locator: AcceptedLocator::Element,
     completion: CompletionKind::Settled,
     display_name: "Fill",
+    expectations: &FILL_EXPECTATIONS,
 };
 const ACTION_PRESS_KEYS: ActionDefinition = ActionDefinition {
     category: ActionCategory::Keyboard,
@@ -235,6 +281,7 @@ const ACTION_PRESS_KEYS: ActionDefinition = ActionDefinition {
     locator: AcceptedLocator::OptionalElement,
     completion: CompletionKind::Settled,
     display_name: "Press keys",
+    expectations: &[],
 };
 const ACTION_SELECT: ActionDefinition = ActionDefinition {
     category: ActionCategory::Form,
@@ -242,6 +289,7 @@ const ACTION_SELECT: ActionDefinition = ActionDefinition {
     locator: AcceptedLocator::Element,
     completion: CompletionKind::Settled,
     display_name: "Select option",
+    expectations: &SELECT_OPTION_EXPECTATIONS,
 };
 const ACTION_HOVER: ActionDefinition = ActionDefinition {
     category: ActionCategory::Pointer,
@@ -249,6 +297,7 @@ const ACTION_HOVER: ActionDefinition = ActionDefinition {
     locator: AcceptedLocator::ElementOrCoordinate,
     completion: CompletionKind::Settled,
     display_name: "Hover",
+    expectations: &[],
 };
 const ACTION_DRAG: ActionDefinition = ActionDefinition {
     category: ActionCategory::DragDrop,
@@ -256,6 +305,7 @@ const ACTION_DRAG: ActionDefinition = ActionDefinition {
     locator: AcceptedLocator::ElementOrCoordinate,
     completion: CompletionKind::Settled,
     display_name: "Drag",
+    expectations: &[],
 };
 const ACTION_SCROLL: ActionDefinition = ActionDefinition {
     category: ActionCategory::Scroll,
@@ -263,6 +313,7 @@ const ACTION_SCROLL: ActionDefinition = ActionDefinition {
     locator: AcceptedLocator::OptionalElement,
     completion: CompletionKind::InputAcknowledged,
     display_name: "Scroll",
+    expectations: &[],
 };
 const ACTION_UPLOAD: ActionDefinition = ActionDefinition {
     category: ActionCategory::FileDialog,
@@ -270,6 +321,7 @@ const ACTION_UPLOAD: ActionDefinition = ActionDefinition {
     locator: AcceptedLocator::Element,
     completion: CompletionKind::InputAcknowledged,
     display_name: "Upload files",
+    expectations: &[],
 };
 const ACTION_DIALOG: ActionDefinition = ActionDefinition {
     category: ActionCategory::Dialog,
@@ -279,6 +331,7 @@ const ACTION_DIALOG: ActionDefinition = ActionDefinition {
     // resumes. A renderer task checkpoint is required before the live observation is trustworthy.
     completion: CompletionKind::Settled,
     display_name: "Handle dialog",
+    expectations: &[],
 };
 
 define_browser_operations! {

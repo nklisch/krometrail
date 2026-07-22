@@ -109,6 +109,269 @@ pub struct TargetPostcondition {
     pub value_length_changed: Option<bool>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectationTargetRole {
+    Link,
+    Checkbox,
+    Radio,
+    Other,
+}
+
+impl ExpectationTargetRole {
+    pub fn from_accessibility_role(role: &str) -> Self {
+        if role.eq_ignore_ascii_case("link") {
+            Self::Link
+        } else if role.eq_ignore_ascii_case("checkbox") {
+            Self::Checkbox
+        } else if role.eq_ignore_ascii_case("radio") {
+            Self::Radio
+        } else {
+            Self::Other
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpectationTarget {
+    Role(ExpectationTargetRole),
+    AnyObservedRole,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpectationChannel {
+    Navigation,
+    NewPage,
+    Download,
+    Checked,
+    Expanded,
+    ValueLength,
+    Selected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InteractionExpectation {
+    pub target: ExpectationTarget,
+    pub required_channels: &'static [ExpectationChannel],
+    pub note: ExpectationNote,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectationNote {
+    NavigationOutcomeUnobserved,
+    CheckedStateUnchanged,
+    ExpandedStateUnchanged,
+    ValueLengthUnchanged,
+    SelectedStateUnchanged,
+}
+
+impl ExpectationNote {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::NavigationOutcomeUnobserved => {
+                "No navigation, new page, or download was observed by the observation point."
+            }
+            Self::CheckedStateUnchanged => {
+                "The target's checked state was unchanged by the observation point."
+            }
+            Self::ExpandedStateUnchanged => {
+                "The target's expanded state was unchanged by the observation point."
+            }
+            Self::ValueLengthUnchanged => {
+                "The target's value length was unchanged by the observation point."
+            }
+            Self::SelectedStateUnchanged => {
+                "The target's selected state was unchanged by the observation point."
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExpectationEvaluation {
+    Held,
+    DidNotHold(ExpectationNote),
+    NotEvaluated,
+    NotApplicable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ObservationSource {
+    MainFrameNavigationSignal,
+    UrlDelta,
+    TargetStateProbe,
+    PageCursorReconciliation,
+    DownloadCursorAuthority,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ChannelObservation {
+    Changed { observed_through: ObservationSource },
+    Unchanged { observed_through: ObservationSource },
+    Unavailable,
+    NotApplicable,
+}
+
+const ALL_EXPECTATION_CHANNELS: &[ExpectationChannel] = &[
+    ExpectationChannel::Navigation,
+    ExpectationChannel::NewPage,
+    ExpectationChannel::Download,
+    ExpectationChannel::Checked,
+    ExpectationChannel::Expanded,
+    ExpectationChannel::ValueLength,
+    ExpectationChannel::Selected,
+];
+
+fn target_channel_observation(
+    node: TargetNodeOutcome,
+    changed: Option<bool>,
+) -> ChannelObservation {
+    if node != TargetNodeOutcome::Present {
+        return ChannelObservation::Unavailable;
+    }
+    match changed {
+        Some(true) => ChannelObservation::Changed {
+            observed_through: ObservationSource::TargetStateProbe,
+        },
+        Some(false) => ChannelObservation::Unchanged {
+            observed_through: ObservationSource::TargetStateProbe,
+        },
+        None => ChannelObservation::Unavailable,
+    }
+}
+
+fn channel_observation(
+    channel: ExpectationChannel,
+    facts: &InteractionPostcondition,
+) -> ChannelObservation {
+    match channel {
+        ExpectationChannel::Navigation => {
+            if facts.page.main_frame_navigation_observed == Some(true)
+                || facts.page.url_changed == Some(true)
+            {
+                ChannelObservation::Changed {
+                    observed_through: if facts.page.main_frame_navigation_observed == Some(true) {
+                        ObservationSource::MainFrameNavigationSignal
+                    } else {
+                        ObservationSource::UrlDelta
+                    },
+                }
+            } else if facts.page.main_frame_navigation_observed == Some(false) {
+                ChannelObservation::Unchanged {
+                    observed_through: ObservationSource::MainFrameNavigationSignal,
+                }
+            } else {
+                ChannelObservation::Unavailable
+            }
+        }
+        ExpectationChannel::NewPage => match facts.new_pages.as_ref() {
+            Some(value) if !value.pages.is_empty() || value.omitted > 0 => {
+                ChannelObservation::Changed {
+                    observed_through: ObservationSource::PageCursorReconciliation,
+                }
+            }
+            Some(_) => ChannelObservation::Unchanged {
+                observed_through: ObservationSource::PageCursorReconciliation,
+            },
+            None => ChannelObservation::Unavailable,
+        },
+        ExpectationChannel::Download => match facts.downloads.as_ref() {
+            Some(value) if !value.downloads.is_empty() || value.omitted > 0 => {
+                ChannelObservation::Changed {
+                    observed_through: ObservationSource::DownloadCursorAuthority,
+                }
+            }
+            Some(_) => ChannelObservation::Unchanged {
+                observed_through: ObservationSource::DownloadCursorAuthority,
+            },
+            None => ChannelObservation::Unavailable,
+        },
+        ExpectationChannel::Checked => {
+            target_channel_observation(facts.target.node, facts.target.checked.changed)
+        }
+        ExpectationChannel::Expanded => {
+            target_channel_observation(facts.target.node, facts.target.expanded.changed)
+        }
+        ExpectationChannel::ValueLength => {
+            target_channel_observation(facts.target.node, facts.target.value_length_changed)
+        }
+        ExpectationChannel::Selected => {
+            target_channel_observation(facts.target.node, facts.target.selected.changed)
+        }
+    }
+}
+
+fn normalized_channel_observation(
+    channel: ExpectationChannel,
+    required: bool,
+    facts: &InteractionPostcondition,
+) -> ChannelObservation {
+    if required {
+        channel_observation(channel, facts)
+    } else {
+        ChannelObservation::NotApplicable
+    }
+}
+
+fn target_matches(target: ExpectationTarget, role: Option<ExpectationTargetRole>) -> bool {
+    match target {
+        ExpectationTarget::Role(expected) => role == Some(expected),
+        ExpectationTarget::AnyObservedRole => role.is_some(),
+    }
+}
+
+pub(crate) fn evaluate_expectations(
+    expectations: &[InteractionExpectation],
+    target_role: Option<ExpectationTargetRole>,
+    facts: &InteractionPostcondition,
+) -> ExpectationEvaluation {
+    let Some(expectation) = expectations
+        .iter()
+        .find(|expectation| target_matches(expectation.target, target_role))
+    else {
+        return if expectations.is_empty() || target_role.is_none() {
+            if expectations.is_empty() {
+                ExpectationEvaluation::NotApplicable
+            } else {
+                ExpectationEvaluation::NotEvaluated
+            }
+        } else {
+            ExpectationEvaluation::NotApplicable
+        };
+    };
+
+    if expectation.required_channels.is_empty() {
+        return ExpectationEvaluation::NotApplicable;
+    }
+
+    let mut unavailable = false;
+    for channel in ALL_EXPECTATION_CHANNELS {
+        let required = expectation.required_channels.contains(channel);
+        let observation = normalized_channel_observation(*channel, required, facts);
+        if !required {
+            continue;
+        }
+        match observation {
+            ChannelObservation::Changed { observed_through }
+            | ChannelObservation::Unchanged { observed_through } => {
+                let _ = observed_through;
+            }
+            ChannelObservation::Unavailable | ChannelObservation::NotApplicable => {
+                unavailable = true;
+            }
+        }
+        if matches!(observation, ChannelObservation::Changed { .. }) {
+            return ExpectationEvaluation::Held;
+        }
+    }
+    if unavailable {
+        ExpectationEvaluation::NotEvaluated
+    } else {
+        ExpectationEvaluation::DidNotHold(expectation.note)
+    }
+}
+
 impl TargetPostcondition {
     const fn unobserved(node: TargetNodeOutcome) -> Self {
         Self {
@@ -633,5 +896,253 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&clipboard).unwrap()).unwrap();
         assert_eq!(decoded.clipboard_write_confirmed, Some(true));
         assert_eq!(decoded.target.node, TargetNodeOutcome::NotEvaluated);
+    }
+
+    fn link_expectation() -> InteractionExpectation {
+        InteractionExpectation {
+            target: ExpectationTarget::Role(ExpectationTargetRole::Link),
+            required_channels: &[
+                ExpectationChannel::Navigation,
+                ExpectationChannel::NewPage,
+                ExpectationChannel::Download,
+            ],
+            note: ExpectationNote::NavigationOutcomeUnobserved,
+        }
+    }
+
+    fn link_facts(
+        navigation: Option<bool>,
+        new_page: Option<bool>,
+        download: Option<bool>,
+    ) -> InteractionPostcondition {
+        let mut facts = InteractionPostcondition::from_facts(
+            None,
+            None,
+            None,
+            false,
+            navigation,
+            SideChannelSignals::unobserved(),
+        );
+        if let Some(changed) = new_page {
+            facts.attach_new_pages(NewPagePostcondition::from_observed(
+                PageSequence::new(1).unwrap(),
+                changed.then(|| page_fact(2)).into_iter().collect(),
+            ));
+        }
+        if let Some(changed) = download {
+            facts.attach_downloads(DownloadPostcondition::from_observed(
+                DownloadSequence::new(1).unwrap(),
+                changed.then(|| download_fact(2)).into_iter().collect(),
+            ));
+        }
+        facts
+    }
+
+    #[test]
+    fn expectation_truth_table_requires_complete_unchanged_channels() {
+        let expectation = link_expectation();
+        for navigation in [None, Some(false), Some(true)] {
+            for new_page in [None, Some(false), Some(true)] {
+                for download in [None, Some(false), Some(true)] {
+                    let evaluation = evaluate_expectations(
+                        &[expectation],
+                        Some(ExpectationTargetRole::Link),
+                        &link_facts(navigation, new_page, download),
+                    );
+                    let expected = if navigation == Some(true)
+                        || new_page == Some(true)
+                        || download == Some(true)
+                    {
+                        ExpectationEvaluation::Held
+                    } else if navigation == Some(false)
+                        && new_page == Some(false)
+                        && download == Some(false)
+                    {
+                        ExpectationEvaluation::DidNotHold(
+                            ExpectationNote::NavigationOutcomeUnobserved,
+                        )
+                    } else {
+                        ExpectationEvaluation::NotEvaluated
+                    };
+                    assert_eq!(
+                        evaluation, expected,
+                        "{navigation:?} {new_page:?} {download:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expectation_navigation_uses_committed_signal_and_url_positive_fallback() {
+        let expectation = link_expectation();
+        let positive_signal = evaluate_expectations(
+            &[expectation],
+            Some(ExpectationTargetRole::Link),
+            &link_facts(Some(true), Some(false), Some(false)),
+        );
+        assert_eq!(positive_signal, ExpectationEvaluation::Held);
+
+        let mut url_fallback = link_facts(None, Some(false), Some(false));
+        url_fallback.page.url_changed = Some(true);
+        assert_eq!(
+            evaluate_expectations(
+                &[expectation],
+                Some(ExpectationTargetRole::Link),
+                &url_fallback,
+            ),
+            ExpectationEvaluation::Held
+        );
+
+        let mut url_only_unchanged = link_facts(None, Some(false), Some(false));
+        url_only_unchanged.page.url_changed = Some(false);
+        assert_eq!(
+            evaluate_expectations(
+                &[expectation],
+                Some(ExpectationTargetRole::Link),
+                &url_only_unchanged,
+            ),
+            ExpectationEvaluation::NotEvaluated
+        );
+    }
+
+    #[test]
+    fn target_expectations_gate_on_a_present_node_and_role() {
+        let checked = InteractionExpectation {
+            target: ExpectationTarget::Role(ExpectationTargetRole::Checkbox),
+            required_channels: &[ExpectationChannel::Checked],
+            note: ExpectationNote::CheckedStateUnchanged,
+        };
+        let unchanged = InteractionPostcondition::from_facts(
+            Some(&facts(Some(false), Some(2))),
+            Some(&facts(Some(false), Some(2))),
+            Some(false),
+            false,
+            Some(false),
+            SideChannelSignals::unobserved(),
+        );
+        assert_eq!(
+            evaluate_expectations(
+                &[checked],
+                Some(ExpectationTargetRole::Checkbox),
+                &unchanged,
+            ),
+            ExpectationEvaluation::DidNotHold(ExpectationNote::CheckedStateUnchanged)
+        );
+        assert_eq!(
+            evaluate_expectations(&[checked], None, &unchanged),
+            ExpectationEvaluation::NotEvaluated
+        );
+
+        let detached = InteractionPostcondition::from_facts(
+            Some(&facts(Some(false), Some(2))),
+            Some(&NodeStateFacts {
+                connected: false,
+                checked: Some(false),
+                value_length: Some(2),
+                ..NodeStateFacts::default()
+            }),
+            Some(false),
+            false,
+            Some(false),
+            SideChannelSignals::unobserved(),
+        );
+        assert_eq!(
+            evaluate_expectations(&[checked], Some(ExpectationTargetRole::Checkbox), &detached,),
+            ExpectationEvaluation::NotEvaluated
+        );
+    }
+
+    #[test]
+    fn first_matching_expectation_does_not_fall_through() {
+        let click_expectations = [
+            link_expectation(),
+            InteractionExpectation {
+                target: ExpectationTarget::AnyObservedRole,
+                required_channels: &[ExpectationChannel::Expanded],
+                note: ExpectationNote::ExpandedStateUnchanged,
+            },
+        ];
+        let mut facts = link_facts(None, Some(false), Some(false));
+        facts.target = TargetPostcondition {
+            node: TargetNodeOutcome::Present,
+            expanded: FlagObservation::observed(Some(false), Some(false)),
+            ..TargetPostcondition::unobserved(TargetNodeOutcome::Present)
+        };
+        assert_eq!(
+            evaluate_expectations(
+                &click_expectations,
+                Some(ExpectationTargetRole::Link),
+                &facts,
+            ),
+            ExpectationEvaluation::NotEvaluated
+        );
+    }
+
+    #[test]
+    fn single_channel_rules_and_unavailable_roles_are_conservative() {
+        let fill = InteractionExpectation {
+            target: ExpectationTarget::AnyObservedRole,
+            required_channels: &[ExpectationChannel::ValueLength],
+            note: ExpectationNote::ValueLengthUnchanged,
+        };
+        let value_unchanged = InteractionPostcondition::from_facts(
+            Some(&facts(None, Some(4))),
+            Some(&facts(None, Some(4))),
+            None,
+            false,
+            None,
+            SideChannelSignals::unobserved(),
+        );
+        assert_eq!(
+            evaluate_expectations(
+                &[fill],
+                Some(ExpectationTargetRole::Other),
+                &value_unchanged,
+            ),
+            ExpectationEvaluation::DidNotHold(ExpectationNote::ValueLengthUnchanged)
+        );
+        assert_eq!(
+            evaluate_expectations(&[fill], None, &value_unchanged),
+            ExpectationEvaluation::NotEvaluated
+        );
+
+        let selected = InteractionExpectation {
+            target: ExpectationTarget::AnyObservedRole,
+            required_channels: &[ExpectationChannel::Selected],
+            note: ExpectationNote::SelectedStateUnchanged,
+        };
+        assert_eq!(
+            evaluate_expectations(
+                &[selected],
+                Some(ExpectationTargetRole::Other),
+                &value_unchanged
+            ),
+            ExpectationEvaluation::NotEvaluated
+        );
+        assert_eq!(
+            normalized_channel_observation(ExpectationChannel::Checked, false, &value_unchanged),
+            ChannelObservation::NotApplicable
+        );
+    }
+
+    #[test]
+    fn expectation_roles_and_closed_messages_are_stable() {
+        assert_eq!(
+            ExpectationTargetRole::from_accessibility_role("CHECKBOX"),
+            ExpectationTargetRole::Checkbox
+        );
+        assert_eq!(
+            ExpectationTargetRole::from_accessibility_role("button"),
+            ExpectationTargetRole::Other
+        );
+        assert_eq!(
+            ExpectationNote::NavigationOutcomeUnobserved.message(),
+            "No navigation, new page, or download was observed by the observation point."
+        );
+        assert_eq!(
+            ExpectationNote::CheckedStateUnchanged.message(),
+            "The target's checked state was unchanged by the observation point."
+        );
     }
 }

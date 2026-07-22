@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use krometrail_core::{
     AccessibleProperty, AccessibleValue, BrowserOperationResult, CssPoint, CssRect, CssSize,
-    CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, KrometrailError,
-    MAX_SEMANTIC_QUERY_TEXT_BYTES, NodeReference, NodeStateFacts, NonEmptyText, ObservationContext,
-    PageSnapshot, QueryPageRequest, QueryPageResult, ResolvedReferenceGeometry, Result,
-    RetryAdvice, SemanticMatch, SemanticQuery, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
-    SnapshotPageAnchor, SnapshotPageRequest, TargetId,
+    CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, ExpectationTargetRole,
+    KrometrailError, MAX_SEMANTIC_QUERY_TEXT_BYTES, NodeReference, NodeStateFacts, NonEmptyText,
+    ObservationContext, PageSnapshot, QueryPageRequest, QueryPageResult, ResolvedReferenceGeometry,
+    Result, RetryAdvice, SemanticMatch, SemanticQuery, SnapshotGeneration, SnapshotNode,
+    SnapshotNodeId, SnapshotPageAnchor, SnapshotPageRequest, TargetId,
 };
 use serde_json::{Value, json};
 
@@ -84,6 +84,7 @@ struct ResolvedFrameDocument {
 #[derive(Clone, Debug)]
 struct NodeBinding {
     backend_node_id: i64,
+    expectation_role: ExpectationTargetRole,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -181,6 +182,7 @@ pub(crate) struct ResolvedNode {
     pub(crate) backend_node_id: i64,
     pub(crate) document_quad: Option<[f64; 8]>,
     pub(crate) facts: NodeStateFacts,
+    pub(crate) expectation_role: Option<ExpectationTargetRole>,
     pub(crate) temporal_input: Option<TemporalInputKind>,
 }
 
@@ -686,10 +688,18 @@ impl SnapshotRegistry {
         requirement: ReferenceRequirement,
     ) -> Result<ResolvedNode> {
         let scope = CommandScope::Session(bound.transport_session.clone());
-        let backend = self
+        let (backend, expectation_role) = self
             .validated_reference_backend(transport, bound, reference)
             .await?;
-        resolve_backend_node(transport, &scope, bound.target_id, backend, requirement).await
+        resolve_backend_node(
+            transport,
+            &scope,
+            bound.target_id,
+            backend,
+            Some(expectation_role),
+            requirement,
+        )
+        .await
     }
 
     pub(crate) async fn resolve_selector(
@@ -709,7 +719,15 @@ impl SnapshotRegistry {
                     "CSS selector did not match an element",
                 )
             })?;
-        resolve_backend_node(transport, &scope, bound.target_id, backend, requirement).await
+        resolve_backend_node(
+            transport,
+            &scope,
+            bound.target_id,
+            backend,
+            None,
+            requirement,
+        )
+        .await
     }
 
     /// Resolve through the same snapshot/selector authority as interactions, but stop before
@@ -724,7 +742,8 @@ impl SnapshotRegistry {
         let backend = match locator {
             krometrail_core::ElementLocator::Reference(reference) => Some(
                 self.validated_reference_backend(transport, bound, *reference)
-                    .await?,
+                    .await?
+                    .0,
             ),
             krometrail_core::ElementLocator::CssSelector(selector) => {
                 query_selector_backend(transport, &scope, bound.target_id, selector.as_str())
@@ -744,8 +763,9 @@ impl SnapshotRegistry {
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         reference: NodeReference,
-    ) -> Result<i64> {
-        let (document, backend) = self.active_reference_backend(bound, reference)?;
+    ) -> Result<(i64, ExpectationTargetRole)> {
+        let (document, backend, expectation_role) =
+            self.active_reference_backend(bound, reference)?;
         let scope = CommandScope::Session(bound.transport_session.clone());
         let frame = self
             .targets
@@ -769,14 +789,14 @@ impl SnapshotRegistry {
                 "document changed after the snapshot",
             ));
         }
-        Ok(backend)
+        Ok((backend, expectation_role))
     }
 
     fn active_reference_backend(
         &self,
         bound: &BoundTarget,
         reference: NodeReference,
-    ) -> Result<(&DocumentFingerprint, i64)> {
+    ) -> Result<(&DocumentFingerprint, i64, ExpectationTargetRole)> {
         if reference.target_id != bound.target_id {
             return Err(stale(
                 bound.target_id,
@@ -810,7 +830,17 @@ impl SnapshotRegistry {
                     "snapshot node has no backing document node",
                 )
             })?;
-        Ok((&active.document, backend))
+        let expectation_role = active
+            .bindings
+            .get(&reference.node_id)
+            .map(|binding| binding.expectation_role)
+            .ok_or_else(|| {
+                stale(
+                    bound.target_id,
+                    "snapshot node has no backing document node",
+                )
+            })?;
+        Ok((&active.document, backend, expectation_role))
     }
 }
 
@@ -1728,6 +1758,7 @@ async fn resolve_backend_node(
     scope: &CommandScope,
     target_id: TargetId,
     backend_node_id: i64,
+    expectation_role: Option<ExpectationTargetRole>,
     requirement: ReferenceRequirement,
 ) -> Result<ResolvedNode> {
     let object_id = resolve_backend_object(transport, scope, target_id, backend_node_id).await?;
@@ -1773,6 +1804,7 @@ async fn resolve_backend_node(
             scope,
             target_id,
             associated_backend,
+            expectation_role,
             requirement,
         )
         .await;
@@ -1802,6 +1834,7 @@ async fn resolve_backend_node(
                 scope,
                 target_id,
                 host_backend,
+                expectation_role,
                 requirement,
             )
             .await;
@@ -1816,6 +1849,7 @@ async fn resolve_backend_node(
         scope,
         target_id,
         backend_node_id,
+        expectation_role,
         requirement,
         state,
     )
@@ -1827,6 +1861,7 @@ async fn resolve_backend_node_once(
     scope: &CommandScope,
     target_id: TargetId,
     backend_node_id: i64,
+    expectation_role: Option<ExpectationTargetRole>,
     requirement: ReferenceRequirement,
 ) -> Result<ResolvedNode> {
     let object_id = resolve_backend_object(transport, scope, target_id, backend_node_id).await?;
@@ -1853,6 +1888,7 @@ async fn resolve_backend_node_once(
         scope,
         target_id,
         backend_node_id,
+        expectation_role,
         requirement,
         state,
     )
@@ -1864,6 +1900,7 @@ async fn resolve_backend_node_from_state(
     scope: &CommandScope,
     target_id: TargetId,
     backend_node_id: i64,
+    expectation_role: Option<ExpectationTargetRole>,
     requirement: ReferenceRequirement,
     state: &Value,
 ) -> Result<ResolvedNode> {
@@ -1878,6 +1915,7 @@ async fn resolve_backend_node_from_state(
             backend_node_id,
             document_quad: None,
             facts,
+            expectation_role,
             temporal_input,
         });
     }
@@ -1918,6 +1956,7 @@ async fn resolve_backend_node_from_state(
         backend_node_id,
         document_quad: Some(document_quad),
         facts,
+        expectation_role,
         temporal_input,
     })
 }
@@ -2313,8 +2352,13 @@ impl<'a> Decoder<'a> {
                     document_rect: None,
                 });
                 if let Some(backend_node_id) = backend.filter(|_| actionable) {
-                    self.bindings
-                        .insert(node_id, NodeBinding { backend_node_id });
+                    self.bindings.insert(
+                        node_id,
+                        NodeBinding {
+                            backend_node_id,
+                            expectation_role: ExpectationTargetRole::from_accessibility_role(role),
+                        },
+                    );
                 }
                 self.text_bytes += text_bytes;
                 next_parent = Some(node_id);
@@ -3580,9 +3624,27 @@ mod tests {
                 },
                 frame: None,
                 bindings: HashMap::from([
-                    (first_checkbox, NodeBinding { backend_node_id: 3 }),
-                    (second_checkbox, NodeBinding { backend_node_id: 5 }),
-                    (uncontained_checkbox, NodeBinding { backend_node_id: 9 }),
+                    (
+                        first_checkbox,
+                        NodeBinding {
+                            backend_node_id: 3,
+                            expectation_role: ExpectationTargetRole::Checkbox,
+                        },
+                    ),
+                    (
+                        second_checkbox,
+                        NodeBinding {
+                            backend_node_id: 5,
+                            expectation_role: ExpectationTargetRole::Checkbox,
+                        },
+                    ),
+                    (
+                        uncontained_checkbox,
+                        NodeBinding {
+                            backend_node_id: 9,
+                            expectation_role: ExpectationTargetRole::Checkbox,
+                        },
+                    ),
                 ]),
                 node_by_backend: HashMap::from([
                     (1, root),
@@ -4083,10 +4145,34 @@ mod tests {
                 },
                 frame: None,
                 bindings: HashMap::from([
-                    (scope, NodeBinding { backend_node_id: 2 }),
-                    (first, NodeBinding { backend_node_id: 3 }),
-                    (second, NodeBinding { backend_node_id: 4 }),
-                    (outside, NodeBinding { backend_node_id: 5 }),
+                    (
+                        scope,
+                        NodeBinding {
+                            backend_node_id: 2,
+                            expectation_role: ExpectationTargetRole::Other,
+                        },
+                    ),
+                    (
+                        first,
+                        NodeBinding {
+                            backend_node_id: 3,
+                            expectation_role: ExpectationTargetRole::Other,
+                        },
+                    ),
+                    (
+                        second,
+                        NodeBinding {
+                            backend_node_id: 4,
+                            expectation_role: ExpectationTargetRole::Other,
+                        },
+                    ),
+                    (
+                        outside,
+                        NodeBinding {
+                            backend_node_id: 5,
+                            expectation_role: ExpectationTargetRole::Other,
+                        },
+                    ),
                 ]),
                 node_by_backend: HashMap::from([(2, scope), (3, first), (4, second), (5, outside)]),
                 semantic: HashMap::from([
@@ -4396,6 +4482,7 @@ mod tests {
             &scope,
             target(),
             10,
+            None,
             ReferenceRequirement::FileInput,
         )
         .await
@@ -4454,6 +4541,7 @@ mod tests {
             &scope,
             target(),
             10,
+            None,
             ReferenceRequirement::FileInput,
         )
         .await
@@ -4552,6 +4640,7 @@ mod tests {
                 node_id,
                 NodeBinding {
                     backend_node_id: 42,
+                    expectation_role: ExpectationTargetRole::Other,
                 },
             )]),
             node_by_backend: HashMap::from([(42, node_id)]),

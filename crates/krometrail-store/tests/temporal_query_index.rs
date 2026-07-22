@@ -26,7 +26,7 @@ fn populated_postcondition() -> InteractionPostcondition {
         }),
         Some(&NodeStateFacts {
             connected: true,
-            checked: Some(true),
+            checked: Some(false),
             value_length: Some(0),
             ..NodeStateFacts::default()
         }),
@@ -135,6 +135,7 @@ impl Fixture {
             }))
             .unwrap(),
             LocatorSummary::from_locator(None),
+            Some(krometrail_core::ExpectationTargetRole::Checkbox),
             InteractionOutcome::Dispatched,
             populated_postcondition(),
             Some(InteractionId::from_uuid(Uuid::from_u128(99))),
@@ -232,7 +233,15 @@ async fn exact_anchor_and_optional_action_record_round_trip_idempotently() {
         decoded.postcondition.target.node,
         TargetNodeOutcome::Present
     );
-    assert_eq!(decoded.postcondition.target.checked.changed, Some(true));
+    assert_eq!(decoded.postcondition.target.checked.changed, Some(false));
+    assert_eq!(
+        decoded.target_role,
+        Some(krometrail_core::ExpectationTargetRole::Checkbox)
+    );
+    assert_eq!(
+        decoded.expectation_note,
+        Some(krometrail_core::ExpectationNote::CheckedStateUnchanged)
+    );
     assert_eq!(
         decoded.postcondition.target.value_length_changed,
         Some(false)

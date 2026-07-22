@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    BrowserOperationKind, CoordinateSpace, CssPoint, ElementLocator, InteractionPostcondition,
-    LiveObservation, NodeReference, ObservationContext, PageSelection,
+    BrowserOperationKind, CoordinateSpace, CssPoint, ElementLocator, ExpectationNote,
+    InteractionPostcondition, LiveObservation, NodeReference, ObservationContext, PageSelection,
 };
 
 const MAX_SANITIZED_PARAMETERS_BYTES: usize = 4_096;
@@ -71,6 +71,7 @@ pub struct ActionDefinition {
     pub locator: AcceptedLocator,
     pub completion: CompletionKind,
     pub display_name: &'static str,
+    pub expectations: &'static [super::InteractionExpectation],
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -862,8 +863,10 @@ pub struct InteractionRecord {
     pub action: BrowserOperationKind,
     pub sanitized_parameters: SanitizedParameters,
     pub locator: LocatorSummary,
+    pub target_role: Option<super::ExpectationTargetRole>,
     pub outcome: InteractionOutcome,
     pub postcondition: InteractionPostcondition,
+    pub expectation_note: Option<ExpectationNote>,
     pub parent_batch: Option<InteractionId>,
 }
 #[derive(Deserialize)]
@@ -875,8 +878,10 @@ struct InteractionRecordWire {
     action: BrowserOperationKind,
     sanitized_parameters: SanitizedParameters,
     locator: LocatorSummary,
+    target_role: Option<super::ExpectationTargetRole>,
     outcome: InteractionOutcome,
     postcondition: InteractionPostcondition,
+    expectation_note: Option<ExpectationNote>,
     parent_batch: Option<InteractionId>,
 }
 impl InteractionRecord {
@@ -889,6 +894,7 @@ impl InteractionRecord {
         action: BrowserOperationKind,
         sanitized_parameters: SanitizedParameters,
         locator: LocatorSummary,
+        target_role: Option<super::ExpectationTargetRole>,
         outcome: InteractionOutcome,
         postcondition: InteractionPostcondition,
         parent_batch: Option<InteractionId>,
@@ -911,7 +917,7 @@ impl InteractionRecord {
                 "interaction record action must be an interaction operation",
             ));
         }
-        Ok(Self {
+        let mut record = Self {
             id,
             context,
             dispatch_time,
@@ -919,10 +925,32 @@ impl InteractionRecord {
             action,
             sanitized_parameters,
             locator,
+            target_role,
             outcome,
             postcondition,
+            expectation_note: None,
             parent_batch,
-        })
+        };
+        record.refresh_expectation_note();
+        Ok(record)
+    }
+
+    pub fn refresh_expectation_note(&mut self) {
+        let expectations = super::BROWSER_OPERATION_REGISTRY
+            .iter()
+            .find(|definition| definition.kind == self.action)
+            .and_then(|definition| definition.action)
+            .map_or(&[][..], |action| action.expectations);
+        self.expectation_note = match super::postcondition::evaluate_expectations(
+            expectations,
+            self.target_role,
+            &self.postcondition,
+        ) {
+            super::postcondition::ExpectationEvaluation::DidNotHold(note) => Some(note),
+            super::postcondition::ExpectationEvaluation::Held
+            | super::postcondition::ExpectationEvaluation::NotEvaluated
+            | super::postcondition::ExpectationEvaluation::NotApplicable => None,
+        };
     }
 
     pub fn anchor(&self) -> Result<super::InteractionAnchor> {
@@ -943,18 +971,28 @@ impl InteractionRecord {
 request_wire!(
     InteractionRecord,
     InteractionRecordWire,
-    |w: InteractionRecordWire| Self::new(
-        w.id,
-        w.context,
-        w.dispatch_time,
-        w.live_observation_time,
-        w.action,
-        w.sanitized_parameters,
-        w.locator,
-        w.outcome,
-        w.postcondition,
-        w.parent_batch
-    )
+    |w: InteractionRecordWire| {
+        let serialized_note = w.expectation_note;
+        let record = Self::new(
+            w.id,
+            w.context,
+            w.dispatch_time,
+            w.live_observation_time,
+            w.action,
+            w.sanitized_parameters,
+            w.locator,
+            w.target_role,
+            w.outcome,
+            w.postcondition,
+            w.parent_batch,
+        )?;
+        if record.expectation_note != serialized_note {
+            return Err(invalid(
+                "interaction expectation note does not match its action, role, or postcondition facts",
+            ));
+        }
+        Ok(record)
+    }
 );
 
 #[derive(Clone, Debug, PartialEq)]

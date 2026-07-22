@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results-expectation-notes
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-state-aware-interaction-results
 depends_on: [epic-state-aware-interaction-results-postcondition-core, epic-state-aware-interaction-results-side-channel-outcomes]
@@ -500,3 +500,34 @@ existing test should be removed.
   bump would make v10 rows decode ambiguously. The mandatory v11 bump and
   current-cache replacement are part of the same implementation unit and are
   not optional follow-up work.
+
+## Implementation notes
+
+- Execution capability: inline implementation; this feature was cohesive and
+  was implemented against the current main-branch seams.
+- Landed the registry-declared expectation vocabulary and typed completeness
+  gate in `krometrail-core`, including the exhaustive three-channel link truth
+  table and single-channel role/fact rules. `InteractionRecord` now carries
+  the resolved target role and at most one typed expectation note.
+- Propagated the role from the active accessibility snapshot binding through
+  reference resolution and interaction execution. Selector and coordinate
+  actions explicitly carry no role. Notes are finalized in `execute_operation`
+  after page/download side-channel enrichment and before persistence.
+- Added canonical MCP concise/expanded/full projections, current-format store
+  round-trip coverage, and the deterministic CDP reference test for an
+  unchanged checkbox click. Updated the recording schema from v10 to v11 and
+  its version assertions.
+- Adaptation from the design: the current tree required extending
+  `NodeBinding`/`ResolvedNode` and updating the recent `InteractionRecord::new`
+  seam directly; no compatibility aliases, migrations, or extra probes were
+  added. The existing selector real-Chrome test remains role-less.
+- No new real-Chrome qualification was named by this design, so no opt-in
+  browser run was performed.
+- Verification: `cargo fmt --all -- --check`; `bash
+  scripts/check-wire-enum-schemas.sh`; `CARGO_TARGET_DIR=/tmp/krometrail-target
+  cargo check --workspace --all-targets --locked`; `CARGO_TARGET_DIR=/tmp/krometrail-target
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 cargo test --workspace --all-targets
+  --locked` (all targets passed with zero failures); and `CARGO_TARGET_DIR=/tmp/krometrail-target
+  CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=1 cargo clippy --workspace --all-targets
+  --locked -- -D warnings` all passed. The temporary target directory was used
+  because the environment's default Cargo target path is read-only.

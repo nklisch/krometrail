@@ -160,7 +160,7 @@ fn mcp_startup_clears_the_legacy_flat_store_and_owns_an_instance_root() {
     let instance_database = std::fs::read(roots[0].join("index.sqlite3")).unwrap();
     assert_eq!(
         u32::from_be_bytes(instance_database[60..64].try_into().unwrap()),
-        10
+        11
     );
 
     // Managed browser profiles are not recording cache and must survive.

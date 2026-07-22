@@ -93,6 +93,7 @@ fn project_result(
             BrowserOperationKind::WriteClipboard,
             SanitizedParameters::new(serde_json::json!({"utf8_bytes": value.utf8_bytes}))?,
             LocatorSummary::from_locator(None),
+            None,
             InteractionOutcome::Dispatched,
             // A confirmed fact, not an inference: this projection only runs
             // after the in-page bridge returned true for the write.
@@ -125,6 +126,7 @@ fn project_result(
                 "state": value.state,
             }))?,
             LocatorSummary::from_locator(None),
+            None,
             InteractionOutcome::Dispatched,
             InteractionPostcondition::unobserved(),
             None,

@@ -1202,6 +1202,9 @@ fn project_operation(
                 "observation": observation,
                 "postcondition": postcondition,
             });
+            if let Some(note) = value.record.expectation_note {
+                result["expectation_note"] = json!(note.message());
+            }
             if response.detail != ResponseDetail::Concise {
                 result["record"] =
                     serde_json::to_value(value.record).map_err(|_| ResponseInvariantError)?;
@@ -3328,19 +3331,19 @@ mod tests {
         BrowserOperationKind, CaptureFailureStage, CaptureOrdinal, CaptureStatistics,
         CaptureStreamState, CaptureTimingSummary, CapturedFrame, CssPoint, CssRect, CssSize,
         DeviceScaleFactor, DiskBudgetBytes, ErrorContext, EveryNthFrame, FrameId, ImageFormat,
-        InteractionId, InteractionOutcome, InteractionRecord, InteractionResult, InteractionTiming,
-        LocatorSummary, NodeReference, ObservationContext, ObservedTime, PageChange,
-        PageOperationResult, PageSelection, PageSnapshot, PageState, PinProtectionScope, PinState,
-        PixelDimensions, PresentationRange, PresentationTime, ProgressivePinChange,
-        RangeEvidenceAvailability, RangeResolutionOptions, RecordingBudgetState, ResolvedRange,
-        RetentionPinRequest, RetentionRange, RetentionStatus, SanitizedParameters,
-        ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest, SnapshotGeneration,
-        SnapshotNode, SnapshotNodeId, SourceFrameRead, StorageUsage, TargetCaptureStatus, TargetId,
-        TemporalRangeAnchorKind, TemporalVideoGenerationClip, TemporalVideoManifest,
-        VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
-        VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment, VideoSegmentSource,
-        VideoTimingBasis, ViewportState, VisualEpoch, WaitCondition, WaitProbe, WaitRequest,
-        WaitResult,
+        InteractionId, InteractionLocator, InteractionOutcome, InteractionRecord,
+        InteractionResult, InteractionTiming, LocatorSummary, NodeReference, ObservationContext,
+        ObservedTime, PageChange, PageOperationResult, PageSelection, PageSnapshot, PageState,
+        PinProtectionScope, PinState, PixelDimensions, PresentationRange, PresentationTime,
+        ProgressivePinChange, RangeEvidenceAvailability, RangeResolutionOptions,
+        RecordingBudgetState, ResolvedRange, RetentionPinRequest, RetentionRange, RetentionStatus,
+        SanitizedParameters, ScreenshotTarget, SessionId, SessionRange, SessionTime, Sha256Digest,
+        SnapshotGeneration, SnapshotNode, SnapshotNodeId, SourceFrameRead, StorageUsage,
+        TargetCaptureStatus, TargetId, TemporalRangeAnchorKind, TemporalVideoGenerationClip,
+        TemporalVideoManifest, VideoArtifactEvidenceHandle, VideoEncodedClip, VideoEncoderIdentity,
+        VideoEncodingProfile, VideoOutputGeometry, VideoPresentationPlan, VideoPresentationSegment,
+        VideoSegmentSource, VideoTimingBasis, ViewportState, VisualEpoch, WaitCondition, WaitProbe,
+        WaitRequest, WaitResult,
     };
     use std::time::Duration;
 
@@ -5207,9 +5210,16 @@ mod tests {
             };
             let post = krometrail_core::NodeStateFacts {
                 connected: true,
-                checked: Some(true),
+                checked: Some(false),
                 ..krometrail_core::NodeStateFacts::default()
             };
+            let reference = NodeReference {
+                target_id: target_id(),
+                generation: SnapshotGeneration::new(1).unwrap(),
+                node_id: SnapshotNodeId::new(1).unwrap(),
+            };
+            let locator =
+                InteractionLocator::Element(krometrail_core::ElementLocator::Reference(reference));
             let record = InteractionRecord::new(
                 interaction_id(),
                 context(),
@@ -5217,7 +5227,8 @@ mod tests {
                 SessionTime::from_nanos(15),
                 BrowserOperationKind::Click,
                 SanitizedParameters::new(json!({"button": "left"})).unwrap(),
-                LocatorSummary::from_locator(None),
+                LocatorSummary::from_locator(Some(&locator)),
+                Some(krometrail_core::ExpectationTargetRole::Checkbox),
                 InteractionOutcome::Dispatched,
                 krometrail_core::InteractionPostcondition::from_facts(
                     Some(&pre),
@@ -5284,7 +5295,7 @@ mod tests {
             },
             "target": {
                 "node": "present",
-                "checked": {"before": false, "after": true, "changed": true},
+                "checked": {"before": false, "after": false, "changed": false},
                 "expanded": {"before": null, "after": null, "changed": null},
                 "selected": {"before": null, "after": null, "changed": null},
                 "pressed": {"before": null, "after": null, "changed": null},
@@ -5297,10 +5308,22 @@ mod tests {
         });
         for projection in [&concise, &expanded, &full] {
             assert_eq!(projection.response.result["postcondition"], expected);
+            assert_eq!(
+                projection.response.result["expectation_note"],
+                "The target's checked state was unchanged by the observation point."
+            );
         }
         assert_eq!(
             expanded.response.result["record"]["postcondition"],
             expected
+        );
+        assert_eq!(
+            expanded.response.result["record"]["expectation_note"],
+            "checked_state_unchanged"
+        );
+        assert_eq!(
+            full.response.result["record"]["expectation_note"],
+            "checked_state_unchanged"
         );
     }
 

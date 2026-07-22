@@ -82,7 +82,8 @@ pub use operation::{
     BrowserOperationScopeKind, OperationEvidence, OperationMutability,
 };
 pub use postcondition::{
-    DownloadFact, DownloadPostcondition, FlagObservation, InteractionPostcondition,
+    DownloadFact, DownloadPostcondition, ExpectationChannel, ExpectationNote, ExpectationTarget,
+    ExpectationTargetRole, FlagObservation, InteractionExpectation, InteractionPostcondition,
     MAX_SIDE_CHANNEL_FACTS, NewPageFact, NewPagePostcondition, NodeStateFacts, PagePostcondition,
     SideChannelSignals, TargetNodeOutcome, TargetPostcondition,
 };

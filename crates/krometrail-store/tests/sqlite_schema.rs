@@ -24,7 +24,7 @@ fn current_schema_reopens_and_has_the_declared_inventory() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     let mut statement = connection
         .prepare(
             "SELECT name FROM sqlite_master \
@@ -163,7 +163,7 @@ fn incompatible_recording_cache_is_cleared_without_touching_other_data() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
     let stale_table: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='stale')",

@@ -414,6 +414,12 @@ fn interaction_record_mut(
     }
 }
 
+fn finalize_expectation_note(result: &mut BrowserOperationResult) {
+    if let Some(record) = interaction_record_mut(result) {
+        record.refresh_expectation_note();
+    }
+}
+
 /// Post-dispatch new-page delta: one bounded reconciliation pull, then the
 /// pages adopted after the pre-action cursor become observed facts on the
 /// record before evidence persistence. Every failure leaves `new_pages: None`
@@ -554,6 +560,7 @@ async fn execute_non_local_operation(
         if let Some(cursor_before) = baselines.download_cursor_before {
             attach_download_facts(&mut result, shared, cursor_before);
         }
+        finalize_expectation_note(&mut result);
         if let Some(visibility) = observed_visibility {
             commit_observed_visibility(
                 state,
