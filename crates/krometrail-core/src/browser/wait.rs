@@ -8,14 +8,20 @@ use crate::{
     validation::{delegate_json_schema, deserialize_validated},
 };
 
-use super::{DocumentReadiness, ElementLocator, ObservationContext, PageSelection};
+use super::{
+    DocumentReadiness, ElementLocator, ObservationContext, PageSelection, RelaxedMatchCandidates,
+    SemanticQuery, SemanticQueryOutcome,
+};
 
 pub const MAX_OPERATION_TIMEOUT_MILLIS: u64 = 120_000;
 pub const MIN_OPERATION_TIMEOUT_MILLIS: u64 = 1;
 pub const MIN_WAIT_POLL_INTERVAL_MILLIS: u64 = 10;
+pub const MIN_SEMANTIC_WAIT_POLL_INTERVAL_MILLIS: u64 = 100;
 pub const MAX_WAIT_POLL_INTERVAL_MILLIS: u64 = 5_000;
 pub const MAX_OPERATION_TIMEOUT: Duration = Duration::from_millis(MAX_OPERATION_TIMEOUT_MILLIS);
 pub const MIN_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(MIN_WAIT_POLL_INTERVAL_MILLIS);
+pub const MIN_SEMANTIC_WAIT_POLL_INTERVAL: Duration =
+    Duration::from_millis(MIN_SEMANTIC_WAIT_POLL_INTERVAL_MILLIS);
 pub const MAX_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(MAX_WAIT_POLL_INTERVAL_MILLIS);
 const MAX_WAIT_TEXT_BYTES: usize = 16 * 1024;
 const MAX_WAIT_EXPRESSION_BYTES: usize = 16 * 1024;
@@ -29,9 +35,12 @@ pub enum WaitTextMatch {
     Exact,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitPresence {
+    #[default]
     Present,
     Absent,
 }
@@ -68,6 +77,10 @@ pub enum WaitCondition {
         presence: WaitPresence,
         case_sensitive: bool,
     },
+    Semantic {
+        query: SemanticQuery,
+        presence: WaitPresence,
+    },
     Element {
         locator: ElementLocator,
         state: ElementState,
@@ -100,9 +113,17 @@ enum WaitConditionWire {
         locator: Option<ElementLocator>,
         text: NonEmptyText,
         /// `exact` compares the complete text in that scope. For an unscoped substring, use `contains`.
+        /// For a control identified by role and accessible name, use the `semantic` condition.
         match_mode: WaitTextMatch,
         presence: WaitPresence,
         case_sensitive: bool,
+    },
+    Semantic {
+        /// Satisfied when the query matches at least one node (`present`) or none (`absent`).
+        /// Uses the same query language as `query_page`.
+        query: SemanticQuery,
+        #[serde(default)]
+        presence: WaitPresence,
     },
     Element {
         locator: ElementLocator,
@@ -134,6 +155,7 @@ impl WaitCondition {
                     validate_locator(locator)?;
                 }
             }
+            Self::Semantic { .. } => {}
             Self::Element { locator, .. } => validate_locator(locator)?,
             Self::Navigation { url, .. } => {
                 if let Some((_, url)) = url {
@@ -172,6 +194,10 @@ impl Serialize for WaitCondition {
                 match_mode: *match_mode,
                 presence: *presence,
                 case_sensitive: *case_sensitive,
+            },
+            Self::Semantic { query, presence } => WaitConditionWire::Semantic {
+                query: query.clone(),
+                presence: *presence,
             },
             Self::Element { locator, state } => WaitConditionWire::Element {
                 locator: locator.clone(),
@@ -214,6 +240,9 @@ impl<'de> Deserialize<'de> for WaitCondition {
                     presence,
                     case_sensitive,
                 },
+                WaitConditionWire::Semantic { query, presence } => {
+                    Self::Semantic { query, presence }
+                }
                 WaitConditionWire::Element { locator, state } => Self::Element { locator, state },
                 WaitConditionWire::Navigation { readiness, url } => {
                     Self::Navigation { readiness, url }
@@ -275,6 +304,11 @@ impl WaitRequest {
                     "network quiet duration must not exceed wait timeout",
                 ));
             }
+            WaitCondition::Semantic { .. } if poll_interval < MIN_SEMANTIC_WAIT_POLL_INTERVAL => {
+                return Err(invalid(
+                    "semantic wait poll interval must be at least 100 milliseconds",
+                ));
+            }
             _ => {}
         }
         Ok(Self {
@@ -321,6 +355,13 @@ pub enum WaitProbe {
         matched: bool,
         observed_length: Option<u32>,
     },
+    Semantic {
+        matched: bool,
+        outcome: SemanticQueryOutcome,
+        match_count: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relaxed_match_candidates: Option<RelaxedMatchCandidates>,
+    },
     Element {
         matched: bool,
         attached: bool,
@@ -351,6 +392,7 @@ impl WaitProbe {
         match self {
             Self::Elapsed { matched, .. }
             | Self::Text { matched, .. }
+            | Self::Semantic { matched, .. }
             | Self::Element { matched, .. }
             | Self::Navigation { matched, .. }
             | Self::Page { matched }
@@ -487,11 +529,16 @@ mod tests {
     }
 
     fn request(condition: WaitCondition) -> WaitRequest {
+        let poll_interval = if matches!(&condition, WaitCondition::Semantic { .. }) {
+            MIN_SEMANTIC_WAIT_POLL_INTERVAL
+        } else {
+            Duration::from_millis(25)
+        };
         WaitRequest::new(
             PageSelection::Target(target()),
             condition,
             Duration::from_secs(2),
-            Duration::from_millis(25),
+            poll_interval,
         )
         .unwrap()
     }
@@ -513,6 +560,21 @@ mod tests {
                 match_mode: WaitTextMatch::Contains,
                 presence: WaitPresence::Present,
                 case_sensitive: true,
+            },
+            WaitCondition::Semantic {
+                query: SemanticQuery::role(
+                    "button",
+                    Some(
+                        crate::SemanticTextMatch::new(
+                            "Save",
+                            crate::SemanticTextMatchMode::Contains,
+                            false,
+                        )
+                        .unwrap(),
+                    ),
+                )
+                .unwrap(),
+                presence: WaitPresence::Present,
             },
             WaitCondition::Element {
                 locator: ElementLocator::Reference(reference),
@@ -586,6 +648,39 @@ mod tests {
                 Duration::from_millis(9),
             )
             .is_err()
+        );
+        let semantic = SemanticQuery::role(
+            "button",
+            Some(
+                crate::SemanticTextMatch::new("Save", crate::SemanticTextMatchMode::Exact, false)
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        assert!(
+            WaitRequest::new(
+                PageSelection::Selected,
+                WaitCondition::Semantic {
+                    query: semantic.clone(),
+                    presence: WaitPresence::Present,
+                },
+                Duration::from_secs(1),
+                Duration::from_millis(99),
+            )
+            .is_err()
+        );
+        let wire: WaitRequest = serde_json::from_value(serde_json::json!({
+            "condition":{"condition":"semantic","value":{"query":{"kind":"role","role":"button","name":{"value":"Save"}}}},
+            "timeout":1000,
+            "poll_interval":100
+        }))
+        .unwrap();
+        assert_eq!(
+            wire.condition,
+            WaitCondition::Semantic {
+                query: semantic,
+                presence: WaitPresence::Present
+            }
         );
         assert!(
             serde_json::from_value::<WaitRequest>(serde_json::json!({

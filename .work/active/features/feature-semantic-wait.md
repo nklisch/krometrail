@@ -1,14 +1,14 @@
 ---
 id: feature-semantic-wait
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-22
 ---
 
 # Semantic wait
@@ -294,3 +294,28 @@ async fn probe_semantic(
   timeout evidence is honest about having no conclusive probe.
 - **Scripted multi-poll AX sequences**: the test harness may not comfortably script differing AX
   responses across polls; fallback path documented in Unit 4.
+
+## Implementation notes
+
+- Implemented the semantic wait as a `WaitCondition::Semantic` carrying the existing
+  `SemanticQuery` and `WaitPresence`; the wire default remains `present`, and semantic waits
+  enforce the designed 100 ms poll floor.
+- The CDP probe delegates to `query_page` through the current snapshot acquisition and matcher
+  path. It returns outcome, total match count, and only the specified relaxed candidates for an
+  unmet present query; it never returns an actionable node reference. Stale-reference probe
+  failures are treated as inconclusive polls, while bounded acquisition failures still fail
+  explicitly.
+- Added core wire/validation coverage, a focused opt-in real-Chrome present/absent qualification,
+  and semantic guidance in the operation description, plugin skill, and SPEC. The generated
+  `docs/public/llms-full.txt` was regenerated rather than edited directly.
+- Mechanical adaptation: the existing real-Chrome all-waits lane has unrelated timing
+  instability in this environment (its pre-existing delayed-state/navigation assertions can
+  time out before reaching the added semantic assertions). A focused semantic lane against the
+  same fixture passed with `KROMETRAIL_REAL_CHROME_TESTS=1`; no production behavior was
+  re-scoped around that fixture instability.
+- Mechanical adaptation: the MCP registry schema conformance sweep now repairs only its
+  generated semantic-wait samples to the legal 100 ms cross-field floor before domain decoding;
+  the published schema's general 10 ms poll bound remains unchanged because the runtime
+  condition-specific rule cannot be expressed by that flat schema.
+- Full verification passed with the escalated local test process: format, wire-enum schema
+  check, workspace check, workspace tests, and workspace clippy with `-D warnings`.

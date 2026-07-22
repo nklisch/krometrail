@@ -171,6 +171,15 @@ For text waits, omitting `locator` scopes the match to the full document-body te
 "exact"` compares the complete text in that scope; use a locator for exact element text or
 `match_mode: "contains"` for an unscoped substring.
 
+For a control identified by role and accessible name, use the semantic wait condition so waiting
+and targeting share the same query language. It is satisfied by any matching node for `present`
+or by no matching nodes for `absent`; it returns observed query evidence but no actionable
+reference, so follow it with `query_page` before acting. For example:
+
+```json
+{"condition":"semantic","value":{"query":{"kind":"role","role":"button","name":{"value":"Save","mode":"contains"}},"presence":"present"}}
+```
+
 For routine CSS breakpoint/layout testing, start with the smallest responsive preset and expand only
 when the task needs a wider surface:
 

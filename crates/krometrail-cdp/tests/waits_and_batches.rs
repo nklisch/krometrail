@@ -18,8 +18,9 @@ use krometrail_core::{
     DocumentReadiness, ElementLocator, ElementState, ErrorCode, EvaluationValue, InteractionAnchor,
     InteractionEvidenceSink, InteractionLocator, InteractionRecord, LaunchBrowser,
     ListPageContextsRequest, ManagedProfile, Modifiers, MouseButton, NavigationId, ObservationPart,
-    ObservedTime, PageSelection, PortFuture, ReadOnlyEvaluationRequest, SnapshotPageRequest,
-    UrlMatch, WaitCondition, WaitForPageRequest, WaitOutcome, WaitPresence, WaitProbe, WaitRequest,
+    ObservedTime, PageSelection, PortFuture, ReadOnlyEvaluationRequest, SemanticQuery,
+    SemanticQueryOutcome, SemanticTextMatch, SemanticTextMatchMode, SnapshotPageRequest, UrlMatch,
+    WaitCondition, WaitForPageRequest, WaitOutcome, WaitPresence, WaitProbe, WaitRequest,
     WaitTextMatch,
 };
 use serde_json::{Value, json};
@@ -1054,6 +1055,11 @@ async fn wait_for(
     target: krometrail_core::TargetId,
     condition: WaitCondition,
 ) -> krometrail_core::WaitResult {
+    let poll_interval = if matches!(&condition, WaitCondition::Semantic { .. }) {
+        std::time::Duration::from_millis(100)
+    } else {
+        std::time::Duration::from_millis(25)
+    };
     let result = session
         .execute(
             BrowserOperationRequest::Wait(
@@ -1061,7 +1067,7 @@ async fn wait_for(
                     PageSelection::Target(target),
                     condition,
                     std::time::Duration::from_secs(3),
-                    std::time::Duration::from_millis(25),
+                    poll_interval,
                 )
                 .unwrap(),
             ),
@@ -1377,6 +1383,68 @@ async fn opt_in_real_chrome_qualifies_every_wait_family_and_stale_references() {
             ..
         })
     ));
+    let semantic_present = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role(
+                "heading",
+                Some(
+                    SemanticTextMatch::new(
+                        "Navigation complete",
+                        SemanticTextMatchMode::Exact,
+                        false,
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap(),
+            presence: WaitPresence::Present,
+        },
+    )
+    .await;
+    assert!(matches!(
+        semantic_present.outcome,
+        WaitOutcome::Satisfied { .. }
+    ));
+    assert!(matches!(
+        semantic_present.last_probe,
+        Some(WaitProbe::Semantic {
+            outcome: SemanticQueryOutcome::Unique,
+            match_count: 1,
+            relaxed_match_candidates: None,
+            ..
+        })
+    ));
+    let semantic_absent = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role(
+                "button",
+                Some(
+                    SemanticTextMatch::new("Never rendered", SemanticTextMatchMode::Exact, false)
+                        .unwrap(),
+                ),
+            )
+            .unwrap(),
+            presence: WaitPresence::Absent,
+        },
+    )
+    .await;
+    assert!(matches!(
+        semantic_absent.outcome,
+        WaitOutcome::Satisfied { .. }
+    ));
+    assert!(matches!(
+        semantic_absent.last_probe,
+        Some(WaitProbe::Semantic {
+            outcome: SemanticQueryOutcome::NoMatch,
+            match_count: 0,
+            relaxed_match_candidates: None,
+            ..
+        })
+    ));
 
     let operation = {
         let session = Arc::clone(&session);
@@ -1405,6 +1473,76 @@ async fn opt_in_real_chrome_qualifies_every_wait_family_and_stale_references() {
         operation.await.unwrap().unwrap_err().code,
         ErrorCode::Cancelled
     );
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_qualifies_semantic_wait_present_and_absent() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!("skipping real Chrome semantic waits; set KROMETRAIL_REAL_CHROME_TESTS=1");
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let (session, _root) = launch_real_fixture("waits-and-batches-semantic-waits").await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+
+    let present = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role(
+                "button",
+                Some(
+                    SemanticTextMatch::new(
+                        "Start delayed states",
+                        SemanticTextMatchMode::Exact,
+                        false,
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap(),
+            presence: WaitPresence::Present,
+        },
+    )
+    .await;
+    assert!(matches!(present.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        present.last_probe,
+        Some(WaitProbe::Semantic {
+            outcome: SemanticQueryOutcome::Unique,
+            match_count: 1,
+            relaxed_match_candidates: None,
+            ..
+        })
+    ));
+
+    let absent = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role(
+                "button",
+                Some(
+                    SemanticTextMatch::new("Never rendered", SemanticTextMatchMode::Exact, false)
+                        .unwrap(),
+                ),
+            )
+            .unwrap(),
+            presence: WaitPresence::Absent,
+        },
+    )
+    .await;
+    assert!(matches!(absent.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        absent.last_probe,
+        Some(WaitProbe::Semantic {
+            outcome: SemanticQueryOutcome::NoMatch,
+            match_count: 0,
+            relaxed_match_candidates: None,
+            ..
+        })
+    ));
+    session.stop().await.unwrap();
 }
 
 #[tokio::test]

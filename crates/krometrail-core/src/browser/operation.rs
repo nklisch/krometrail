@@ -385,7 +385,7 @@ define_browser_operations! {
         stable_name: "handle_dialog", description: "Accept or dismiss the active browser dialog.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: true, action: Some(&ACTION_DIALOG),
     },
     Wait(WaitRequest) => WaitResult {
-        stable_name: "wait", description: "Wait for an explicit page, element, text, navigation, or network condition.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
+        stable_name: "wait", description: "Wait for an explicit page, element, text, semantic, navigation, or network condition.", mutability: ReadOnly, evidence: RequestedOnly, scope: Page, batchable: true, action: None,
     },
     Batch(BatchRequest) => BatchResult {
         stable_name: "batch", description: "Execute an ordered one-page batch of browser operations.", mutability: StateChanging, evidence: LiveObservation, scope: Page, batchable: false, action: None,

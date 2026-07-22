@@ -1208,6 +1208,31 @@ mod tests {
                 .collect()
         }
 
+        fn repair_semantic_wait_poll_interval(value: &mut Value) {
+            match value {
+                Value::Object(object) => {
+                    let is_semantic_wait = object
+                        .get("condition")
+                        .and_then(Value::as_object)
+                        .and_then(|condition| condition.get("condition"))
+                        .and_then(Value::as_str)
+                        == Some("semantic");
+                    if is_semantic_wait {
+                        object.insert("poll_interval".into(), json!(100));
+                    }
+                    for child in object.values_mut() {
+                        repair_semantic_wait_poll_interval(child);
+                    }
+                }
+                Value::Array(values) => {
+                    for child in values {
+                        repair_semantic_wait_poll_interval(child);
+                    }
+                }
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+            }
+        }
+
         fn is_flat_batch_step_schema(schema: &Value) -> bool {
             let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
                 return false;
@@ -1575,6 +1600,7 @@ mod tests {
         }
 
         fn decode(tool: &str, mut value: Value) -> std::result::Result<(), String> {
+            repair_semantic_wait_poll_interval(&mut value);
             repair_range(&mut value)?;
             let mut response_result = Ok(());
             if let Some(object) = value.as_object_mut() {

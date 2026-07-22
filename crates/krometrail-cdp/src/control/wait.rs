@@ -1,9 +1,11 @@
 use std::{collections::HashSet, future::Future, time::Duration};
 
 use krometrail_core::{
-    DocumentReadiness, ElementLocator, ElementState, ErrorCode, EvaluationValue, KrometrailError,
-    ObservationContext, Result, RetryAdvice, SessionTime, UrlMatch, WaitCondition, WaitOutcome,
-    WaitPresence, WaitProbe, WaitRequest, WaitResult, WaitTextMatch,
+    BrowserOperationResult, DEFAULT_SEMANTIC_MATCH_LIMIT, DocumentReadiness, ElementLocator,
+    ElementState, ErrorCode, EvaluationValue, KrometrailError, ObservationContext,
+    QueryPageRequest, Result, RetryAdvice, SemanticQuery, SemanticQueryOutcome, SessionTime,
+    UrlMatch, WaitCondition, WaitOutcome, WaitPresence, WaitProbe, WaitRequest, WaitResult,
+    WaitTextMatch,
 };
 use serde_json::{Value, json};
 
@@ -81,17 +83,28 @@ impl PageControl {
                     last_probe_at,
                 );
             }
-            let probe = controlled(
+            let probe = match controlled(
                 cancel,
                 generation,
                 bound.target_id,
                 deadline,
                 self.probe_condition(transport, &bound, &request.condition),
             )
-            .await?;
+            .await
+            {
+                Err(error)
+                    if matches!(&request.condition, WaitCondition::Semantic { .. })
+                        && error.code == ErrorCode::StaleReference =>
+                {
+                    None
+                }
+                Err(error) => return Err(error),
+                Ok(probe) => Some(probe),
+            };
             let probe = match probe {
-                Controlled::Value(probe) => probe,
-                Controlled::TimedOut => {
+                Some(Controlled::Value(probe)) => Some(probe),
+                None => None,
+                Some(Controlled::TimedOut) => {
                     return self.timed_out(
                         &bound,
                         started_at,
@@ -101,12 +114,14 @@ impl PageControl {
                     );
                 }
             };
-            let probe_at = self.session_time()?;
-            if probe.matched() {
-                return self.satisfied(&bound, started_at, request.condition, probe, probe_at);
+            if let Some(probe) = probe {
+                let probe_at = self.session_time()?;
+                if probe.matched() {
+                    return self.satisfied(&bound, started_at, request.condition, probe, probe_at);
+                }
+                last_probe = Some(probe);
+                last_probe_at = probe_at;
             }
-            last_probe = Some(probe);
-            last_probe_at = probe_at;
 
             let wake_at = (tokio::time::Instant::now() + request.poll_interval).min(deadline);
             match controlled(cancel, generation, bound.target_id, deadline, async {
@@ -178,7 +193,7 @@ impl PageControl {
     }
 
     async fn probe_condition(
-        &self,
+        &mut self,
         transport: &dyn CdpTransport,
         bound: &BoundTarget,
         condition: &WaitCondition,
@@ -202,6 +217,10 @@ impl PageControl {
                 )
                 .await
             }
+            WaitCondition::Semantic { query, presence } => {
+                self.probe_semantic(transport, bound, query, *presence)
+                    .await
+            }
             WaitCondition::Element { locator, state } => {
                 self.probe_element(transport, bound, locator, *state).await
             }
@@ -216,6 +235,42 @@ impl PageControl {
                 unreachable!("elapsed and network quiet use dedicated wait strategies")
             }
         }
+    }
+
+    async fn probe_semantic(
+        &mut self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        query: &SemanticQuery,
+        presence: WaitPresence,
+    ) -> Result<WaitProbe> {
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(bound.target_id),
+            query.clone(),
+            None,
+            DEFAULT_SEMANTIC_MATCH_LIMIT,
+        )?;
+        let started_at = self.session_time()?;
+        let BrowserOperationResult::QueryPage(result) = self
+            .query_page(transport, bound, request, started_at)
+            .await?
+        else {
+            unreachable!("query_page returns its associated result")
+        };
+        let result = *result;
+        let match_count = u32::try_from(result.matches.len())
+            .unwrap_or(u32::MAX)
+            .saturating_add(result.omitted_match_count);
+        let matched = (presence == WaitPresence::Present)
+            != (result.outcome == SemanticQueryOutcome::NoMatch);
+        Ok(WaitProbe::Semantic {
+            matched,
+            outcome: result.outcome,
+            match_count,
+            relaxed_match_candidates: result
+                .relaxed_match_candidates
+                .filter(|_| !matched && presence == WaitPresence::Present),
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
