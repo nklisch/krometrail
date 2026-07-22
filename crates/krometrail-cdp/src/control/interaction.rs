@@ -26,6 +26,10 @@ use crate::{
 
 const NAVIGATION_AWARE_WINDOW: std::time::Duration = std::time::Duration::from_millis(750);
 const INTERACTION_PHASE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+/// Ceiling for the silent postcondition reads (pre-dispatch URL, post-action
+/// state probe). Bounded so a stalled renderer degrades the facts instead of
+/// delaying a proven dispatch.
+const POSTCONDITION_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
 pub(super) enum ResolvedTarget {
@@ -147,6 +151,20 @@ impl PageControl {
                 generation,
             )
             .await?;
+        let pre_facts = match &resolved {
+            ResolvedTarget::Element { node, .. } => Some(node.facts),
+            ResolvedTarget::Coordinate { .. } | ResolvedTarget::TargetWide => None,
+        };
+        // Bounded pre-dispatch page-identity read for the postcondition URL
+        // fact. HandleDialog skips it: an open modal blocks the renderer's
+        // evaluation loop, and this silent read must never delay handling the
+        // dialog it precedes. Any failure degrades the fact to unobserved.
+        let pre_url = if plan.kind == BrowserOperationKind::HandleDialog {
+            None
+        } else {
+            self.read_page_url(transport, &bound, cancel, generation)
+                .await
+        };
         let navigation_events = if plan.navigation_aware {
             match browser_events.page_signal(&event_binding, PageSignalKind::Lifecycle) {
                 Ok(events) => Some(events),
@@ -164,6 +182,14 @@ impl PageControl {
         } else {
             None
         };
+        // Passive lifecycle observation for the postcondition: always
+        // subscribed before dispatch, never awaited, and drained at the
+        // observation point. Setup failure degrades the fact instead of
+        // failing dispatch; the navigation-aware wait above stays gated on
+        // `wait_for_navigation` exactly as before.
+        let mut lifecycle_observation = browser_events
+            .page_signal(&event_binding, PageSignalKind::Lifecycle)
+            .ok();
         // Subscribe before input dispatch. A JavaScript modal can block both the command response
         // and every subsequent observation command, so command-error classification alone cannot
         // provide a non-deadlocking interaction boundary.
@@ -244,11 +270,39 @@ impl PageControl {
         }
 
         let observation_started = self.session_time()?;
+        // Post-action target-state probe. Only the healthy observation path
+        // probes: a blocked or degraded renderer cannot answer, and claiming
+        // node detachment there would be a false fact — those paths leave the
+        // target not evaluated. Probe failure on the healthy path maps to a
+        // detached-or-replaced backing node with unobserved after-facts.
+        let mut post_facts: Option<krometrail_core::NodeStateFacts> = None;
+        let mut target_evaluated = false;
         let observation = if let Some(error) = completion_degraded {
             Box::new(self.unavailable_observation(&bound, started_at, error)?)
         } else if observation_blocked {
             Box::new(self.blocked_observation(&bound, started_at)?)
         } else {
+            if let ResolvedTarget::Element { node, .. } = &resolved {
+                target_evaluated = true;
+                let scope = CommandScope::Session(bound.transport_session.clone());
+                post_facts = tokio::time::timeout(
+                    POSTCONDITION_PROBE_WINDOW,
+                    cancel.race(
+                        generation,
+                        bound.target_id,
+                        super::snapshot::probe_backend_node_facts(
+                            transport,
+                            &scope,
+                            bound.target_id,
+                            node.backend_node_id,
+                        ),
+                    ),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten();
+            }
             self.await_compositor_ready(transport, &bound, cancel, generation)
                 .await;
             let observed = self
@@ -274,6 +328,29 @@ impl PageControl {
             }
         };
         let live_observation_time = observation.context.completed_at;
+        // Post URL comes from the observation's page state so the comparison
+        // is source-consistent with `inspect`; only the boolean flows inward.
+        let post_url = match &observation.page {
+            krometrail_core::ObservationPart::Available(page) => Some(page.url.as_str()),
+            krometrail_core::ObservationPart::Unavailable(_) => None,
+        };
+        let url_changed = pre_url
+            .as_deref()
+            .zip(post_url)
+            .map(|(pre, post)| pre != post);
+        let navigation_lifecycle_observed = lifecycle_observation
+            .as_mut()
+            .is_some_and(PageSignalReceiver::signal_observed);
+        let postcondition = InteractionPostcondition::from_facts(
+            if target_evaluated {
+                pre_facts.as_ref()
+            } else {
+                None
+            },
+            post_facts.as_ref(),
+            url_changed,
+            navigation_lifecycle_observed,
+        );
         let context = ObservationContext::new(
             self.session_id,
             bound.target_id,
@@ -290,7 +367,7 @@ impl PageControl {
             plan.sanitized,
             LocatorSummary::from_locator(plan.locator.as_ref()),
             InteractionOutcome::Dispatched,
-            InteractionPostcondition::unobserved(),
+            postcondition,
             parent_batch,
         )?;
         Ok((
@@ -303,6 +380,41 @@ impl PageControl {
             ),
             prepared_visibility,
         ))
+    }
+
+    /// Silent bounded `location.href` read for the postcondition URL fact.
+    /// Every failure — timeout, cancellation, transport error, malformed
+    /// response — degrades to `None`; the URL itself never leaves this layer.
+    async fn read_page_url(
+        &self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        cancel: &OperationCancellation,
+        generation: u64,
+    ) -> Option<String> {
+        let read = send_cdp_unmapped(
+            transport,
+            bound,
+            "Runtime.evaluate",
+            json!({
+                "expression": "location.href",
+                "returnByValue": true,
+                "silent": true,
+                "throwOnSideEffect": true,
+            }),
+            cancel,
+            generation,
+        );
+        let response = tokio::time::timeout(POSTCONDITION_PROBE_WINDOW, read)
+            .await
+            .ok()?
+            .ok()?
+            .ok()?;
+        response
+            .pointer("/result/value")
+            .or_else(|| response.pointer("/result/result/value"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
     }
 
     pub(super) async fn prepare_pointer_target(

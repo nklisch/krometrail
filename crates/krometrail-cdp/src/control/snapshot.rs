@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use krometrail_core::{
     AccessibleProperty, AccessibleValue, BrowserOperationResult, CssPoint, CssRect, CssSize,
     CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, KrometrailError,
-    MAX_SEMANTIC_QUERY_TEXT_BYTES, NodeReference, NonEmptyText, ObservationContext, PageSnapshot,
-    QueryPageRequest, QueryPageResult, ResolvedReferenceGeometry, Result, RetryAdvice,
-    SemanticMatch, SemanticQuery, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
+    MAX_SEMANTIC_QUERY_TEXT_BYTES, NodeReference, NodeStateFacts, NonEmptyText, ObservationContext,
+    PageSnapshot, QueryPageRequest, QueryPageResult, ResolvedReferenceGeometry, Result,
+    RetryAdvice, SemanticMatch, SemanticQuery, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
     SnapshotPageAnchor, SnapshotPageRequest, TargetId,
 };
 use serde_json::{Value, json};
@@ -131,6 +131,7 @@ pub(crate) enum ReferenceRequirement {
 pub(crate) struct ResolvedNode {
     pub(crate) backend_node_id: i64,
     pub(crate) document_quad: [f64; 8],
+    pub(crate) facts: NodeStateFacts,
 }
 
 impl PageControl {
@@ -1594,6 +1595,66 @@ async fn resolve_backend_object(
         .ok_or_else(|| stale(target_id, "backing node has no live runtime object"))
 }
 
+// `inert`, native disabled state, and `aria-disabled` suppress interaction, not painting.
+// Keep them separate from actual visibility so screenshot-only resolution can still crop
+// a visible control. The parent walk captures inherited light-DOM inertness without a
+// selector query that Chrome's side-effect analysis may conservatively refuse.
+//
+// The same probe additionally reads bounded postcondition state facts
+// (checked/expanded/selected/pressed and the value length — never the value).
+// Each fact read is individually guarded so one property Chrome's side-effect
+// analysis refuses degrades that fact to null instead of failing the probe.
+const NODE_STATE_PROBE: &str = "function(){const g=f=>{try{return f()}catch(_){return null}};const ab=v=>v==='true'?true:v==='false'?false:null;const s=getComputedStyle(this);let n=this,inert=false;while(n&&!inert){inert=n.inert===true;n=n.parentElement;}const tag=this.tagName;const type=tag==='INPUT'?(this.type||'text').toLowerCase():null;return {connected:this.isConnected,visuallyHidden:this.hidden||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.contentVisibility==='hidden',interactionBlocked:inert||this.disabled||this.getAttribute('aria-disabled')==='true',tagName:tag,inputType:type,isEditable:!this.readOnly&&!this.disabled&&(this.isContentEditable||(tag==='INPUT'&&/^(text|search|url|email|tel|password|number)$/.test(type))||tag==='TEXTAREA'),isSelect:tag==='SELECT',isFileInput:tag==='INPUT'&&type==='file',checked:g(()=>tag==='INPUT'&&(type==='checkbox'||type==='radio')?this.checked===true:ab(this.getAttribute('aria-checked'))),ariaExpanded:g(()=>ab(this.getAttribute('aria-expanded'))),selected:g(()=>tag==='OPTION'?this.selected===true:ab(this.getAttribute('aria-selected'))),pressed:g(()=>ab(this.getAttribute('aria-pressed'))),valueLength:g(()=>typeof this.value==='string'?this.value.length:null)};}";
+
+/// Parses the bounded state facts out of a probe response. Every missing or
+/// non-boolean field degrades that one fact to unobserved.
+fn parse_node_state_facts(state: &Value) -> NodeStateFacts {
+    let flag = |field: &str| state.get(field).and_then(Value::as_bool);
+    NodeStateFacts {
+        connected: flag("connected").unwrap_or(false),
+        checked: flag("checked"),
+        expanded: flag("ariaExpanded"),
+        selected: flag("selected"),
+        pressed: flag("pressed"),
+        value_length: state
+            .get("valueLength")
+            .and_then(Value::as_u64)
+            .map(|value| u32::try_from(value).unwrap_or(u32::MAX)),
+    }
+}
+
+/// Bounded post-action state probe of an already-resolved backing node.
+/// Every failure degrades to `None`; postcondition assembly maps that to a
+/// detached-or-replaced fact rather than failing a proven dispatch.
+pub(super) async fn probe_backend_node_facts(
+    transport: &dyn CdpTransport,
+    scope: &CommandScope,
+    target_id: TargetId,
+    backend_node_id: i64,
+) -> Option<NodeStateFacts> {
+    let object_id = resolve_backend_object(transport, scope, target_id, backend_node_id)
+        .await
+        .ok()?;
+    let check = transport
+        .send_raw(
+            scope,
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": object_id,
+                "functionDeclaration": NODE_STATE_PROBE,
+                "returnByValue": true,
+                "throwOnSideEffect": true,
+                "silent": true,
+            }),
+        )
+        .await
+        .ok()?;
+    let state = check
+        .pointer("/result/value")
+        .or_else(|| check.pointer("/result/result/value"))?;
+    Some(parse_node_state_facts(state))
+}
+
 async fn resolve_backend_node(
     transport: &dyn CdpTransport,
     scope: &CommandScope,
@@ -1602,22 +1663,26 @@ async fn resolve_backend_node(
     requirement: ReferenceRequirement,
 ) -> Result<ResolvedNode> {
     let object_id = resolve_backend_object(transport, scope, target_id, backend_node_id).await?;
-    let check = transport.send_raw(scope, "Runtime.callFunctionOn", json!({
-        "objectId": object_id,
-        // `inert`, native disabled state, and `aria-disabled` suppress interaction, not painting.
-        // Keep them separate from actual visibility so screenshot-only resolution can still crop
-        // a visible control. The parent walk captures inherited light-DOM inertness without a
-        // selector query that Chrome's side-effect analysis may conservatively refuse.
-        "functionDeclaration": "function(){const s=getComputedStyle(this);let n=this,inert=false;while(n&&!inert){inert=n.inert===true;n=n.parentElement;}const tag=this.tagName;const type=tag==='INPUT'?(this.type||'text').toLowerCase():null;return {connected:this.isConnected,visuallyHidden:this.hidden||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.contentVisibility==='hidden',interactionBlocked:inert||this.disabled||this.getAttribute('aria-disabled')==='true',tagName:tag,inputType:type,isEditable:!this.readOnly&&!this.disabled&&(this.isContentEditable||(tag==='INPUT'&&/^(text|search|url|email|tel|password|number)$/.test(type))||tag==='TEXTAREA'),isSelect:tag==='SELECT',isFileInput:tag==='INPUT'&&type==='file'};}",
-        "returnByValue": true,
-        "throwOnSideEffect": true,
-        "silent": true,
-    })).await.map_err(|error| transport_error(error, ErrorCode::ReferenceNotActionable, target_id))?;
+    let check = transport
+        .send_raw(
+            scope,
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": object_id,
+                "functionDeclaration": NODE_STATE_PROBE,
+                "returnByValue": true,
+                "throwOnSideEffect": true,
+                "silent": true,
+            }),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::ReferenceNotActionable, target_id))?;
     let state = check
         .pointer("/result/value")
         .or_else(|| check.pointer("/result/result/value"))
         .ok_or_else(|| not_actionable(target_id, "node actionability response is malformed"))?;
     validate_node_state(state, requirement, target_id)?;
+    let facts = parse_node_state_facts(state);
     let box_model = transport
         .send_raw(
             scope,
@@ -1654,6 +1719,7 @@ async fn resolve_backend_node(
     Ok(ResolvedNode {
         backend_node_id,
         document_quad,
+        facts,
     })
 }
 
@@ -3740,6 +3806,56 @@ mod tests {
             .unwrap_err()
             .code,
             ErrorCode::ReferenceNotActionable
+        );
+    }
+
+    #[test]
+    fn node_state_facts_parse_and_degrade_per_field() {
+        let full = json!({
+            "connected": true,
+            "checked": false,
+            "ariaExpanded": true,
+            "selected": false,
+            "pressed": true,
+            "valueLength": 12,
+        });
+        assert_eq!(
+            parse_node_state_facts(&full),
+            krometrail_core::NodeStateFacts {
+                connected: true,
+                checked: Some(false),
+                expanded: Some(true),
+                selected: Some(false),
+                pressed: Some(true),
+                value_length: Some(12),
+            }
+        );
+        // Guarded properties that could not be read arrive as null and each
+        // degrades independently; non-boolean noise degrades the same way.
+        let partial = json!({
+            "connected": true,
+            "checked": null,
+            "ariaExpanded": "mixed",
+            "valueLength": null,
+        });
+        assert_eq!(
+            parse_node_state_facts(&partial),
+            krometrail_core::NodeStateFacts {
+                connected: true,
+                ..krometrail_core::NodeStateFacts::default()
+            }
+        );
+        // A wholesale-degraded payload yields a disconnected, all-unobserved
+        // fact set rather than an error.
+        assert_eq!(
+            parse_node_state_facts(&json!({})),
+            krometrail_core::NodeStateFacts::default()
+        );
+        // Oversized value lengths saturate instead of vanishing.
+        assert_eq!(
+            parse_node_state_facts(&json!({"connected": true, "valueLength": u64::MAX}))
+                .value_length,
+            Some(u32::MAX)
         );
     }
 

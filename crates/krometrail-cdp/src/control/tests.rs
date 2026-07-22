@@ -481,6 +481,7 @@ mod interactions {
             node: ResolvedNode {
                 backend_node_id: 42,
                 document_quad: [10.0, 20.0, 30.0, 20.0, 30.0, 40.0, 10.0, 40.0],
+                facts: krometrail_core::NodeStateFacts::default(),
             },
             viewport_point: krometrail_core::CssPoint::new(20.0, 30.0).unwrap(),
         }

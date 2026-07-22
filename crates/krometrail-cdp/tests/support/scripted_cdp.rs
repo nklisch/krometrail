@@ -244,6 +244,15 @@ impl ScriptedCdp {
         if state.malformed.contains(method) {
             return Ok(json!("malformed-response"));
         }
+        // The silent pre-dispatch postcondition URL read is answered out of
+        // band so interaction scripts keep scripting only the calls they
+        // assert on; a degraded pre-URL read is exercised through held or
+        // failed transports, not through this queue.
+        if method == "Runtime.evaluate"
+            && params.get("expression").and_then(Value::as_str) == Some("location.href")
+        {
+            return Ok(json!({"result":{"value":"http://fixture/"}}));
+        }
         if let Some(response) = state
             .responses
             .get_mut(method)

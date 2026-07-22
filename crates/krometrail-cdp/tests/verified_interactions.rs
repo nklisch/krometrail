@@ -344,6 +344,285 @@ async fn dispatched_click_degrades_when_post_action_observation_command_fails() 
     session.stop().await.unwrap();
 }
 
+fn actionability_state(extra: Value) -> Value {
+    let mut state = json!({
+        "connected": true,
+        "visuallyHidden": false,
+        "interactionBlocked": false,
+        "tagName": "BUTTON",
+        "inputType": null,
+        "isEditable": false,
+        "isSelect": false,
+        "isFileInput": false,
+    });
+    state
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    json!({"result": {"value": state}})
+}
+
+/// One selector resolution: document, selector, backend identity (twice),
+/// live object, actionability/state probe, and geometry.
+fn script_selector_resolution(transport: &ScriptedCdp, state: Value) {
+    transport.push_response("DOM.getDocument", json!({"root":{"nodeId":1}}));
+    transport.push_response("DOM.querySelector", json!({"nodeId":2}));
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response(
+        "DOM.resolveNode",
+        json!({"object":{"objectId":"private-object"}}),
+    );
+    transport.push_response("Runtime.callFunctionOn", state);
+    transport.push_response(
+        "DOM.getBoxModel",
+        json!({"model":{"border":[120.0,80.0,220.0,80.0,220.0,120.0,120.0,120.0]}}),
+    );
+}
+
+/// The post-action state re-probe of the pre-resolved backing node.
+fn script_post_probe(transport: &ScriptedCdp, state: Value) {
+    transport.push_response("DOM.describeNode", json!({"node":{"backendNodeId":42}}));
+    transport.push_response(
+        "DOM.resolveNode",
+        json!({"object":{"objectId":"private-object"}}),
+    );
+    transport.push_response("Runtime.callFunctionOn", state);
+}
+
+fn selector_click(target: krometrail_core::TargetId, css: &str) -> ClickRequest {
+    ClickRequest::new(
+        PageSelection::Target(target),
+        selector(css),
+        MouseButton::Left,
+        Modifiers::default(),
+        1,
+        false,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn checkbox_click_postcondition_reports_the_checked_delta() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    let unchecked =
+        actionability_state(json!({"checked": false, "tagName": "INPUT", "inputType": "checkbox"}));
+    // Pointer preparation resolves twice (before and after scroll).
+    script_selector_resolution(&transport, unchecked.clone());
+    script_selector_resolution(&transport, unchecked);
+    script_post_probe(
+        &transport,
+        actionability_state(json!({"checked": true, "tagName": "INPUT", "inputType": "checkbox"})),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(selector_click(target, "#checkbox")),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(
+        postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::Present
+    );
+    assert_eq!(postcondition.target.checked.before, Some(false));
+    assert_eq!(postcondition.target.checked.after, Some(true));
+    assert_eq!(postcondition.target.checked.changed, Some(true));
+    assert_eq!(postcondition.target.value_length_changed, None);
+    assert_eq!(postcondition.page.url_changed, Some(false));
+    assert!(!postcondition.page.navigation_lifecycle_observed);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn same_route_click_postcondition_reports_no_url_change_or_lifecycle_signal() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(coordinate_click(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let postcondition = result.record.postcondition;
+    // The link click stayed on the same route: an observed non-change, not
+    // an absence of observation.
+    assert_eq!(postcondition.page.url_changed, Some(false));
+    assert!(!postcondition.page.navigation_lifecycle_observed);
+    assert_eq!(
+        postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::NotEvaluated
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn fill_postcondition_reports_a_value_length_change() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    script_selector_resolution(
+        &transport,
+        actionability_state(json!({
+            "tagName": "INPUT",
+            "inputType": "text",
+            "isEditable": true,
+            "valueLength": 0,
+        })),
+    );
+    // Replace-mode clearing resolves the editable object and verifies
+    // emptiness before inserting text.
+    transport.push_response(
+        "DOM.resolveNode",
+        json!({"object":{"objectId":"private-object"}}),
+    );
+    transport.push_response("Runtime.callFunctionOn", json!({"result":{"value":true}}));
+    transport.push_response("Runtime.callFunctionOn", json!({"result":{"value":0}}));
+    script_post_probe(
+        &transport,
+        actionability_state(json!({
+            "tagName": "INPUT",
+            "inputType": "text",
+            "isEditable": true,
+            "valueLength": 8,
+        })),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    PageSelection::Target(target),
+                    selector("#text-input"),
+                    "replaced",
+                    FillMode::Replace,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::Fill(result) = result else {
+        panic!("fill result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(
+        postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::Present
+    );
+    assert_eq!(postcondition.target.value_length_changed, Some(true));
+    assert_eq!(
+        postcondition.target.checked,
+        krometrail_core::FlagObservation::unobserved()
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn degraded_post_probe_keeps_the_dispatched_action_successful() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    let button = actionability_state(json!({"checked": false}));
+    script_selector_resolution(&transport, button.clone());
+    script_selector_resolution(&transport, button);
+    // The post-action re-probe loses its transport; the proven dispatch and
+    // its observation must be unaffected, with the target facts degraded.
+    transport.push_failure("DOM.describeNode", TransportError::CommandFailed);
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(selector_click(target, "#button")),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("post-probe degradation never fails a dispatched interaction");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(result.record.outcome, InteractionOutcome::Dispatched);
+    let postcondition = result.record.postcondition;
+    assert_eq!(
+        postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::DetachedOrReplaced
+    );
+    assert_eq!(postcondition.target.checked.before, Some(false));
+    assert_eq!(postcondition.target.checked.after, None);
+    assert_eq!(postcondition.target.checked.changed, None);
+    assert!(matches!(
+        result.observation.page,
+        ObservationPart::Available(_)
+    ));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn page_scoped_press_keys_observes_page_facts_without_a_target() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::PressKeys(
+                PressKeysRequest::new(
+                    PageSelection::Target(target),
+                    None,
+                    vec![KeyChord::new("Escape").unwrap()],
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::PressKeys(result) = result else {
+        panic!("press keys result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(
+        postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::NotEvaluated
+    );
+    assert_eq!(
+        postcondition.target.checked,
+        krometrail_core::FlagObservation::unobserved()
+    );
+    assert_eq!(postcondition.page.url_changed, Some(false));
+    session.stop().await.unwrap();
+}
+
 fn coordinate_click(target: krometrail_core::TargetId) -> ClickRequest {
     ClickRequest::new(
         PageSelection::Target(target),
