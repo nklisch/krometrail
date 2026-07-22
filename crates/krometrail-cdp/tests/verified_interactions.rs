@@ -2145,6 +2145,344 @@ async fn opt_in_real_chrome_executes_verified_interaction_families() {
 }
 
 #[tokio::test]
+async fn opt_in_real_chrome_qualifies_upload_affordance_resolution() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome upload-affordance qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("verified-upload-affordances");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(support::chrome::verified_interactions_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::default(),
+            },
+        ))
+        .await
+        .expect("upload affordance fixture");
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    await_fixture_ready(&session, target).await;
+    let page = PageSelection::Target(target);
+    let wrapped = query_page(
+        &session,
+        target,
+        SemanticQuery::role("button", Some(exact_semantic_text("Upload wrapped file"))).unwrap(),
+        None,
+        20,
+    )
+    .await;
+    let sibling = query_page(
+        &session,
+        target,
+        SemanticQuery::role("button", Some(exact_semantic_text("Choose sibling file"))).unwrap(),
+        None,
+        20,
+    )
+    .await;
+    assert_eq!(wrapped.outcome, SemanticQueryOutcome::Unique);
+    assert_eq!(sibling.outcome, SemanticQueryOutcome::Unique);
+    let wrapped_reference = wrapped.matches[0].reference;
+    let sibling_reference = sibling.matches[0].reference;
+    let upload_path = std::env::temp_dir().join(format!(
+        "krometrail-real-affordance-upload-{}",
+        std::process::id()
+    ));
+    std::fs::write(&upload_path, b"real affordance upload").unwrap();
+    for (reference, input_id) in [
+        (wrapped_reference, "upload-wrapping-input"),
+        (sibling_reference, "upload-sibling-input"),
+    ] {
+        session
+            .execute(
+                BrowserOperationRequest::UploadFiles(
+                    UploadFilesRequest::new(
+                        page,
+                        InteractionLocator::Element(ElementLocator::Reference(reference)),
+                        vec![ValidatedFilePath::new(upload_path.to_string_lossy()).unwrap()],
+                    )
+                    .unwrap(),
+                ),
+                krometrail_core::BrowserOperationContext::default(),
+            )
+            .await
+            .expect("upload through associated affordance");
+        assert_eq!(
+            evaluate(
+                &session,
+                target,
+                &format!("document.querySelector('#{input_id}').files.length"),
+            )
+            .await,
+            json!(1)
+        );
+    }
+    let decoy = query_page(
+        &session,
+        target,
+        SemanticQuery::role("button", Some(exact_semantic_text("Unassociated upload"))).unwrap(),
+        None,
+        20,
+    )
+    .await;
+    assert_eq!(decoy.outcome, SemanticQueryOutcome::Unique);
+    let error = session
+        .execute(
+            BrowserOperationRequest::UploadFiles(
+                UploadFilesRequest::new(
+                    page,
+                    InteractionLocator::Element(ElementLocator::Reference(
+                        decoy.matches[0].reference,
+                    )),
+                    vec![ValidatedFilePath::new(upload_path.to_string_lossy()).unwrap()],
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ReferenceNotActionable);
+    assert!(
+        error
+            .message
+            .as_str()
+            .contains("upload_target_not_file_input")
+    );
+    assert!(
+        error
+            .recovery
+            .as_ref()
+            .is_some_and(|value| { value.as_str().contains("input[type=file]") })
+    );
+    let _ = std::fs::remove_file(upload_path);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_qualifies_temporal_fill_and_native_segments() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome temporal-fill qualification; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let root = support::chrome::temporary_profile_root("verified-temporal-fill");
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig {
+                profile_root: root.path().to_path_buf(),
+                startup_timeout: std::time::Duration::from_secs(45),
+                shutdown_timeout: std::time::Duration::from_secs(3),
+            },
+        )),
+        Arc::new(
+            krometrail_cdp::transport::CdpkitTransportFactory::new()
+                .with_command_timeout(std::time::Duration::from_secs(15)),
+        ),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let session = connector
+        .connect(BrowserConnectRequest::Launch(
+            krometrail_core::LaunchBrowser {
+                executable: None,
+                profile: krometrail_core::ManagedProfile::Temporary,
+                initial_url: Some(support::chrome::verified_interactions_fixture_url()),
+                every_nth_frame: krometrail_core::EveryNthFrame::default(),
+                focus: krometrail_core::BrowserFocusPolicy::default(),
+            },
+        ))
+        .await
+        .expect("temporal fill fixture");
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    await_fixture_ready(&session, target).await;
+    let page = PageSelection::Target(target);
+    session
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    selector("#native-date-input"),
+                    "2026-07-21",
+                    FillMode::Replace,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("date fill by selector");
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "document.querySelector('#native-date-input').value",
+        )
+        .await,
+        json!("2026-07-21")
+    );
+
+    let date_label = query_page(
+        &session,
+        target,
+        SemanticQuery::Label {
+            text: exact_semantic_text("Date"),
+        },
+        None,
+        20,
+    )
+    .await;
+    assert_eq!(date_label.outcome, SemanticQueryOutcome::Unique);
+    session
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    InteractionLocator::Element(ElementLocator::Reference(
+                        date_label.matches[0].reference,
+                    )),
+                    "2027-01-02",
+                    FillMode::Replace,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("date fill by reference");
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "document.querySelector('#native-date-input').value",
+        )
+        .await,
+        json!("2027-01-02")
+    );
+    assert_eq!(
+        evaluate(
+            &session,
+            target,
+            "JSON.stringify([window.fixtureState.dateInputs,window.fixtureState.dateChanges])",
+        )
+        .await,
+        json!("[2,2]")
+    );
+
+    let invalid = session
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    selector("#native-date-input"),
+                    "not-a-date",
+                    FillMode::Replace,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(invalid.code, ErrorCode::InvalidInput);
+    assert!(invalid.message.as_str().contains("YYYY-MM-DD"));
+    let append = session
+        .execute(
+            BrowserOperationRequest::Fill(
+                FillRequest::new(
+                    page,
+                    selector("#native-date-input"),
+                    "2028-01-01",
+                    FillMode::Append,
+                    false,
+                )
+                .unwrap(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(append.code, ErrorCode::InvalidInput);
+    assert!(
+        append
+            .message
+            .as_str()
+            .contains("fill_mode_append_unsupported")
+    );
+
+    let spinbuttons = query_page(
+        &session,
+        target,
+        SemanticQuery::role("spinbutton", None).unwrap(),
+        None,
+        20,
+    )
+    .await;
+    eprintln!(
+        "native date spinbutton qualification: outcome={:?}, matches={:?}",
+        spinbuttons.outcome,
+        spinbuttons
+            .matches
+            .iter()
+            .map(|node| node.name.clone())
+            .collect::<Vec<_>>()
+    );
+    if let Some(segment) = spinbuttons.matches.first() {
+        let segment_result = session
+            .execute(
+                BrowserOperationRequest::Fill(
+                    FillRequest::new(
+                        page,
+                        InteractionLocator::Element(ElementLocator::Reference(segment.reference)),
+                        "2028-02-03",
+                        FillMode::Replace,
+                        false,
+                    )
+                    .unwrap(),
+                ),
+                krometrail_core::BrowserOperationContext::default(),
+            )
+            .await;
+        if let Err(error) = segment_result {
+            assert_eq!(error.code, ErrorCode::ReferenceNotActionable);
+            assert!(
+                error
+                    .message
+                    .as_str()
+                    .contains("target the input element itself")
+            );
+            eprintln!("native date spinbutton branch: guided owner-target failure");
+        } else {
+            eprintln!("native date spinbutton branch: canonicalized to owning input");
+        }
+    }
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn opt_in_real_chrome_resolves_semantic_queries_to_exact_references() {
     if !support::chrome::real_browser_tests_enabled() {
         eprintln!(

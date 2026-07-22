@@ -162,8 +162,13 @@ mod interactions {
     use serde_json::json;
 
     use super::super::{
-        BoundTarget, PageControl, dialog, form, interaction::ResolvedTarget, keyboard,
-        navigation::OperationCancellation, pointer, snapshot::ResolvedNode, viewport,
+        BoundTarget, PageControl, dialog, form,
+        interaction::ResolvedTarget,
+        keyboard,
+        navigation::OperationCancellation,
+        pointer,
+        snapshot::{ResolvedNode, TemporalInputKind},
+        viewport,
     };
     use super::target;
     use crate::transport::{
@@ -480,10 +485,23 @@ mod interactions {
         ResolvedTarget::Element {
             node: ResolvedNode {
                 backend_node_id: 42,
-                document_quad: [10.0, 20.0, 30.0, 20.0, 30.0, 40.0, 10.0, 40.0],
+                document_quad: Some([10.0, 20.0, 30.0, 20.0, 30.0, 40.0, 10.0, 40.0]),
                 facts: krometrail_core::NodeStateFacts::default(),
+                temporal_input: None,
             },
-            viewport_point: krometrail_core::CssPoint::new(20.0, 30.0).unwrap(),
+            viewport_point: Some(krometrail_core::CssPoint::new(20.0, 30.0).unwrap()),
+        }
+    }
+
+    fn temporal_element(kind: TemporalInputKind) -> ResolvedTarget {
+        ResolvedTarget::Element {
+            node: ResolvedNode {
+                backend_node_id: 42,
+                document_quad: Some([10.0, 20.0, 30.0, 20.0, 30.0, 40.0, 10.0, 40.0]),
+                facts: krometrail_core::NodeStateFacts::default(),
+                temporal_input: Some(kind),
+            },
+            viewport_point: Some(krometrail_core::CssPoint::new(20.0, 30.0).unwrap()),
         }
     }
 

@@ -127,11 +127,69 @@ pub(crate) enum ReferenceRequirement {
     FileInput,
 }
 
+impl ReferenceRequirement {
+    /// File uploads act on a backend node id and do not need paint or box geometry.
+    pub(crate) const fn requires_visible_geometry(self) -> bool {
+        !matches!(self, Self::FileInput)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TemporalInputKind {
+    Date,
+    Time,
+    DatetimeLocal,
+    Month,
+    Week,
+}
+
+impl TemporalInputKind {
+    pub(crate) fn from_input_type(input_type: &str) -> Option<Self> {
+        match input_type {
+            "date" => Some(Self::Date),
+            "time" => Some(Self::Time),
+            "datetime-local" => Some(Self::DatetimeLocal),
+            "month" => Some(Self::Month),
+            "week" => Some(Self::Week),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn input_type(self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::DatetimeLocal => "datetime-local",
+            Self::Month => "month",
+            Self::Week => "week",
+        }
+    }
+
+    pub(crate) const fn expected_format(self) -> &'static str {
+        match self {
+            Self::Date => "YYYY-MM-DD",
+            Self::Time => "HH:MM[:SS]",
+            Self::DatetimeLocal => "YYYY-MM-DDTHH:MM[:SS]",
+            Self::Month => "YYYY-MM",
+            Self::Week => "YYYY-Www",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedNode {
     pub(crate) backend_node_id: i64,
-    pub(crate) document_quad: [f64; 8],
+    pub(crate) document_quad: Option<[f64; 8]>,
     pub(crate) facts: NodeStateFacts,
+    pub(crate) temporal_input: Option<TemporalInputKind>,
+}
+
+impl ResolvedNode {
+    pub(crate) fn geometry(&self, target_id: TargetId) -> Result<&[f64; 8]> {
+        self.document_quad
+            .as_ref()
+            .ok_or_else(|| not_actionable(target_id, "interaction requires visible geometry"))
+    }
 }
 
 impl PageControl {
@@ -196,7 +254,7 @@ impl PageControl {
         )
         .map_err(|error| current_reference_context(error, request))?
         .origin;
-        let (min_x, max_x, min_y, max_y) = quad_bounds(&resolved.document_quad);
+        let (min_x, max_x, min_y, max_y) = quad_bounds(resolved.geometry(bound.target_id)?);
         let viewport_css_rect = CssRect::new(
             CssPoint::new(min_x - viewport_origin.x, min_y - viewport_origin.y).map_err(|_| {
                 current_reference_context(malformed_current_geometry(bound.target_id), request)
@@ -1604,7 +1662,11 @@ async fn resolve_backend_object(
 // (checked/expanded/selected/pressed and the value length — never the value).
 // Each fact read is individually guarded so one property Chrome's side-effect
 // analysis refuses degrades that fact to null instead of failing the probe.
-const NODE_STATE_PROBE: &str = "function(){const g=f=>{try{return f()}catch(_){return null}};const ab=v=>v==='true'?true:v==='false'?false:null;const s=getComputedStyle(this);let n=this,inert=false;while(n&&!inert){inert=n.inert===true;n=n.parentElement;}const tag=this.tagName;const type=tag==='INPUT'?(this.type||'text').toLowerCase():null;return {connected:this.isConnected,visuallyHidden:this.hidden||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.contentVisibility==='hidden',interactionBlocked:inert||this.disabled||this.getAttribute('aria-disabled')==='true',tagName:tag,inputType:type,isEditable:!this.readOnly&&!this.disabled&&(this.isContentEditable||(tag==='INPUT'&&/^(text|search|url|email|tel|password|number)$/.test(type))||tag==='TEXTAREA'),isSelect:tag==='SELECT',isFileInput:tag==='INPUT'&&type==='file',checked:g(()=>tag==='INPUT'&&(type==='checkbox'||type==='radio')?this.checked===true:ab(this.getAttribute('aria-checked'))),ariaExpanded:g(()=>ab(this.getAttribute('aria-expanded'))),selected:g(()=>tag==='OPTION'?this.selected===true:ab(this.getAttribute('aria-selected'))),pressed:g(()=>ab(this.getAttribute('aria-pressed'))),valueLength:g(()=>typeof this.value==='string'?this.value.length:null)};}";
+const NODE_STATE_PROBE: &str = "function(){const g=f=>{try{return f()}catch(_){return null}};const ab=v=>v==='true'?true:v==='false'?false:null;const s=getComputedStyle(this);let n=this,inert=false;while(n&&!inert){inert=n.inert===true;n=n.parentElement;}const tag=this.tagName;const type=tag==='INPUT'?(this.type||'text').toLowerCase():null;return {connected:this.isConnected,visuallyHidden:this.hidden||s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||s.contentVisibility==='hidden',interactionBlocked:inert||this.disabled||this.getAttribute('aria-disabled')==='true',tagName:tag,inputType:type,isEditable:!this.readOnly&&!this.disabled&&(this.isContentEditable||(tag==='INPUT'&&/^(text|search|url|email|tel|password|number|date|time|datetime-local|month|week)$/.test(type))||tag==='TEXTAREA'),isSelect:tag==='SELECT',isFileInput:tag==='INPUT'&&type==='file',checked:g(()=>tag==='INPUT'&&(type==='checkbox'||type==='radio')?this.checked===true:ab(this.getAttribute('aria-checked'))),ariaExpanded:g(()=>ab(this.getAttribute('aria-expanded'))),selected:g(()=>tag==='OPTION'?this.selected===true:ab(this.getAttribute('aria-selected'))),pressed:g(()=>ab(this.getAttribute('aria-pressed'))),valueLength:g(()=>typeof this.value==='string'?this.value.length:null)};}";
+
+const ASSOCIATED_FILE_INPUT_FUNCTION: &str = "function(){const isFile=e=>e instanceof HTMLInputElement&&e.type==='file';if(isFile(this))return this;const label=this.closest&&this.closest('label');if(label&&isFile(label.control))return label.control;const contained=this.querySelector&&this.querySelector('input[type=file]');if(isFile(contained))return contained;const ids=(this.getAttribute('aria-controls')||'').split(/\\s+/).concat((this.getAttribute('aria-owns')||'').split(/\\s+/));for(const id of ids){if(!id)continue;const candidate=document.getElementById(id);if(isFile(candidate))return candidate;}const ownId=this.id;if(ownId){const labelled=Array.from(document.querySelectorAll('input[type=file][aria-labelledby]')).find(input=>(input.getAttribute('aria-labelledby')||'').split(/\\s+/).includes(ownId));if(labelled)return labelled;}const parent=this.parentElement;if(parent){const candidates=Array.from(parent.querySelectorAll('input[type=file]'));if(candidates.length===1)return candidates[0];}return null;}";
+
+const EDITABLE_HOST_FUNCTION: &str = "function(){const root=this.getRootNode&&this.getRootNode();const host=root&&root.host;return host instanceof HTMLInputElement?host:this;}";
 
 /// Parses the bounded state facts out of a probe response. Every missing or
 /// non-boolean field degrades that one fact to unobserved.
@@ -1687,8 +1749,138 @@ async fn resolve_backend_node(
         .pointer("/result/value")
         .or_else(|| check.pointer("/result/result/value"))
         .ok_or_else(|| not_actionable(target_id, "node actionability response is malformed"))?;
+    if requirement == ReferenceRequirement::FileInput
+        && state.get("isFileInput").and_then(Value::as_bool) != Some(true)
+    {
+        if state.get("connected").and_then(Value::as_bool) != Some(true) {
+            return Err(stale(target_id, "backing node is detached"));
+        }
+        if state.get("interactionBlocked").and_then(Value::as_bool) != Some(false) {
+            return Err(not_actionable(
+                target_id,
+                "backing node is inert, disabled, or aria-disabled",
+            ));
+        }
+        let associated_backend =
+            resolve_associated_file_input(transport, scope, target_id, &object_id).await?;
+        let Some(associated_backend) = associated_backend else {
+            return Err(upload_target_not_file_input(target_id));
+        };
+        // The association probe is intentionally not recursive: the canonical node is
+        // revalidated once, so a stale or non-file association cannot widen the search.
+        return resolve_backend_node_once(
+            transport,
+            scope,
+            target_id,
+            associated_backend,
+            requirement,
+        )
+        .await;
+    }
+    if requirement == ReferenceRequirement::Editable
+        && state.get("isEditable").and_then(Value::as_bool) != Some(true)
+    {
+        if state.get("connected").and_then(Value::as_bool) != Some(true) {
+            return Err(stale(target_id, "backing node is detached"));
+        }
+        if state.get("visuallyHidden").and_then(Value::as_bool) != Some(false) {
+            return Err(not_actionable(target_id, "backing node is hidden"));
+        }
+        if state.get("interactionBlocked").and_then(Value::as_bool) != Some(false) {
+            return Err(not_actionable(
+                target_id,
+                "backing node is inert, disabled, or aria-disabled",
+            ));
+        }
+        let host_backend =
+            resolve_editable_host(transport, scope, target_id, backend_node_id, &object_id).await?;
+        if let Some(host_backend) = host_backend.filter(|backend| *backend != backend_node_id) {
+            // The host is the owning native input. Revalidation is bounded to this one
+            // promotion and never attempts another shadow traversal.
+            return resolve_backend_node_once(
+                transport,
+                scope,
+                target_id,
+                host_backend,
+                requirement,
+            )
+            .await;
+        }
+        return Err(not_actionable(
+            target_id,
+            "backing node is not valid for the requested interaction; for a native date/time field, target the input element itself",
+        ));
+    }
+    resolve_backend_node_from_state(
+        transport,
+        scope,
+        target_id,
+        backend_node_id,
+        requirement,
+        state,
+    )
+    .await
+}
+
+async fn resolve_backend_node_once(
+    transport: &dyn CdpTransport,
+    scope: &CommandScope,
+    target_id: TargetId,
+    backend_node_id: i64,
+    requirement: ReferenceRequirement,
+) -> Result<ResolvedNode> {
+    let object_id = resolve_backend_object(transport, scope, target_id, backend_node_id).await?;
+    let check = transport
+        .send_raw(
+            scope,
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": object_id,
+                "functionDeclaration": NODE_STATE_PROBE,
+                "returnByValue": true,
+                "throwOnSideEffect": true,
+                "silent": true,
+            }),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::ReferenceNotActionable, target_id))?;
+    let state = check
+        .pointer("/result/value")
+        .or_else(|| check.pointer("/result/result/value"))
+        .ok_or_else(|| not_actionable(target_id, "node actionability response is malformed"))?;
+    resolve_backend_node_from_state(
+        transport,
+        scope,
+        target_id,
+        backend_node_id,
+        requirement,
+        state,
+    )
+    .await
+}
+
+async fn resolve_backend_node_from_state(
+    transport: &dyn CdpTransport,
+    scope: &CommandScope,
+    target_id: TargetId,
+    backend_node_id: i64,
+    requirement: ReferenceRequirement,
+    state: &Value,
+) -> Result<ResolvedNode> {
     validate_node_state(state, requirement, target_id)?;
     let facts = parse_node_state_facts(state);
+    let temporal_input = state
+        .get("inputType")
+        .and_then(Value::as_str)
+        .and_then(TemporalInputKind::from_input_type);
+    if !requirement.requires_visible_geometry() {
+        return Ok(ResolvedNode {
+            backend_node_id,
+            document_quad: None,
+            facts,
+            temporal_input,
+        });
+    }
     let box_model = transport
         .send_raw(
             scope,
@@ -1724,9 +1916,110 @@ async fn resolve_backend_node(
     }
     Ok(ResolvedNode {
         backend_node_id,
-        document_quad,
+        document_quad: Some(document_quad),
         facts,
+        temporal_input,
     })
+}
+
+async fn resolve_associated_file_input(
+    transport: &dyn CdpTransport,
+    scope: &CommandScope,
+    target_id: TargetId,
+    object_id: &str,
+) -> Result<Option<i64>> {
+    let response = transport
+        .send_raw(
+            scope,
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": object_id,
+                "functionDeclaration": ASSOCIATED_FILE_INPUT_FUNCTION,
+                "returnByValue": false,
+                "throwOnSideEffect": false,
+                "silent": true,
+            }),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::ReferenceNotActionable, target_id))?;
+    let Some(associated_object_id) = response
+        .pointer("/result/result/objectId")
+        .or_else(|| response.pointer("/result/objectId"))
+        .or_else(|| response.pointer("/result/object/objectId"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(None);
+    };
+    let described = transport
+        .send_raw(
+            scope,
+            "DOM.describeNode",
+            json!({"objectId": associated_object_id}),
+        )
+        .await
+        .map_err(|_| stale(target_id, "associated file input is no longer available"))?;
+    Ok(described
+        .pointer("/node/backendNodeId")
+        .or_else(|| described.pointer("/result/node/backendNodeId"))
+        .and_then(Value::as_i64))
+}
+
+async fn resolve_editable_host(
+    transport: &dyn CdpTransport,
+    scope: &CommandScope,
+    target_id: TargetId,
+    backend_node_id: i64,
+    object_id: &str,
+) -> Result<Option<i64>> {
+    let response = transport
+        .send_raw(
+            scope,
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": object_id,
+                "functionDeclaration": EDITABLE_HOST_FUNCTION,
+                "returnByValue": false,
+                "throwOnSideEffect": false,
+                "silent": true,
+            }),
+        )
+        .await
+        .map_err(|error| transport_error(error, ErrorCode::ReferenceNotActionable, target_id))?;
+    let Some(host_object_id) = response
+        .pointer("/result/result/objectId")
+        .or_else(|| response.pointer("/result/objectId"))
+        .or_else(|| response.pointer("/result/object/objectId"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(None);
+    };
+    let described = transport
+        .send_raw(
+            scope,
+            "DOM.describeNode",
+            json!({"objectId": host_object_id}),
+        )
+        .await
+        .map_err(|_| stale(target_id, "native date/time owner is no longer available"))?;
+    let host_backend = described
+        .pointer("/node/backendNodeId")
+        .or_else(|| described.pointer("/result/node/backendNodeId"))
+        .and_then(Value::as_i64);
+    Ok(host_backend.or(Some(backend_node_id)))
+}
+
+fn upload_target_not_file_input(target_id: TargetId) -> krometrail_core::KrometrailError {
+    operation_error(
+        ErrorCode::ReferenceNotActionable,
+        target_id,
+        "upload_target_not_file_input: element is not a file input and no associated file input was found (label association, contained input, aria-controls/aria-owns, aria-labelledby, unique sibling input)",
+    )
+    .with_recovery(
+        NonEmptyText::new(
+            "target the page's native input[type=file] directly (CSS selector escape hatch) or an element associated with it",
+        )
+        .expect("static upload recovery is non-empty"),
+    )
 }
 
 fn validate_node_state(
@@ -1737,7 +2030,9 @@ fn validate_node_state(
     if state.get("connected").and_then(Value::as_bool) != Some(true) {
         return Err(stale(target_id, "backing node is detached"));
     }
-    if state.get("visuallyHidden").and_then(Value::as_bool) != Some(false) {
+    if requirement.requires_visible_geometry()
+        && state.get("visuallyHidden").and_then(Value::as_bool) != Some(false)
+    {
         return Err(not_actionable(target_id, "backing node is hidden"));
     }
     if requirement != ReferenceRequirement::VisibleGeometry
@@ -4041,13 +4336,151 @@ mod tests {
     }
 
     #[test]
+    fn temporal_input_kinds_match_browser_input_types_and_formats() {
+        assert_eq!(
+            TemporalInputKind::from_input_type("date").map(TemporalInputKind::expected_format),
+            Some("YYYY-MM-DD")
+        );
+        assert_eq!(
+            TemporalInputKind::from_input_type("datetime-local")
+                .map(TemporalInputKind::expected_format),
+            Some("YYYY-MM-DDTHH:MM[:SS]")
+        );
+        assert_eq!(
+            TemporalInputKind::from_input_type("week").map(TemporalInputKind::input_type),
+            Some("week")
+        );
+        assert_eq!(TemporalInputKind::from_input_type("text"), None);
+    }
+
+    #[tokio::test]
+    async fn file_input_resolution_canonicalizes_affordance_without_geometry() {
+        let transport = SnapshotTransport::default();
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":10}}));
+        transport.push(
+            "DOM.resolveNode",
+            json!({"object":{"objectId":"affordance"}}),
+        );
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({
+                "result": {"value": {
+                    "connected": true,
+                    "visuallyHidden": false,
+                    "interactionBlocked": false,
+                    "isFileInput": false,
+                }}
+            }),
+        );
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({"result":{"result":{"type":"object","objectId":"associated"}}}),
+        );
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":20}}));
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":20}}));
+        transport.push("DOM.resolveNode", json!({"object":{"objectId":"file"}}));
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({
+                "result": {"value": {
+                    "connected": true,
+                    "visuallyHidden": true,
+                    "interactionBlocked": false,
+                    "isFileInput": true,
+                }}
+            }),
+        );
+        let scope = CommandScope::Session(TransportSessionId::new("session-a").unwrap());
+        let resolved = resolve_backend_node(
+            &transport,
+            &scope,
+            target(),
+            10,
+            ReferenceRequirement::FileInput,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resolved.backend_node_id, 20);
+        assert!(resolved.document_quad.is_none());
+        let methods = transport
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(method, _)| method.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            [
+                "DOM.describeNode".to_owned(),
+                "DOM.resolveNode".to_owned(),
+                "Runtime.callFunctionOn".to_owned(),
+                "Runtime.callFunctionOn".to_owned(),
+                "DOM.describeNode".to_owned(),
+                "DOM.describeNode".to_owned(),
+                "DOM.resolveNode".to_owned(),
+                "Runtime.callFunctionOn".to_owned(),
+            ]
+        );
+        let calls = transport.calls.lock().unwrap();
+        assert_eq!(calls[3].1["throwOnSideEffect"], json!(false));
+        assert_eq!(calls[3].1["returnByValue"], json!(false));
+        assert!(calls.iter().all(|(method, _)| method != "DOM.getBoxModel"));
+    }
+
+    #[tokio::test]
+    async fn file_input_resolution_reports_guided_error_when_affordance_has_no_association() {
+        let transport = SnapshotTransport::default();
+        transport.push("DOM.describeNode", json!({"node":{"backendNodeId":10}}));
+        transport.push("DOM.resolveNode", json!({"object":{"objectId":"button"}}));
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({
+                "result": {"value": {
+                    "connected": true,
+                    "visuallyHidden": false,
+                    "interactionBlocked": false,
+                    "isFileInput": false,
+                }}
+            }),
+        );
+        transport.push(
+            "Runtime.callFunctionOn",
+            json!({"result":{"result":{"type":"object","subtype":"null","value":null}}}),
+        );
+        let scope = CommandScope::Session(TransportSessionId::new("session-a").unwrap());
+        let error = resolve_backend_node(
+            &transport,
+            &scope,
+            target(),
+            10,
+            ReferenceRequirement::FileInput,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::ReferenceNotActionable);
+        assert!(
+            error
+                .message
+                .as_str()
+                .contains("upload_target_not_file_input")
+        );
+        assert!(error.message.as_str().contains("unique sibling input"));
+        assert!(
+            error
+                .recovery
+                .as_ref()
+                .is_some_and(|value| { value.as_str().contains("input[type=file]") })
+        );
+    }
+
+    #[test]
     fn every_requirement_rejects_hidden_or_disconnected_nodes() {
         for requirement in [
             ReferenceRequirement::VisibleGeometry,
             ReferenceRequirement::Actionable,
             ReferenceRequirement::Editable,
             ReferenceRequirement::Selectable,
-            ReferenceRequirement::FileInput,
         ] {
             let hidden = json!({
                 "connected": true,
@@ -4072,6 +4505,15 @@ mod tests {
                 ErrorCode::StaleReference
             );
         }
+        let hidden_file = json!({
+            "connected": true,
+            "visuallyHidden": true,
+            "interactionBlocked": false,
+            "isFileInput": true,
+        });
+        assert!(
+            validate_node_state(&hidden_file, ReferenceRequirement::FileInput, target()).is_ok()
+        );
     }
 
     #[test]

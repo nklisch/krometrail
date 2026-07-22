@@ -40,7 +40,7 @@ const PRE_URL_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_mill
 pub(super) enum ResolvedTarget {
     Element {
         node: ResolvedNode,
-        viewport_point: CssPoint,
+        viewport_point: Option<CssPoint>,
     },
     Coordinate {
         viewport_point: CssPoint,
@@ -51,9 +51,18 @@ pub(super) enum ResolvedTarget {
 impl ResolvedTarget {
     pub(super) fn point(&self, target_id: TargetId) -> Result<CssPoint> {
         match self {
-            Self::Element { viewport_point, .. } | Self::Coordinate { viewport_point } => {
-                Ok(*viewport_point)
+            Self::Element {
+                viewport_point: Some(viewport_point),
+                ..
             }
+            | Self::Coordinate { viewport_point } => Ok(*viewport_point),
+            Self::Element {
+                viewport_point: None,
+                ..
+            } => Err(interaction_error(
+                target_id,
+                "interaction requires visible geometry",
+            )),
             Self::TargetWide => Err(interaction_error(
                 target_id,
                 "interaction requires a pointer target",
@@ -763,13 +772,18 @@ impl PageControl {
                         ));
                     }
                 }
-                let (min_x, max_x, min_y, max_y) = quad_bounds(&resolved.document_quad);
-                let document_point = CssPoint::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)?;
-                // DOM.getBoxModel quads and Input coordinates share main-frame viewport CSS
-                // space. Document-space offsets are only applied to explicitly declared document
-                // coordinates; subtracting scroll here mis-aims elements after page movement.
-                let viewport = document_point;
+                let viewport = resolved
+                    .document_quad
+                    .as_ref()
+                    .map(|quad| {
+                        let (min_x, max_x, min_y, max_y) = quad_bounds(quad);
+                        CssPoint::new((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+                    })
+                    .transpose()?;
                 if require_viewport_point {
+                    let viewport = viewport.ok_or_else(|| {
+                        interaction_error(bound.target_id, "interaction requires visible geometry")
+                    })?;
                     let (_, _, width, height) = self
                         .visual_viewport(transport, bound, cancel, generation)
                         .await?;

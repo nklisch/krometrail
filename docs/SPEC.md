@@ -276,6 +276,10 @@ case. Presets do not imply user-agent emulation; custom metrics and clear retain
 - upload a file;
 - accept or dismiss a browser dialog.
 
+Upload resolves a semantic affordance to its associated native `input[type=file]` when the relationship is bounded and unique, or fails with guidance naming the required native target.
+
+Fill supports native date/time inputs through browser-validated complete values and dispatches bubbled `input` and `change` events.
+
 #### File upload path authority
 
 File upload carries the local operator's own filesystem authority. Krometrail

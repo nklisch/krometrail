@@ -146,7 +146,7 @@ impl PageControl {
                         ReferenceRequirement::VisibleGeometry,
                     )
                     .await?;
-                let (min_x, max_x, min_y, max_y) = quad_bounds(&resolved.document_quad);
+                let (min_x, max_x, min_y, max_y) = quad_bounds(resolved.geometry(bound.target_id)?);
                 (
                     Some(CssRect::new(
                         CssPoint::new(min_x, min_y)?,
@@ -165,7 +165,7 @@ impl PageControl {
                         ReferenceRequirement::VisibleGeometry,
                     )
                     .await?;
-                let (min_x, max_x, min_y, max_y) = quad_bounds(&resolved.document_quad);
+                let (min_x, max_x, min_y, max_y) = quad_bounds(resolved.geometry(bound.target_id)?);
                 (
                     Some(CssRect::new(
                         CssPoint::new(min_x, min_y)?,

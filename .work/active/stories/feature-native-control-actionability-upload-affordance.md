@@ -1,14 +1,14 @@
 ---
 id: feature-native-control-actionability-upload-affordance
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: feature-native-control-actionability
 depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-21
-updated: 2026-07-21
+updated: 2026-07-22
 ---
 
 # Upload affordance resolves to its associated native file input
@@ -44,3 +44,27 @@ feature body (`feature-native-control-actionability`).
 - Real-browser qualification: both affordance patterns upload successfully
   (`files.length` observed via evaluate); decoy fails with the guided message.
 - `docs/SPEC.md` updated; `bun run docs:build` regenerates the public doc.
+
+## Implementation
+
+- Made `ReferenceRequirement::FileInput` backend-node-only: hidden or zero-area
+  file inputs skip visibility/box-model acquisition while connectedness and
+  disabled-state validation remain enforced. `ResolvedNode` now carries an
+  optional quad behind `geometry()`, and interaction targets carry an optional
+  pointer point; pointer and screenshot consumers use the checked geometry path.
+- Added the bounded ordered association probe (label, contained input,
+  `aria-controls`/`aria-owns`, `aria-labelledby`, unique parent descendant),
+  with side-effect analysis disabled, object-to-backend description, one
+  canonical-node revalidation, and the specified guided error/recovery.
+- Added deterministic scripted-CDP coverage for probe ordering, hidden-input
+  no-geometry resolution, and the no-association error. Added the wrapping-label,
+  sibling-hidden, and ambiguous decoy fixture patterns and a real-Chrome test;
+  the opt-in qualification passed for both uploads and the guided decoy failure.
+- Mechanical adaptation: current `ResolvedNode` already had `facts:
+  NodeStateFacts` and the post-action re-probe path. The optional geometry was
+  added without removing facts, and upload/temporal canonical targets therefore
+  retain pre/post fact capture on the existing path. The dependent temporal
+  input metadata scaffolding shares this struct change and is completed by the
+  next story.
+- `bun run docs:build` passed. The full Rust gate was run before this story
+  commit and passed.
