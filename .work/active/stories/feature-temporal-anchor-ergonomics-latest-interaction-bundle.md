@@ -1,12 +1,21 @@
 ---
-id: idea-bundle-latest-interaction-anchor
+id: feature-temporal-anchor-ergonomics-latest-interaction-bundle
+kind: story
+stage: implementing
+tags: [visual, agent-ux, bug]
+parent: feature-temporal-anchor-ergonomics
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-21
 updated: 2026-07-21
-tags: [temporal, bug]
 ---
 
-`temporal_debug_bundle` fails with the `latest_interaction` anchor. Found during a fresh
-v1.4.0 MCP shakedown.
+# Fix `temporal_debug_bundle` for the `latest_interaction` anchor
+
+`temporal_debug_bundle` fails with the `latest_interaction` anchor. Found during
+the 2026-07-21 v1.4.0 MCP shakedown and independently reported in GitHub issue
+#14 (finding #6) from a separate macOS E2E run — two independent reproductions.
 
 ## Repro
 
@@ -41,8 +50,9 @@ point into the temporal bundle, and it is currently unusable. Callers must first
 and pass an explicit anchor. Not a data-loss or privacy issue — purely an ergonomic dead end
 on a documented anchor.
 
-## Fix direction
+## Acceptance
 
-In the bundle's post-resolution invariant check, compare against the collapsed/resolved
-anchor kind rather than the request-only anchor, matching how `resolve_temporal_range`
-already handles the collapse. Add a regression test that bundles via `latest_interaction`.
+- The bundle's post-resolution invariant check compares against the
+  collapsed/resolved anchor kind rather than the request-only anchor, matching
+  how `resolve_temporal_range` already handles the collapse.
+- A regression test bundles via `latest_interaction` successfully.
