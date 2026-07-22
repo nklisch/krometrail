@@ -356,3 +356,27 @@ async fn fill_temporal(
   first Feature 4 workspace-test attempt hit `/tmp` exhaustion while linking an
   unrelated store test; only the task-owned target was removed, then the serial
   rerun passed.
+
+## Review adjudication (standard weight, fresh-context Opus, one pass)
+
+Verified clean: pointer-requirement rigor unweakened (FileInput-only geometry
+relaxation, all optional-geometry consumers checked), bounded deterministic
+association probe (never spatial), guided failures with recovery, no-recursion
+re-validation, postcondition-fact reconciliation held for canonicalized
+targets, browser-assignment temporal validation, gated tests skipped by
+default.
+
+Findings, all accepted, routed to the post-implementation fix batch (closure
+is fix-verification only):
+1. (significant) `datetime-local` strict read-back comparison rejects
+   browser-normalized valid values (seconds elided) with a guided message
+   advertising the rejected form — treat rejection as sanitize-to-empty
+   instead of strict inequality; add a datetime-local/seconds qualification
+   case.
+2. (minor) Spinbutton-segment qualification accepts either branch at runtime —
+   pin the canonicalization-success branch and assert the owning input's
+   value.
+3. (minor) No deterministic scripted coverage for the editable-host promotion
+   path — mirror the upload canonicalization test shape.
+4. (nit) Editable-miss guidance is date/time-flavored for non-temporal misses —
+   scope the message.

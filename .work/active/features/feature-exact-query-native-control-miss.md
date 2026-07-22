@@ -271,3 +271,18 @@ const fn is_private_use(character: char) -> bool
   edited directly. Full verification passed with the escalated local test process: format,
   wire-enum schema check, workspace check, workspace tests, and workspace clippy with
   `-D warnings`.
+
+## Review adjudication (standard weight, fresh-context Opus, one pass)
+
+Verified clean: single shared normalizer authority (symmetric, all query
+kinds), exact codepoint lists per design, icon-only guard, genuinely-red
+tests, AX-byte evidence on real-Chrome failure, canonical evidence untouched,
+relaxed-candidate surface unchanged. Real-Chrome reproduction confirmed the
+codepoint hypothesis.
+
+Findings: (minor, accepted) the sr-only intentional-boundary assertion runs
+only in a conditional branch — a future over-stripping regression would pass
+silently; hoist to an unconditional NoMatch pin. (nit, rejected) ZWJ stripping
+can conflate emoji-sequence names — design-accepted risk, surfaces as
+Ambiguous, never a wrong single action. Fix routed to the post-implementation
+batch; closure is fix-verification only.
