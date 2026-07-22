@@ -151,7 +151,8 @@ dialogs, status messages, and named text. It describes current post-action state
 
 Successful interaction results additionally carry a bounded, on-by-default postcondition block of observed pre/post
 deltas relevant to the dispatched action: navigation and URL identity, target checked/expanded/selected state,
-backing-node identity change, and side-channel outcomes such as a new page, download activity, or a clipboard result.
+backing-node identity change, and side-channel outcomes such as a new page or download activity; the persisted
+write-clipboard record additionally carries its confirmed-write outcome.
 Postconditions report observed facts. At most one conservative expectation note may describe a common expectation
 that observably did not hold — for example, a link activation with no navigation — without claiming the action
 failed. When the bounded compositor-rendezvous signal preceding an automatic post-action screenshot is not observed, the

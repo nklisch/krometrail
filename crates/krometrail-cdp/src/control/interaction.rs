@@ -313,8 +313,9 @@ impl PageControl {
         // Post-action target-state probe. Only the healthy observation path
         // probes: a blocked or degraded renderer cannot answer, and claiming
         // node detachment there would be a false fact — those paths leave the
-        // target not evaluated. Probe failure on the healthy path maps to a
-        // detached-or-replaced backing node with unobserved after-facts.
+        // target not evaluated. Probe failure or timeout on the healthy path
+        // maps to an unobserved target outcome; only a probe that ran and
+        // reported the node disconnected yields a detachment fact.
         let mut post_facts: Option<krometrail_core::NodeStateFacts> = None;
         let mut target_evaluated = false;
         let observation = if let Some(error) = completion_degraded {

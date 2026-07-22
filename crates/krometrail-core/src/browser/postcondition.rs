@@ -197,18 +197,9 @@ pub(crate) enum ExpectationEvaluation {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ObservationSource {
-    MainFrameNavigationSignal,
-    UrlDelta,
-    TargetStateProbe,
-    PageCursorReconciliation,
-    DownloadCursorAuthority,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ChannelObservation {
-    Changed { observed_through: ObservationSource },
-    Unchanged { observed_through: ObservationSource },
+    Changed,
+    Unchanged,
     Unavailable,
     NotApplicable,
 }
@@ -231,12 +222,8 @@ fn target_channel_observation(
         return ChannelObservation::Unavailable;
     }
     match changed {
-        Some(true) => ChannelObservation::Changed {
-            observed_through: ObservationSource::TargetStateProbe,
-        },
-        Some(false) => ChannelObservation::Unchanged {
-            observed_through: ObservationSource::TargetStateProbe,
-        },
+        Some(true) => ChannelObservation::Changed,
+        Some(false) => ChannelObservation::Unchanged,
         None => ChannelObservation::Unavailable,
     }
 }
@@ -250,17 +237,9 @@ fn channel_observation(
             if facts.page.main_frame_navigation_observed == Some(true)
                 || facts.page.url_changed == Some(true)
             {
-                ChannelObservation::Changed {
-                    observed_through: if facts.page.main_frame_navigation_observed == Some(true) {
-                        ObservationSource::MainFrameNavigationSignal
-                    } else {
-                        ObservationSource::UrlDelta
-                    },
-                }
+                ChannelObservation::Changed
             } else if facts.page.main_frame_navigation_observed == Some(false) {
-                ChannelObservation::Unchanged {
-                    observed_through: ObservationSource::MainFrameNavigationSignal,
-                }
+                ChannelObservation::Unchanged
             } else {
                 ChannelObservation::Unavailable
             }
@@ -272,13 +251,9 @@ fn channel_observation(
         }
         ExpectationChannel::NewPage => match facts.new_pages.as_ref() {
             Some(value) if !value.pages.is_empty() || value.omitted > 0 => {
-                ChannelObservation::Changed {
-                    observed_through: ObservationSource::PageCursorReconciliation,
-                }
+                ChannelObservation::Changed
             }
-            Some(_) => ChannelObservation::Unchanged {
-                observed_through: ObservationSource::PageCursorReconciliation,
-            },
+            Some(_) => ChannelObservation::Unchanged,
             None => ChannelObservation::Unavailable,
         },
         ExpectationChannel::Download if facts.signals.download_requests.is_some_and(|n| n > 0) => {
@@ -286,13 +261,9 @@ fn channel_observation(
         }
         ExpectationChannel::Download => match facts.downloads.as_ref() {
             Some(value) if !value.downloads.is_empty() || value.omitted > 0 => {
-                ChannelObservation::Changed {
-                    observed_through: ObservationSource::DownloadCursorAuthority,
-                }
+                ChannelObservation::Changed
             }
-            Some(_) => ChannelObservation::Unchanged {
-                observed_through: ObservationSource::DownloadCursorAuthority,
-            },
+            Some(_) => ChannelObservation::Unchanged,
             None => ChannelObservation::Unavailable,
         },
         ExpectationChannel::Checked => {
@@ -338,12 +309,14 @@ pub(crate) fn evaluate_expectations(
         .iter()
         .find(|expectation| target_matches(expectation.target, target_role))
     else {
-        return if expectations.is_empty() || target_role.is_none() {
-            if expectations.is_empty() {
-                ExpectationEvaluation::NotApplicable
-            } else {
-                ExpectationEvaluation::NotEvaluated
-            }
+        // No declaration matched: an action with no declared expectations is
+        // not applicable; a declared action whose target carried no role is
+        // not evaluated; a known role that matches no declaration is not
+        // applicable.
+        return if expectations.is_empty() {
+            ExpectationEvaluation::NotApplicable
+        } else if target_role.is_none() {
+            ExpectationEvaluation::NotEvaluated
         } else {
             ExpectationEvaluation::NotApplicable
         };
@@ -361,16 +334,11 @@ pub(crate) fn evaluate_expectations(
             continue;
         }
         match observation {
-            ChannelObservation::Changed { observed_through }
-            | ChannelObservation::Unchanged { observed_through } => {
-                let _ = observed_through;
-            }
+            ChannelObservation::Changed => return ExpectationEvaluation::Held,
+            ChannelObservation::Unchanged => {}
             ChannelObservation::Unavailable | ChannelObservation::NotApplicable => {
                 unavailable = true;
             }
-        }
-        if matches!(observation, ChannelObservation::Changed { .. }) {
-            return ExpectationEvaluation::Held;
         }
     }
     if unavailable {
