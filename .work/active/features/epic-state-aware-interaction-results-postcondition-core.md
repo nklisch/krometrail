@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results-postcondition-core
 kind: feature
-stage: implementing
+stage: review
 tags: [agent-ux, browser]
 parent: epic-state-aware-interaction-results
 depends_on: []
@@ -332,3 +332,49 @@ acceptable: the concise block IS the record field).
 - **Post-probe timing races legitimate async UI**: a framework may replace the
   node after observation. `DetachedOrReplaced` is itself the honest fact;
   observation-point framing in SPEC covers it.
+
+## Implementation notes
+
+All three stories landed in design order (commits `dc17fe19`, `c7b84b3d`,
+`bf02f1e8`); per-story detail lives in the story bodies. Deviations and
+discoveries beyond the design text:
+
+- **Container types derive plain `Deserialize`.** The design listed the
+  postcondition containers Serialize-only, but the record persists as opaque
+  `record_json` and must decode; validation concentrates in
+  `FlagObservation`'s `deserialize_validated` (the only invariant-bearing
+  member), per the validated-wire-contracts "skip for simple data" guidance.
+- **Blocked/degraded observation paths report `NotEvaluated`, not
+  `DetachedOrReplaced`.** The design's step 3 only defines the post probe on
+  the observe path; probing a dialog-blocked renderer would time out and
+  then falsely claim node detachment. `TargetNodeOutcome::NotEvaluated`'s doc
+  is widened accordingly ("no element target, or the observation point was
+  blocked"). On the healthy path, probe/resolution/transport failure maps to
+  `DetachedOrReplaced` with unobserved after-facts exactly as designed.
+- **HandleDialog also skips the pre-URL read** — an open modal blocks the
+  renderer's evaluation loop, and the read must never sit in front of the
+  dialog handling that unblocks it. Its URL fact degrades to unobserved.
+- **Both silent reads share a 2s `POSTCONDITION_PROBE_WINDOW`** so a stalled
+  renderer degrades facts instead of delaying a proven dispatch.
+- **A disconnected post probe keeps its readable state out of the
+  after-facts**: a detached node's properties no longer describe the current
+  document, so only `DetachedOrReplaced` is claimed.
+- **Scripted-harness seam**: `ScriptedCdp` answers the silent `location.href`
+  expression out of band (before its per-method queue) so the existing
+  interaction scripts stayed byte-stable; the URL comparison's other side
+  remains fully scriptable through the observation identity read.
+- **Risk #1 (throwOnSideEffect conservatism) qualified against real Chrome**:
+  the widened probe with per-property guards passes the local Chrome's
+  side-effect analyzer; the new gated checkbox qualification observes the
+  full `false → true, changed: true` delta end-to-end in 1.2s.
+
+Verification summary: full gate green after each story (fmt, wire-enum
+schema guard, check, workspace tests — finally 1189 passed / 0 failed —
+clippy `-D warnings`). Real-Chrome opt-in runs: the new checkbox
+qualification and the dialog-synchronization test pass; the pre-existing
+`opt_in_real_chrome_executes_verified_interaction_families` fails identically
+at the v1.4.0 release commit on this machine (its fixture-mutation helper
+`window.replaceClickTarget()` is refused as side-effecting by the local
+Chrome's read-only evaluation) — pre-existing, environment-dependent, and
+untouched by this feature; flagged here for the review lane rather than
+fixed inside this feature's diff.
