@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results
 kind: epic
-stage: implementing
+stage: done
 tags: [agent-ux, browser]
 parent: null
 depends_on: []
@@ -241,3 +241,19 @@ adjudicated by the receiving orchestrator:
 
 - GitHub issue #14 (E2E ergonomics: semantic interaction and retained-evidence
   verification gaps), findings 1, 5, 8, 9.
+
+## Aggregate review (fresh-context Opus, deeper epic pass)
+
+No blockers, no significant findings. Verified: end-to-end capability for all
+five issue-#14 scenarios from the concise result; no fact/note contradiction
+(attempt demotion, structural one-note cap); final type surface matches SPEC;
+one coherent v12 persisted format with allowlisted clearing; bounded
+documented per-interaction overhead with no double-pay; workspace gate green
+at closure.
+
+Four accepted minor/nit findings fixed in-stride before closure: the stale
+probe comment (now states Unobserved semantics), SPEC's clipboard-outcome
+sentence (scoped to the persisted write-clipboard record), removal of the
+dead `ObservationSource`/`observed_through` plumbing with a simplified
+evaluator match, and VISION's selection wording (control-state change).
+Epic closed 2026-07-22.
