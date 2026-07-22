@@ -1,7 +1,7 @@
 ---
 id: epic-state-aware-interaction-results-expectation-notes
 kind: feature
-stage: review
+stage: done
 tags: [agent-ux, browser]
 parent: epic-state-aware-interaction-results
 depends_on: [epic-state-aware-interaction-results-postcondition-core, epic-state-aware-interaction-results-side-channel-outcomes]
@@ -590,3 +590,11 @@ inherent to the declared rule; wording stays observational.
 - The persisted format advances from v11 to v12 because attempt demotion
   changes registry-derived note consistency at decode; v11 records are
   incompatible recording cache and are cleared rather than migrated.
+
+## Review closure
+
+Closure verified 2026-07-22: all six accepted findings landed in commit
+2e595117 (link-rule seam test pair, attempt-demoted channels, wire role
+validation, decode-guard tests, restored positive-delta coverage, registry
+coupling comment) with the required v12 schema bump; full gate green;
+spot-verified in-tree. Review complete.
