@@ -14,6 +14,49 @@ use krometrail_store::{
 use tempfile::TempDir;
 use uuid::Uuid;
 
+/// A fully-populated side-channel postcondition block: the store round-trip
+/// must decode every current fact shape at the current schema version.
+fn populated_postcondition() -> InteractionPostcondition {
+    let mut postcondition = InteractionPostcondition::from_facts(
+        Some(&NodeStateFacts {
+            connected: true,
+            checked: Some(false),
+            value_length: Some(0),
+            ..NodeStateFacts::default()
+        }),
+        Some(&NodeStateFacts {
+            connected: true,
+            checked: Some(true),
+            value_length: Some(0),
+            ..NodeStateFacts::default()
+        }),
+        Some(false),
+        true,
+        Some(true),
+        krometrail_core::SideChannelSignals {
+            window_open_attempts: Some(1),
+            download_requests: Some(0),
+        },
+    );
+    postcondition.attach_new_pages(krometrail_core::NewPagePostcondition::from_observed(
+        krometrail_core::PageSequence::new(2).unwrap(),
+        vec![krometrail_core::NewPageFact {
+            target_id: TargetId::from_uuid(Uuid::from_u128(77)),
+            sequence: krometrail_core::PageSequence::new(3).unwrap(),
+            opener_matched: true,
+        }],
+    ));
+    postcondition.attach_downloads(krometrail_core::DownloadPostcondition::from_observed(
+        krometrail_core::DownloadSequence::new(1).unwrap(),
+        vec![krometrail_core::DownloadFact {
+            download_id: krometrail_core::DownloadId::from_uuid(Uuid::from_u128(78)),
+            sequence: krometrail_core::DownloadSequence::new(2).unwrap(),
+            state: krometrail_core::DownloadState::InProgress,
+        }],
+    ));
+    postcondition
+}
+
 struct Fixture {
     _directory: TempDir,
     database_path: std::path::PathBuf,
@@ -93,22 +136,7 @@ impl Fixture {
             .unwrap(),
             LocatorSummary::from_locator(None),
             InteractionOutcome::Dispatched,
-            InteractionPostcondition::from_facts(
-                Some(&NodeStateFacts {
-                    connected: true,
-                    checked: Some(false),
-                    value_length: Some(0),
-                    ..NodeStateFacts::default()
-                }),
-                Some(&NodeStateFacts {
-                    connected: true,
-                    checked: Some(true),
-                    value_length: Some(0),
-                    ..NodeStateFacts::default()
-                }),
-                Some(false),
-                true,
-            ),
+            populated_postcondition(),
             Some(InteractionId::from_uuid(Uuid::from_u128(99))),
         )
         .unwrap()
@@ -211,6 +239,20 @@ async fn exact_anchor_and_optional_action_record_round_trip_idempotently() {
     );
     assert_eq!(decoded.postcondition.page.url_changed, Some(false));
     assert!(decoded.postcondition.page.navigation_lifecycle_observed);
+    assert_eq!(
+        decoded.postcondition.page.main_frame_navigation_observed,
+        Some(true)
+    );
+    assert_eq!(decoded.postcondition.signals.window_open_attempts, Some(1));
+    let new_pages = decoded.postcondition.new_pages.as_ref().unwrap();
+    assert_eq!(new_pages.pages.len(), 1);
+    assert!(new_pages.pages[0].opener_matched);
+    let downloads = decoded.postcondition.downloads.as_ref().unwrap();
+    assert_eq!(downloads.downloads.len(), 1);
+    assert_eq!(
+        downloads.downloads[0].state,
+        krometrail_core::DownloadState::InProgress
+    );
     assert_eq!(
         fixture
             .index

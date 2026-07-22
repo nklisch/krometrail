@@ -82,8 +82,9 @@ pub use operation::{
     BrowserOperationScopeKind, OperationEvidence, OperationMutability,
 };
 pub use postcondition::{
-    FlagObservation, InteractionPostcondition, NodeStateFacts, PagePostcondition,
-    TargetNodeOutcome, TargetPostcondition,
+    DownloadFact, DownloadPostcondition, FlagObservation, InteractionPostcondition,
+    MAX_SIDE_CHANNEL_FACTS, NewPageFact, NewPagePostcondition, NodeStateFacts, PagePostcondition,
+    SideChannelSignals, TargetNodeOutcome, TargetPostcondition,
 };
 pub use privacy::{
     EventRedactor, MAX_REDACTED_FUNCTION_BYTES, MAX_REDACTED_NAME_BYTES, MAX_REDACTED_TEXT_BYTES,

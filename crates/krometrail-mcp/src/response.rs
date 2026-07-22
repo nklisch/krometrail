@@ -1196,7 +1196,7 @@ fn project_operation(
             // The bounded postcondition block is on-by-default at every
             // detail level; the expanded/full record echo carries the same
             // field because the concise block IS the record field.
-            let postcondition = serde_json::to_value(value.record.postcondition)
+            let postcondition = serde_json::to_value(&value.record.postcondition)
                 .map_err(|_| ResponseInvariantError)?;
             let mut result = json!({
                 "observation": observation,
@@ -4990,6 +4990,8 @@ mod tests {
                     Some(&post),
                     Some(false),
                     false,
+                    None,
+                    krometrail_core::SideChannelSignals::unobserved(),
                 ),
                 None,
             )
@@ -5041,7 +5043,11 @@ mod tests {
         // level, concise included, and the expanded/full record echo carries
         // the identical field: one authority projected twice.
         let expected = json!({
-            "page": {"url_changed": false, "navigation_lifecycle_observed": false},
+            "page": {
+                "url_changed": false,
+                "navigation_lifecycle_observed": false,
+                "main_frame_navigation_observed": null,
+            },
             "target": {
                 "node": "present",
                 "checked": {"before": false, "after": true, "changed": true},
@@ -5050,6 +5056,10 @@ mod tests {
                 "pressed": {"before": null, "after": null, "changed": null},
                 "value_length_changed": null,
             },
+            "signals": {"window_open_attempts": null, "download_requests": null},
+            "new_pages": null,
+            "downloads": null,
+            "clipboard_write_confirmed": null,
         });
         for projection in [&concise, &expanded, &full] {
             assert_eq!(projection.response.result["postcondition"], expected);

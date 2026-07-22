@@ -24,7 +24,7 @@ fn current_schema_reopens_and_has_the_declared_inventory() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     let mut statement = connection
         .prepare(
             "SELECT name FROM sqlite_master \
@@ -88,7 +88,17 @@ fn future_schema_is_replaced_with_the_current_cache() {
     let directory = TempDir::new().unwrap();
     let config = config(&directory);
     let connection = Connection::open(&config.database_path).unwrap();
-    connection.pragma_update(None, "user_version", 9).unwrap();
+    // A clearly-future literal, never the current version: this test must
+    // exercise the replacement path regardless of later schema bumps.
+    connection
+        .pragma_update(None, "user_version", 9999)
+        .unwrap();
+    connection
+        .execute("CREATE TABLE future_cache(value TEXT) STRICT", [])
+        .unwrap();
+    connection
+        .execute("INSERT INTO future_cache VALUES ('stale')", [])
+        .unwrap();
     drop(connection);
 
     drop(SqliteIndex::open(config.clone()).unwrap());
@@ -96,7 +106,26 @@ fn future_schema_is_replaced_with_the_current_cache() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_ne!(version, 9999, "future cache was not replaced");
+    let current: u32 = version;
+    assert!(current > 0);
+    let future_table: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='future_cache')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!future_table, "future cache content survived replacement");
+    // The replacement produced the current inventory, not an empty database.
+    let has_sessions: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='sessions')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(has_sessions);
 }
 
 #[test]
@@ -134,7 +163,7 @@ fn incompatible_recording_cache_is_cleared_without_touching_other_data() {
     let version: u32 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
     let stale_table: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='stale')",

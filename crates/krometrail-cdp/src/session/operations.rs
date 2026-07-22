@@ -8,6 +8,11 @@ pub(crate) struct OperationExecutionContext {
     pub(crate) parent_batch: Option<krometrail_core::InteractionId>,
 }
 
+/// Ceiling for the post-interaction side-channel reconciliation pull. On
+/// timeout the interaction result keeps `new_pages: None` (reconciliation
+/// unavailable) and is never failed or delayed further.
+const SIDE_CHANNEL_RECONCILE_WINDOW: Duration = Duration::from_secs(2);
+
 pub(crate) async fn execute_operation(
     page_control: &mut PageControl,
     state: &mut SupervisorState,
@@ -37,10 +42,17 @@ pub(crate) async fn execute_operation(
     }
     let outer_batch = matches!(request, BrowserOperationRequest::Batch(_));
     let direct_target = direct_request_target(&request);
-    let result = execute_operation_unfenced(
+    // Pre-action side-channel cursors. The supervisor handles `Execute`
+    // serially, so queued target events cannot advance the page cursor while
+    // the operation runs: this read is the honest pre-action anchor.
+    let page_cursor_before = kind
+        .is_interaction()
+        .then(|| state.page_contexts().ok().map(|inventory| inventory.cursor))
+        .flatten();
+    let mut result = execute_operation_unfenced(
         page_control,
         state,
-        transport,
+        Arc::clone(&transport),
         shared,
         request,
         cancellation,
@@ -48,6 +60,9 @@ pub(crate) async fn execute_operation(
     )
     .await
     .map_err(|error| classify_open_dialog(error, kind, direct_target, shared))?;
+    if let Some(cursor_before) = page_cursor_before {
+        attach_new_page_facts(&mut result, state, &transport, shared, cursor_before).await;
+    }
     if state_changing && !outer_batch {
         let sink = shared
             .interaction_evidence
@@ -307,55 +322,132 @@ async fn wait_for_page(
                     .unwrap(),
             ));
         }
-        let response = transport
-            .send_raw(
-                &CommandScope::Browser,
-                "Target.getTargets",
-                serde_json::json!({}),
-            )
-            .await
-            .map_err(|error| transport_error_to_core(error, true))?;
-        let infos = response
-            .get("targetInfos")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                stable_error(
-                    ErrorCode::TargetFailed,
-                    "browser returned an invalid target inventory",
-                )
-            })?
-            .iter()
-            .map(parse_target_info)
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| {
-                stable_error(
-                    ErrorCode::TargetFailed,
-                    "browser returned an invalid target inventory",
-                )
-            })?;
-        let reduction = reduce(state.clone(), SupervisorInput::InitialTargets(infos))?;
-        *state = reduction.state;
-        let browser_event_support = *shared
-            .browser_event_support
-            .lock()
-            .expect("browser event support lock");
-        apply_effects(
-            state,
-            reduction.effects,
-            Arc::clone(&transport),
-            Arc::clone(&shared.subscribers),
-            shared.capture.clone(),
-            Arc::clone(&shared.browser_events),
-            browser_event_support,
-            None,
-        )
-        .await?;
-        *shared.state.lock().expect("session state lock") = state.clone();
+        reconcile_targets_once(state, &transport, shared).await?;
         tokio::time::sleep(
             Duration::from_millis(50)
                 .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
         )
         .await;
+    }
+}
+
+/// One pull-based target reconciliation: `Target.getTargets` → parse →
+/// reduce(`InitialTargets`) → apply effects → publish shared state. Shared by
+/// the `wait_for_page` poll loop and post-interaction side-channel
+/// enrichment; it observes the browser's authoritative inventory directly,
+/// independent of target events still queued behind the running operation.
+pub(super) async fn reconcile_targets_once(
+    state: &mut SupervisorState,
+    transport: &Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+) -> Result<()> {
+    let response = transport
+        .send_raw(
+            &CommandScope::Browser,
+            "Target.getTargets",
+            serde_json::json!({}),
+        )
+        .await
+        .map_err(|error| transport_error_to_core(error, true))?;
+    let infos = response
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            stable_error(
+                ErrorCode::TargetFailed,
+                "browser returned an invalid target inventory",
+            )
+        })?
+        .iter()
+        .map(parse_target_info)
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            stable_error(
+                ErrorCode::TargetFailed,
+                "browser returned an invalid target inventory",
+            )
+        })?;
+    let reduction = reduce(state.clone(), SupervisorInput::InitialTargets(infos))?;
+    *state = reduction.state;
+    let browser_event_support = *shared
+        .browser_event_support
+        .lock()
+        .expect("browser event support lock");
+    apply_effects(
+        state,
+        reduction.effects,
+        Arc::clone(transport),
+        Arc::clone(&shared.subscribers),
+        shared.capture.clone(),
+        Arc::clone(&shared.browser_events),
+        browser_event_support,
+        None,
+    )
+    .await?;
+    *shared.state.lock().expect("session state lock") = state.clone();
+    Ok(())
+}
+
+/// The interaction results whose record carries the postcondition block.
+fn interaction_record_mut(
+    result: &mut BrowserOperationResult,
+) -> Option<&mut krometrail_core::InteractionRecord> {
+    match result {
+        BrowserOperationResult::Click(value)
+        | BrowserOperationResult::Fill(value)
+        | BrowserOperationResult::PressKeys(value)
+        | BrowserOperationResult::SelectOption(value)
+        | BrowserOperationResult::Hover(value)
+        | BrowserOperationResult::Drag(value)
+        | BrowserOperationResult::Scroll(value)
+        | BrowserOperationResult::UploadFiles(value)
+        | BrowserOperationResult::HandleDialog(value) => Some(&mut value.record),
+        _ => None,
+    }
+}
+
+/// Post-dispatch new-page delta: one bounded reconciliation pull, then the
+/// pages adopted after the pre-action cursor become observed facts on the
+/// record before evidence persistence. Every failure leaves `new_pages: None`
+/// (reconciliation unavailable — never a claim that nothing opened) and the
+/// proven interaction result is never failed or delayed beyond the window.
+async fn attach_new_page_facts(
+    result: &mut BrowserOperationResult,
+    state: &mut SupervisorState,
+    transport: &Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+    cursor_before: krometrail_core::PageSequence,
+) {
+    let Some(acting_target) = interaction_record_mut(result).map(|record| record.context.target_id)
+    else {
+        return;
+    };
+    let reconciled = tokio::time::timeout(
+        SIDE_CHANNEL_RECONCILE_WINDOW,
+        reconcile_targets_once(state, transport, shared),
+    )
+    .await;
+    if !matches!(reconciled, Ok(Ok(()))) {
+        return;
+    }
+    let Ok(inventory) = state.page_contexts() else {
+        return;
+    };
+    let mut pages = inventory
+        .pages
+        .into_iter()
+        .filter(|page| page.sequence > cursor_before)
+        .map(|page| krometrail_core::NewPageFact {
+            target_id: page.page.target.target.id(),
+            sequence: page.sequence,
+            opener_matched: page.opener_target_id == Some(acting_target),
+        })
+        .collect::<Vec<_>>();
+    pages.sort_by_key(|fact| fact.sequence);
+    if let Some(record) = interaction_record_mut(result) {
+        record.postcondition.attach_new_pages(
+            krometrail_core::NewPagePostcondition::from_observed(cursor_before, pages),
+        );
     }
 }
 

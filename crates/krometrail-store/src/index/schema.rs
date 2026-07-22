@@ -2,10 +2,11 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-// Version 9: `InteractionRecord.postcondition` became a required field of the
-// persisted `record_json`; older rows lack it and must be cleared with the
-// incompatible cache rather than decoded.
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 9;
+// Version 10: the persisted `record_json` postcondition block gained
+// side-channel outcome facts (signals, new pages, downloads, clipboard
+// confirmation) and the typed unobserved target outcome; older rows decode
+// incompatibly and must be cleared with the incompatible cache.
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 // `created_unix_ms` on `segments` and `artifacts` is the age-out clock.
 //
@@ -538,7 +539,7 @@ mod tests {
 
     #[test]
     fn incompatible_versions_are_classified_without_mutation() {
-        for version in [1, 2, 3, 4, 5, 6, 7, 8, 10, u32::MAX] {
+        for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, u32::MAX] {
             let mut connection = Connection::open_in_memory().unwrap();
             connection
                 .execute("CREATE TABLE retained(value TEXT) STRICT", [])

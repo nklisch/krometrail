@@ -4,7 +4,7 @@ use krometrail_core::{
     CoordinateSpace, CssPoint, ErrorCode, InteractionId, InteractionLocator, InteractionOutcome,
     InteractionPostcondition, InteractionRecord, InteractionResult, LiveObservationRequest,
     LocatorSummary, NonEmptyText, ObservationContext, PageSelection, Result, SanitizedParameters,
-    TargetId, TargetVisibility,
+    SideChannelSignals, TargetId, TargetVisibility,
 };
 use serde_json::{Value, json};
 
@@ -26,10 +26,15 @@ use crate::{
 
 const NAVIGATION_AWARE_WINDOW: std::time::Duration = std::time::Duration::from_millis(750);
 const INTERACTION_PHASE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
-/// Ceiling for the silent postcondition reads (pre-dispatch URL, post-action
-/// state probe). Bounded so a stalled renderer degrades the facts instead of
-/// delaying a proven dispatch.
+/// Ceiling for the silent post-action state probe. It runs concurrently with
+/// the compositor rendezvous and live observation, so this bounds the
+/// concurrent read without adding serial latency; a stalled renderer degrades
+/// the facts instead of delaying a proven dispatch.
 const POSTCONDITION_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+/// Ceiling for the serial pre-dispatch URL read. It sits ahead of dispatch on
+/// every interaction, so it stays a strictly best-effort fact with a tight
+/// budget; any timeout degrades `url_changed` to unobserved.
+const PRE_URL_PROBE_WINDOW: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(Clone, Debug)]
 pub(super) enum ResolvedTarget {
@@ -182,13 +187,22 @@ impl PageControl {
         } else {
             None
         };
-        // Passive lifecycle observation for the postcondition: always
-        // subscribed before dispatch, never awaited, and drained at the
-        // observation point. Setup failure degrades the fact instead of
-        // failing dispatch; the navigation-aware wait above stays gated on
+        // Passive signal observation for the postcondition: always subscribed
+        // before dispatch, never awaited, and drained at the observation
+        // point. Setup failure degrades the affected fact instead of failing
+        // dispatch; the navigation-aware wait above stays gated on
         // `wait_for_navigation` exactly as before.
         let mut lifecycle_observation = browser_events
             .page_signal(&event_binding, PageSignalKind::Lifecycle)
+            .ok();
+        let mut window_open_signals = browser_events
+            .page_signal(&event_binding, PageSignalKind::WindowOpen)
+            .ok();
+        let mut download_request_signals = browser_events
+            .page_signal(&event_binding, PageSignalKind::DownloadRequested)
+            .ok();
+        let mut navigation_committed_signals = browser_events
+            .page_signal(&event_binding, PageSignalKind::NavigationCommitted)
             .ok();
         // Subscribe before input dispatch. A JavaScript modal can block both the command response
         // and every subsequent observation command, so command-error classification alone cannot
@@ -202,6 +216,11 @@ impl PageControl {
                     .map_err(|error| page_signal_setup_error(error, bound.target_id))?,
             )
         };
+        // Attribution fence for the passive signal drains: signals delivered
+        // before this point belong to earlier activity (a late event from the
+        // previous interaction queued between subscription and dispatch) and
+        // must not be attributed to this interaction.
+        let signal_floor = browser_events.observed_now();
         let dispatch_time = self.session_time()?;
         let dispatch = async {
             if let Some(events) = dialog_events.as_mut() {
@@ -282,10 +301,17 @@ impl PageControl {
         } else if observation_blocked {
             Box::new(self.blocked_observation(&bound, started_at)?)
         } else {
-            if let ResolvedTarget::Element { node, .. } = &resolved {
-                target_evaluated = true;
+            target_evaluated = matches!(&resolved, ResolvedTarget::Element { .. });
+            // The state probe and the observation pipeline are independent
+            // CDP commands; running them concurrently keeps the probe's
+            // bounded window from adding serial latency ahead of the
+            // observation a batch deadline could otherwise swallow.
+            let probe = async {
+                let ResolvedTarget::Element { node, .. } = &resolved else {
+                    return None;
+                };
                 let scope = CommandScope::Session(bound.transport_session.clone());
-                post_facts = tokio::time::timeout(
+                tokio::time::timeout(
                     POSTCONDITION_PROBE_WINDOW,
                     cancel.race(
                         generation,
@@ -301,12 +327,12 @@ impl PageControl {
                 .await
                 .ok()
                 .and_then(Result::ok)
-                .flatten();
-            }
-            self.await_compositor_ready(transport, &bound, cancel, generation)
-                .await;
-            let observed = self
-                .observe_live(
+                .flatten()
+            };
+            let observe = async {
+                self.await_compositor_ready(transport, &bound, cancel, generation)
+                    .await;
+                self.observe_live(
                     transport,
                     &bound,
                     LiveObservationRequest {
@@ -316,7 +342,10 @@ impl PageControl {
                     plan.kind == BrowserOperationKind::Scroll,
                     Some((cancel, generation)),
                 )
-                .await;
+                .await
+            };
+            let (probed, observed) = tokio::join!(probe, observe);
+            post_facts = probed;
             match observed {
                 Ok((BrowserOperationResult::ObserveLive(observation), _)) => observation,
                 Ok(_) => unreachable!("live observation returns its associated result"),
@@ -338,9 +367,23 @@ impl PageControl {
             .as_deref()
             .zip(post_url)
             .map(|(pre, post)| pre != post);
+        // All passive signal drains share one attribution interval:
+        // dispatch fence to this observation-complete ceiling.
+        let signal_ceiling = browser_events.observed_now();
         let navigation_lifecycle_observed = lifecycle_observation
             .as_mut()
-            .is_some_and(PageSignalReceiver::signal_observed);
+            .is_some_and(|receiver| receiver.signal_observed_between(signal_floor, signal_ceiling));
+        let main_frame_navigation_observed = navigation_committed_signals
+            .as_mut()
+            .map(|receiver| receiver.signal_observed_between(signal_floor, signal_ceiling));
+        let signals = SideChannelSignals {
+            window_open_attempts: window_open_signals
+                .as_mut()
+                .map(|receiver| receiver.observed_count_between(signal_floor, signal_ceiling)),
+            download_requests: download_request_signals
+                .as_mut()
+                .map(|receiver| receiver.observed_count_between(signal_floor, signal_ceiling)),
+        };
         let postcondition = InteractionPostcondition::from_facts(
             if target_evaluated {
                 pre_facts.as_ref()
@@ -350,6 +393,8 @@ impl PageControl {
             post_facts.as_ref(),
             url_changed,
             navigation_lifecycle_observed,
+            main_frame_navigation_observed,
+            signals,
         );
         let context = ObservationContext::new(
             self.session_id,
@@ -405,7 +450,7 @@ impl PageControl {
             cancel,
             generation,
         );
-        let response = tokio::time::timeout(POSTCONDITION_PROBE_WINDOW, read)
+        let response = tokio::time::timeout(PRE_URL_PROBE_WINDOW, read)
             .await
             .ok()?
             .ok()?

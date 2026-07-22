@@ -1624,8 +1624,11 @@ fn parse_node_state_facts(state: &Value) -> NodeStateFacts {
 }
 
 /// Bounded post-action state probe of an already-resolved backing node.
-/// Every failure degrades to `None`; postcondition assembly maps that to a
-/// detached-or-replaced fact rather than failing a proven dispatch.
+/// Every failure — transport, timeout, or a payload missing the boolean
+/// `connected` fact — degrades to `None`; postcondition assembly maps that to
+/// an unobserved target outcome, never to a detachment claim, and never fails
+/// a proven dispatch. Only a probe that ran and reported `connected: false`
+/// yields a detachment fact.
 pub(super) async fn probe_backend_node_facts(
     transport: &dyn CdpTransport,
     scope: &CommandScope,
@@ -1652,6 +1655,9 @@ pub(super) async fn probe_backend_node_facts(
     let state = check
         .pointer("/result/value")
         .or_else(|| check.pointer("/result/result/value"))?;
+    // A payload without the boolean connected fact is an unobserved probe;
+    // defaulting it to false would fabricate a detachment observation.
+    state.get("connected").and_then(Value::as_bool)?;
     Some(parse_node_state_facts(state))
 }
 

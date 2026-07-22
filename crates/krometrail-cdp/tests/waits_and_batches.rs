@@ -480,6 +480,16 @@ async fn sequential_batch_reuses_dispatcher_and_propagates_parent_anchor() {
     };
     assert_eq!(click.record.parent_batch, Some(result.batch_id));
     assert_eq!(anchor.interaction_id, click.record.id);
+    // Batch steps recurse through the same execute seam, so each step's
+    // record carries its own side-channel block.
+    let new_pages = click
+        .record
+        .postcondition
+        .new_pages
+        .as_ref()
+        .expect("batch step inherits post-dispatch reconciliation");
+    assert!(new_pages.pages.is_empty());
+    assert_eq!(new_pages.omitted, 0);
     assert!(matches!(
         result.final_observation,
         ObservationPart::Available(_)

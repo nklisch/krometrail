@@ -22,7 +22,7 @@ use krometrail_core::{
     EncodedFrame, ErrorCode, FillMode, FillRequest, FrameAccess, FrameAddress, HandleDialogRequest,
     HoverRequest, IdSource, IdValue, ImageFormat, InteractionLocator, InteractionOutcome, KeyChord,
     ListFramesRequest, ListPageAssetsRequest, Modifiers, MonotonicClock, MouseButton,
-    NavigatePageRequest, ObservationPart, ObservedTime, PageSelection, PortFuture,
+    NavigatePageRequest, ObservationPart, ObservedTime, PageSelection, PageSequence, PortFuture,
     PressKeysRequest, QueryPageRequest, QueryPageResult, ReadClipboardRequest,
     ReadOnlyEvaluationRequest, RecordingSink, ScreenshotRequest, ScreenshotTarget, ScrollDelta,
     ScrollRequest, SegmentId, SelectOptionRequest, SelectPageRequest, SelectValue,
@@ -138,13 +138,20 @@ fn observation_script(transport: &ScriptedCdp) {
     transport.push_response("Page.captureScreenshot", json!({"data":png_base64()}));
 }
 async fn scripted_session(transport: ScriptedCdp) -> Arc<dyn krometrail_core::BrowserSessionPort> {
+    scripted_session_with_evidence(transport, support::evidence_sink()).await
+}
+
+async fn scripted_session_with_evidence(
+    transport: ScriptedCdp,
+    evidence: Arc<dyn krometrail_core::InteractionEvidenceSink>,
+) -> Arc<dyn krometrail_core::BrowserSessionPort> {
     let connector = ProductionBrowserConnector::new(
         Arc::new(krometrail_cdp::SystemChromeLauncher::new(
             krometrail_cdp::LauncherConfig::default(),
         )),
         Arc::new(ScriptedFactory(transport)),
     )
-    .with_interaction_evidence(support::evidence_sink());
+    .with_interaction_evidence(evidence);
     connector
         .connect(BrowserConnectRequest::Attach(
             krometrail_core::AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/scripted")
@@ -152,6 +159,22 @@ async fn scripted_session(transport: ScriptedCdp) -> Arc<dyn krometrail_core::Br
         ))
         .await
         .unwrap()
+}
+
+async fn page_cursor(session: &Arc<dyn krometrail_core::BrowserSessionPort>) -> PageSequence {
+    let result = session
+        .execute(
+            BrowserOperationRequest::ListPageContexts(
+                krometrail_core::ListPageContextsRequest::default(),
+            ),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::ListPageContexts(result) = result else {
+        panic!("page context inventory")
+    };
+    result.cursor
 }
 
 #[tokio::test]
@@ -440,6 +463,14 @@ async fn checkbox_click_postcondition_reports_the_checked_delta() {
     assert_eq!(postcondition.target.value_length_changed, None);
     assert_eq!(postcondition.page.url_changed, Some(false));
     assert!(!postcondition.page.navigation_lifecycle_observed);
+    // No growth after reconciliation: the honest "no new page observed" fact
+    // keeps the cursor so a caller can still chain wait_for_page.
+    let new_pages = postcondition
+        .new_pages
+        .as_ref()
+        .expect("reconciliation ran for the state-changing click");
+    assert!(new_pages.pages.is_empty());
+    assert_eq!(new_pages.omitted, 0);
     session.stop().await.unwrap();
 }
 
@@ -545,14 +576,16 @@ async fn fill_postcondition_reports_a_value_length_change() {
 }
 
 #[tokio::test]
-async fn degraded_post_probe_keeps_the_dispatched_action_successful() {
+async fn degraded_post_probe_is_unobserved_and_keeps_the_dispatched_action_successful() {
     let transport = ScriptedCdp::chrome();
     startup_script(&transport);
     let button = actionability_state(json!({"checked": false}));
     script_selector_resolution(&transport, button.clone());
     script_selector_resolution(&transport, button);
     // The post-action re-probe loses its transport; the proven dispatch and
-    // its observation must be unaffected, with the target facts degraded.
+    // its observation must be unaffected. The probe never ran to completion,
+    // so the target outcome is unobserved — a probe failure is not evidence
+    // that the node detached.
     transport.push_failure("DOM.describeNode", TransportError::CommandFailed);
     observation_script(&transport);
     let session = scripted_session(transport.clone()).await;
@@ -572,7 +605,7 @@ async fn degraded_post_probe_keeps_the_dispatched_action_successful() {
     let postcondition = result.record.postcondition;
     assert_eq!(
         postcondition.target.node,
-        krometrail_core::TargetNodeOutcome::DetachedOrReplaced
+        krometrail_core::TargetNodeOutcome::Unobserved
     );
     assert_eq!(postcondition.target.checked.before, Some(false));
     assert_eq!(postcondition.target.checked.after, None);
@@ -581,6 +614,77 @@ async fn degraded_post_probe_keeps_the_dispatched_action_successful() {
         result.observation.page,
         ObservationPart::Available(_)
     ));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_post_probe_payload_is_unobserved_not_a_detachment_claim() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    let button = actionability_state(json!({"checked": false}));
+    script_selector_resolution(&transport, button.clone());
+    script_selector_resolution(&transport, button);
+    // The probe response lacks the boolean `connected` fact; defaulting it to
+    // false would fabricate a detachment observation.
+    script_post_probe(&transport, json!({"result": {"value": {"checked": true}}}));
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(selector_click(target, "#button")),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(
+        postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::Unobserved
+    );
+    assert_eq!(postcondition.target.checked.after, None);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn disconnected_post_probe_reports_genuine_detachment() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    let button = actionability_state(json!({"checked": false}));
+    script_selector_resolution(&transport, button.clone());
+    script_selector_resolution(&transport, button);
+    // The probe ran and observed the backing node disconnected: this is the
+    // one case that supports a detachment claim.
+    script_post_probe(
+        &transport,
+        actionability_state(json!({"connected": false, "checked": true})),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(selector_click(target, "#button")),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(
+        postcondition.target.node,
+        krometrail_core::TargetNodeOutcome::DetachedOrReplaced
+    );
+    // A detached node's readable state never enters the after-facts.
+    assert_eq!(postcondition.target.checked.after, None);
+    assert_eq!(postcondition.target.checked.changed, None);
     session.stop().await.unwrap();
 }
 
@@ -2531,4 +2635,267 @@ async fn opt_in_real_chrome_qualifies_frame_actions_staleness_and_bounded_assets
     session.stop().await.unwrap();
     cross_origin_fixture.shutdown();
     fixture.shutdown();
+}
+
+#[tokio::test]
+async fn interaction_reports_the_new_page_delta_with_opener_match() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let evidence = Arc::new(support::RecordingEvidenceFake::default());
+    let session = scripted_session_with_evidence(transport.clone(), evidence.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let cursor_before = page_cursor(&session).await;
+    // The post-dispatch reconciliation pull observes a page the browser
+    // adopted during the click, opened by the acting target.
+    transport.push_response(
+        "Target.getTargets",
+        json!({"targetInfos":[
+            {"targetId":"target-a","type":"page","url":"http://fixture/","title":"fixture"},
+            {"targetId":"target-b","type":"page","url":"http://popup/","title":"popup","openerId":"target-a"}
+        ]}),
+    );
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(coordinate_click(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let new_pages = result
+        .record
+        .postcondition
+        .new_pages
+        .as_ref()
+        .expect("post-dispatch reconciliation attaches the new-page delta");
+    assert_eq!(new_pages.cursor_before, cursor_before);
+    assert_eq!(new_pages.pages.len(), 1);
+    assert!(new_pages.pages[0].opener_matched);
+    assert!(new_pages.pages[0].sequence > cursor_before);
+    assert_eq!(new_pages.omitted, 0);
+    // The retained record and the live response carry identical facts.
+    let persisted = evidence.records();
+    let persisted = persisted.last().expect("persisted interaction record");
+    assert_eq!(
+        persisted.postcondition.new_pages,
+        result.record.postcondition.new_pages
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn reconciliation_failure_degrades_the_delta_and_keeps_the_click_successful() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    transport.push_failure("Target.getTargets", TransportError::CommandFailed);
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(coordinate_click(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("reconciliation failure never fails a dispatched interaction");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(result.record.outcome, InteractionOutcome::Dispatched);
+    // Reconciliation unavailable: never a claim that nothing opened.
+    assert!(result.record.postcondition.new_pages.is_none());
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn window_open_and_committed_navigation_signals_reach_the_postcondition() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let request = ClickRequest::new(
+        PageSelection::Target(target),
+        InteractionLocator::coordinate(
+            CssPoint::new(20.0, 30.0).unwrap(),
+            CoordinateSpace::ViewportCss,
+        )
+        .unwrap(),
+        MouseButton::Left,
+        Modifiers::default(),
+        1,
+        // The navigation-aware completion parks on the lifecycle signal, so
+        // the scripted events below deterministically arrive between the
+        // attribution fence and the observation drain.
+        true,
+    )
+    .unwrap();
+    let operation = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(request),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        })
+    };
+    transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    transport.push_scoped_event(
+        "Page.windowOpen",
+        Some("session-a"),
+        json!({"url":"http://fixture/child","windowName":"child","windowFeatures":[],"userGesture":true}),
+    );
+    // A committed same-URL main-frame navigation: url_changed stays false
+    // while the committed-navigation fact reports the reload.
+    transport.push_scoped_event(
+        "Page.frameNavigated",
+        Some("session-a"),
+        json!({"frame":{"id":"main","url":"http://fixture/"},"type":"Navigation"}),
+    );
+    transport.push_scoped_event(
+        "Page.lifecycleEvent",
+        Some("session-a"),
+        json!({"frameId":"main","loaderId":"loader-1","name":"load","timestamp":2.0}),
+    );
+
+    let result = operation.await.unwrap().unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(postcondition.signals.window_open_attempts, Some(1));
+    assert_eq!(postcondition.signals.download_requests, Some(0));
+    assert_eq!(
+        postcondition.page.main_frame_navigation_observed,
+        Some(true)
+    );
+    assert!(postcondition.page.navigation_lifecycle_observed);
+    assert_eq!(postcondition.page.url_changed, Some(false));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn child_frame_navigation_never_signals_the_main_frame_fact() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let request = ClickRequest::new(
+        PageSelection::Target(target),
+        InteractionLocator::coordinate(
+            CssPoint::new(20.0, 30.0).unwrap(),
+            CoordinateSpace::ViewportCss,
+        )
+        .unwrap(),
+        MouseButton::Left,
+        Modifiers::default(),
+        1,
+        true,
+    )
+    .unwrap();
+    let operation = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(request),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        })
+    };
+    transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    // A child-frame commit and a download-disposition request in a new tab
+    // must not count as main-frame navigation or download attempts.
+    transport.push_scoped_event(
+        "Page.frameNavigated",
+        Some("session-a"),
+        json!({"frame":{"id":"child","parentId":"main","url":"http://fixture/frame"}}),
+    );
+    transport.push_scoped_event(
+        "Page.frameRequestedNavigation",
+        Some("session-a"),
+        json!({"frameId":"main","url":"http://fixture/next","reason":"anchorClick","disposition":"newTab"}),
+    );
+    transport.push_scoped_event(
+        "Page.lifecycleEvent",
+        Some("session-a"),
+        json!({"frameId":"main","loaderId":"loader-1","name":"load","timestamp":2.0}),
+    );
+
+    let result = operation.await.unwrap().unwrap();
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(
+        postcondition.page.main_frame_navigation_observed,
+        Some(false)
+    );
+    assert_eq!(postcondition.signals.download_requests, Some(0));
+    assert_eq!(postcondition.signals.window_open_attempts, Some(0));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn unavailable_signal_source_degrades_facts_without_failing_the_interaction() {
+    let transport = ScriptedCdp::chrome();
+    transport.fail_subscription("Page.windowOpen");
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+
+    let result = session
+        .execute(
+            BrowserOperationRequest::Click(coordinate_click(target)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .expect("signal-only install failure degrades silently");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let postcondition = result.record.postcondition;
+    assert_eq!(postcondition.signals.window_open_attempts, None);
+    assert_eq!(postcondition.signals.download_requests, Some(0));
+    session.stop().await.unwrap();
 }

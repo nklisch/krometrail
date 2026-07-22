@@ -47,6 +47,7 @@ struct State {
     user_agent: String,
     missing: HashSet<String>,
     malformed: HashSet<String>,
+    failed_subscriptions: HashSet<String>,
     commands: Vec<(String, Option<String>)>,
     command_calls: Vec<CommandCall>,
     subscriptions: Vec<(String, Option<String>)>,
@@ -67,6 +68,7 @@ impl ScriptedCdp {
                 user_agent: user_agent.to_owned(),
                 missing: HashSet::new(),
                 malformed: HashSet::new(),
+                failed_subscriptions: HashSet::new(),
                 commands: Vec::new(),
                 command_calls: Vec::new(),
                 subscriptions: Vec::new(),
@@ -89,6 +91,16 @@ impl ScriptedCdp {
 
     pub fn missing(&self, method: &str) {
         self.state.lock().unwrap().missing.insert(method.to_owned());
+    }
+
+    /// Rejects every subscription for one named event source.
+    #[allow(dead_code)]
+    pub fn fail_subscription(&self, method: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .failed_subscriptions
+            .insert(method.to_owned());
     }
 
     #[allow(dead_code)]
@@ -380,6 +392,14 @@ impl CdpTransport for ScriptedCdp {
         };
         let result = if method.trim().is_empty() {
             Err(TransportError::InvalidInput)
+        } else if self
+            .state
+            .lock()
+            .unwrap()
+            .failed_subscriptions
+            .contains(method)
+        {
+            Err(TransportError::CommandFailed)
         } else {
             {
                 let mut state = self.state.lock().unwrap();

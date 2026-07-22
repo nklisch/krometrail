@@ -25,8 +25,13 @@ use super::{
     normalize::{EventNormalizer, SEMANTIC_SOURCE_REGISTRY, SourceDomain},
     pipeline::{EventPipeline, SubmitOutcome, TargetGeneration, TargetIngress},
     privacy,
-    signals::{PageSignalKind, PageSignalReceiver},
+    signals::{PageSignal, PageSignalKind, PageSignalReceiver},
 };
+
+/// CDP sources installed only to feed postcondition page signals: never
+/// normalized or persisted, and install failure degrades silently because the
+/// facts they feed report `None` when the source is unavailable.
+const SIGNAL_ONLY_SOURCES: &[&str] = &["Page.windowOpen", "Page.frameRequestedNavigation"];
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct EventTargetKey {
@@ -107,7 +112,10 @@ struct TargetEventRuntime {
     installed: Mutex<HashSet<&'static str>>,
     pumps: Mutex<Vec<JoinHandle<()>>>,
     network_sender: broadcast::Sender<NetworkActivity>,
-    page_signal_sender: broadcast::Sender<PageSignalKind>,
+    page_signal_sender: broadcast::Sender<PageSignal>,
+    // The main frame id recorded from committed `Page.frameNavigated` events,
+    // so `Page.navigatedWithinDocument` can be filtered to the main frame.
+    main_frame: Mutex<Option<String>>,
     // The one piece of reported open-dialog state. It is maintained from the always-installed
     // dialog signal sources, independent of whether semantic events are persisted, because the
     // blocked-observation, handle_dialog, and page-status sites all read it.
@@ -160,6 +168,12 @@ impl SessionDomainAuthority {
         self.session_origin.normalize(self.clock.now())
     }
 
+    /// The raw monotonic clock the signal pumps stamp [`PageSignal`]s with;
+    /// postcondition fences compare against this same authority.
+    pub(crate) fn observed_now(&self) -> krometrail_core::ObservedTime {
+        self.clock.now()
+    }
+
     pub(crate) async fn restore_target(
         &self,
         binding: EventTargetBinding,
@@ -191,6 +205,7 @@ impl SessionDomainAuthority {
             pumps: Mutex::new(Vec::new()),
             network_sender,
             page_signal_sender,
+            main_frame: Mutex::new(None),
             open_dialog: Mutex::new(None),
             network_enabled: AtomicBool::new(false),
             network_setup: tokio::sync::Mutex::new(()),
@@ -223,6 +238,12 @@ impl SessionDomainAuthority {
                 "Page.lifecycleEvent"
                     | "Page.javascriptDialogOpening"
                     | "Page.javascriptDialogClosed"
+                    // Committed-navigation signals back the postcondition
+                    // main-frame navigation fact, so they install even when
+                    // semantic persistence is off; the pump still gates
+                    // persistence on `persist_events`.
+                    | "Page.frameNavigated"
+                    | "Page.navigatedWithinDocument"
             );
             if !self.pipeline.semantic_enabled() && !operation_signal {
                 continue;
@@ -265,6 +286,15 @@ impl SessionDomainAuthority {
                 unavailable.insert(BrowserEventClass::Network);
                 self.source_unavailable(&runtime, BrowserEventClass::Network);
             }
+        }
+        for method in SIGNAL_ONLY_SOURCES {
+            let _ = install_signal_only_source(
+                Arc::clone(&runtime),
+                transport,
+                method,
+                Arc::clone(&self.clock),
+            )
+            .await;
         }
 
         // Every configured stream is installed and draining before this exact
@@ -372,6 +402,11 @@ impl SessionDomainAuthority {
         let method = match kind {
             PageSignalKind::Lifecycle => "Page.lifecycleEvent",
             PageSignalKind::DialogOpening => "Page.javascriptDialogOpening",
+            PageSignalKind::WindowOpen => "Page.windowOpen",
+            PageSignalKind::DownloadRequested => "Page.frameRequestedNavigation",
+            // Both committed-navigation sources feed the same signal; the
+            // frameNavigated install is the availability authority.
+            PageSignalKind::NavigationCommitted => "Page.frameNavigated",
         };
         if !runtime
             .installed
@@ -735,6 +770,105 @@ async fn install_non_network_source(
     Ok(())
 }
 
+/// Maps one delivered CDP event to its page-signal kind, maintaining the
+/// runtime's recorded main frame so committed-navigation signals stay
+/// main-frame-scoped.
+fn page_signal_for(
+    runtime: &TargetEventRuntime,
+    method: &str,
+    params: &Value,
+) -> Option<PageSignalKind> {
+    match method {
+        "Page.lifecycleEvent" => Some(PageSignalKind::Lifecycle),
+        "Page.javascriptDialogOpening" => Some(PageSignalKind::DialogOpening),
+        "Page.windowOpen" => Some(PageSignalKind::WindowOpen),
+        "Page.frameRequestedNavigation" => (params.get("disposition").and_then(Value::as_str)
+            == Some("download"))
+        .then_some(PageSignalKind::DownloadRequested),
+        "Page.frameNavigated" => {
+            let frame = params.get("frame")?;
+            let id = frame.get("id").and_then(Value::as_str)?;
+            if frame.get("parentId").and_then(Value::as_str).is_some() {
+                return None;
+            }
+            *runtime.main_frame.lock().expect("main frame lock") = Some(id.to_owned());
+            Some(PageSignalKind::NavigationCommitted)
+        }
+        "Page.navigatedWithinDocument" => {
+            let frame_id = params.get("frameId").and_then(Value::as_str)?;
+            (runtime
+                .main_frame
+                .lock()
+                .expect("main frame lock")
+                .as_deref()
+                == Some(frame_id))
+            .then_some(PageSignalKind::NavigationCommitted)
+        }
+        _ => None,
+    }
+}
+
+async fn install_signal_only_source(
+    runtime: Arc<TargetEventRuntime>,
+    transport: &dyn CdpTransport,
+    method: &'static str,
+    clock: Arc<dyn MonotonicClock>,
+) -> Result<(), ()> {
+    if runtime
+        .installed
+        .lock()
+        .expect("installed source lock")
+        .contains(method)
+    {
+        return Ok(());
+    }
+    let events = transport
+        .subscribe_named(
+            &CommandScope::Session(runtime.binding.transport_session.clone()),
+            method,
+        )
+        .await
+        .map_err(|_| ())?;
+    runtime
+        .installed
+        .lock()
+        .expect("installed source lock")
+        .insert(method);
+    let runtime_for_pump = Arc::clone(&runtime);
+    runtime
+        .pumps
+        .lock()
+        .expect("event pump lock")
+        .push(tokio::spawn(async move {
+            pump_signal_only(runtime_for_pump, method, events, clock).await;
+        }));
+    Ok(())
+}
+
+/// Signal-only pump: page-signal fanout without normalization, persistence,
+/// or gap accounting — these sources feed postcondition facts only, and a
+/// closed subscription degrades those facts to unobserved.
+async fn pump_signal_only(
+    runtime: Arc<TargetEventRuntime>,
+    method: &'static str,
+    mut events: Box<dyn TransportEvents>,
+    clock: Arc<dyn MonotonicClock>,
+) {
+    while runtime.accepting.load(Ordering::Acquire) {
+        match events.next().await {
+            Ok(Some(event)) => {
+                if let Some(kind) = page_signal_for(&runtime, method, &event.params) {
+                    let _ = runtime.page_signal_sender.send(PageSignal {
+                        kind,
+                        observed_at: clock.now(),
+                    });
+                }
+            }
+            Ok(None) | Err(_) => return,
+        }
+    }
+}
+
 async fn pump_non_network(
     runtime: Arc<TargetEventRuntime>,
     method: &'static str,
@@ -755,13 +889,11 @@ async fn pump_non_network(
                     }
                     _ => {}
                 }
-                let signal = match method {
-                    "Page.lifecycleEvent" => Some(PageSignalKind::Lifecycle),
-                    "Page.javascriptDialogOpening" => Some(PageSignalKind::DialogOpening),
-                    _ => None,
-                };
-                if let Some(signal) = signal {
-                    let _ = runtime.page_signal_sender.send(signal);
+                if let Some(kind) = page_signal_for(&runtime, method, &event.params) {
+                    let _ = runtime.page_signal_sender.send(PageSignal {
+                        kind,
+                        observed_at: clock.now(),
+                    });
                 }
                 if !runtime.persist_events {
                     continue;

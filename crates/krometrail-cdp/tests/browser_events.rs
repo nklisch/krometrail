@@ -451,7 +451,9 @@ async fn one_authority_routes_same_named_streams_by_session_and_installs_before_
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(subscriptions.len(), 12);
+        // 12 semantic/operation sources plus the two signal-only
+        // side-channel sources (Page.windowOpen, Page.frameRequestedNavigation).
+        assert_eq!(subscriptions.len(), 14);
         assert!(subscriptions.iter().all(|(index, _)| *index < page_enable));
 
         let commands = activity
@@ -526,8 +528,6 @@ async fn explicitly_disabled_events_add_no_recording_streams_or_domain_enables()
         "Network.responseReceived",
         "Network.loadingFinished",
         "Network.loadingFailed",
-        "Page.frameNavigated",
-        "Page.navigatedWithinDocument",
     ] {
         assert!(
             transport
@@ -537,12 +537,19 @@ async fn explicitly_disabled_events_add_no_recording_streams_or_domain_enables()
             "disabled browser events installed {method}",
         );
     }
-    // Both dialog sources are authority-owned operation signals: dialog-opening drives the
-    // non-deadlocking interaction boundary and dialog-closed keeps reported open-dialog state
-    // truthful. Neither persists an event nor enables an optional domain.
+    // Authority-owned operation signals stay installed with recording off:
+    // dialog sources drive the non-deadlocking interaction boundary and
+    // truthful open-dialog state; committed-navigation sources back the
+    // postcondition main-frame navigation fact; window-open and
+    // download-request sources feed side-channel attempt facts. None of them
+    // persist events or enable optional domains.
     for method in [
         "Page.javascriptDialogOpening",
         "Page.javascriptDialogClosed",
+        "Page.frameNavigated",
+        "Page.navigatedWithinDocument",
+        "Page.windowOpen",
+        "Page.frameRequestedNavigation",
     ] {
         assert!(
             transport
