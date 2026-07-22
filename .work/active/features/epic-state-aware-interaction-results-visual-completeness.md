@@ -372,3 +372,17 @@ hand-edit).
   `bash scripts/check-wire-enum-schemas.sh`, workspace check, workspace tests,
   and clippy all passed under the approved loopback/process-capable run.
 - Adjacent issues parked: none.
+
+## Review adjudication (standard weight, fresh-context Opus, one pass)
+
+Verified clean: exactly two attach sites with one marker constructor;
+never-on-success/unavailable/explicit-path guarantees; zero-MCP-change claim;
+both-directions SPEC provenance wording; retry/recovery metadata; test
+integrity (one-warning pin + empty-warnings false-positive guard); privacy.
+
+Accepted findings, routed to the post-implementation fix batch (closure is
+fix-verification only): (minor) SPEC line ~106 still says "visual-completeness
+marker" while the authoritative paragraph uses rendezvous naming — reword to
+the amended name; (minor) the pages.rs attach site (navigation/reload/history/
+viewport lane) has no test — add one scripted navigate/reload marker test;
+(nit) add the design-specified `#[must_use]` on `await_compositor_ready`.

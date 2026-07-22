@@ -319,3 +319,28 @@ async fn probe_semantic(
   condition-specific rule cannot be expressed by that flat schema.
 - Full verification passed with the escalated local test process: format, wire-enum schema
   check, workspace check, workspace tests, and workspace clippy with `-D warnings`.
+
+## Review adjudication (standard weight, fresh-context Opus, one pass)
+
+Verified clean: single matcher/acquisition path (no fork), no reference leak,
+bounded probe payload, poll-floor construction check in the existing style,
+correctly-scoped stale handling with deadline-bounded looping, fail-fast
+acquisition errors, correct any-match semantics across all four outcomes,
+accurate SPEC/registry surface, no text-wait behavior removed.
+
+Accepted findings, routed to the post-implementation fix batch (closure is
+fix-verification only):
+1. (significant) No default-lane execution coverage of `probe_semantic` — all
+   CDP tests are opt-in real-Chrome; the design required scripted tests. Add
+   scripted single-poll present-satisfied / absent-satisfied /
+   exact-miss-timeout-with-candidates tests plus a scripted stale-injection
+   test proving the loop continues (the stale-continuation branch currently
+   has zero coverage).
+2. (minor) The 100 ms poll floor is undiscoverable pre-failure — one sentence
+   in the wire doc comment (feeds the schema description) and the plugin
+   skill paragraph.
+3. (nit) Conformance-sweep repair overwrites `poll_interval` to 100 —
+   clamp (`max(existing, 100)`) instead so regressions stay detectable.
+
+Rejected (no action): timeout evidence `last_probe_at = started_at` when all
+polls were inconclusive — pre-existing shape the design accepted.
