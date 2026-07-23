@@ -1,7 +1,7 @@
 ---
 id: feature-perf-artifact-pixel-pipeline
 kind: feature
-stage: implementing
+stage: review
 tags: [perf]
 parent: null
 depends_on: []
