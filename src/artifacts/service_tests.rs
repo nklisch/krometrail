@@ -784,11 +784,71 @@ async fn exhaustive_analysis_refusal_names_a_working_sampling_lever() {
         .await
         .expect_err("exhaustive oversized analysis should refuse");
     assert!(error.message.as_str().contains("exhaustive"));
+    assert!(error.recovery.as_ref().is_some_and(|recovery| {
+        recovery
+            .as_str()
+            .contains("narrow the resolved range so at most 120 frames")
+            && recovery
+                .as_str()
+                .contains("uniform_bounded sampling which analyzes a bounded subset of any range")
+    }));
+}
+
+#[tokio::test]
+async fn exhaustive_analysis_plan_cap_accepts_boundary_and_structures_next_frame_refusal() {
+    let request = |frame_count| {
+        let mut rig = rig_with_transition_and_frame_count(
+            frame_count,
+            false,
+            false,
+            ArtifactWorkLimits::default(),
+        );
+        let mut difference = match rig.request.generators()[1].clone() {
+            ArtifactGeneratorRequest::DifferenceMap(request) => request,
+            _ => panic!("default second generator is difference map"),
+        };
+        difference.frequency_mode = FrequencyMode::NormalizedFrequency;
+        difference.sampling = krometrail_core::ArtifactSampling::Exhaustive;
+        rig.request = ArtifactGenerationRequest::new(
+            rig.request.range().clone(),
+            vec![],
+            vec![ArtifactGeneratorRequest::DifferenceMap(difference)],
+            ArtifactFailurePolicy::RequireAll,
+        )
+        .unwrap();
+        rig
+    };
+
+    let at_cap = request(120);
+    at_cap
+        .service
+        .generate(at_cap.request, ArtifactGenerationContext::default())
+        .await
+        .expect("the exhaustive analysis frame cap is inclusive");
+
+    let over_cap = request(121);
+    let error = over_cap
+        .service
+        .generate(over_cap.request, ArtifactGenerationContext::default())
+        .await
+        .expect_err("the first frame beyond the exhaustive analysis cap must refuse");
+    assert_eq!(
+        error.code,
+        krometrail_core::ErrorCode::ResourceLimitExceeded
+    );
+    assert_eq!(
+        error.message.as_str(),
+        "exhaustive analysis source plan: 121 frames and 1936 decoded bytes exceeds limit 120 frames and 805306368 decoded bytes"
+    );
+    let recovery = error
+        .recovery
+        .as_ref()
+        .expect("the bounded refusal carries recovery guidance")
+        .as_str();
+    assert!(recovery.contains("narrow the resolved range so at most 120 frames fall inside it"));
     assert!(
-        error
-            .recovery
-            .as_ref()
-            .is_some_and(|recovery| recovery.as_str().contains("uniform_bounded"))
+        recovery
+            .contains("use uniform_bounded sampling which analyzes a bounded subset of any range")
     );
 }
 

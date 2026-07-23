@@ -456,6 +456,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn exhaustive_cap_refusal_keeps_plan_numbers_recovery_and_correlation() {
+        let recovery = "narrow the resolved range so at most 120 frames fall inside it, or use uniform_bounded sampling which analyzes a bounded subset of any range";
+        let error = KrometrailError::limit_exceeded(
+            ErrorCode::ResourceLimitExceeded,
+            "exhaustive analysis source plan",
+            "121 frames and 1936 decoded bytes",
+            "120 frames and 805306368 decoded bytes",
+            None::<String>,
+        )
+        .with_recovery(NonEmptyText::new(recovery).unwrap());
+        let mut result = crate::response::visible_error("generate_artifacts", error);
+        assert_eq!(
+            attach_diagnostics(
+                &mut result,
+                "exhaustive-cap-correlation",
+                &DiagnosticContext::default()
+            ),
+            "failed"
+        );
+
+        let structured = result.structured_content.unwrap();
+        assert_eq!(structured["status"], "failed");
+        assert_eq!(structured["error"]["code"], "resource_limit_exceeded");
+        assert_eq!(
+            structured["error"]["message"],
+            "exhaustive analysis source plan: 121 frames and 1936 decoded bytes exceeds limit 120 frames and 805306368 decoded bytes"
+        );
+        assert_eq!(structured["error"]["recovery"], recovery);
+        assert_eq!(
+            structured["diagnostics"]["correlation_id"],
+            "exhaustive-cap-correlation"
+        );
+    }
+
     /// A dialog blocks its page's renderer, so a default (concise) status call must name it.
     /// Reporting it only where full page rows appear is how the blindness went unnoticed.
     #[test]

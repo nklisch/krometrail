@@ -842,7 +842,10 @@ fn plan_for_analysis_sampling(
                         limits.max_source_frames.get(),
                         limits.max_decoded_bytes.get()
                     ),
-                    "narrow the range or set sampling to uniform_bounded",
+                    format!(
+                        "narrow the resolved range so at most {} frames fall inside it, or use uniform_bounded sampling which analyzes a bounded subset of any range",
+                        limits.max_source_frames.get()
+                    ),
                 ))
             } else {
                 Ok(plan.clone())

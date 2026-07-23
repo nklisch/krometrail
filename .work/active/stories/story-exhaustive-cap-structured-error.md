@@ -38,3 +38,17 @@ diagnostics correlation. Keep the exact plan numbers in the explanation.
 - [ ] A test pins the refusal shape at the cap boundary (120 passes, 121
       refuses with the structured error).
 - [ ] Workspace gate green.
+
+## Implementation notes
+
+- Changed `src/artifacts/service.rs` so exhaustive plan refusals retain their
+  exact plan numbers and name both bounded recovery remedies.
+- Added `artifacts::service_tests::exhaustive_analysis_plan_cap_accepts_boundary_and_structures_next_frame_refusal`
+  and strengthened
+  `artifacts::service_tests::exhaustive_analysis_refusal_names_a_working_sampling_lever`.
+- Added
+  `server::tests::exhaustive_cap_refusal_keeps_plan_numbers_recovery_and_correlation`
+  to pin the structured MCP error and diagnostics correlation projection.
+- Full gate passed: `cargo fmt --all -- --check`,
+  `bash scripts/check-wire-enum-schemas.sh`, locked workspace check/test, and
+  clippy with `-D warnings`.
