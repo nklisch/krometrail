@@ -1,9 +1,19 @@
 ---
-id: idea-ax-overflow-opaque-failure
+id: feature-ax-overflow-observation-failure
+kind: feature
+stage: drafting
+tags: [browser-control]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-23
 updated: 2026-07-23
-tags: [browser-control, bug]
 ---
+
+# AX-overflow observation failure clarity
+
+## Brief
 
 On pages whose accessibility tree exceeds what Chrome will serialize (repro:
 `https://html.spec.whatwg.org/` one-page spec, content height ~2.25M CSS px),
@@ -35,3 +45,10 @@ distinctly (bounded detail from the CDP error), return the structured
 limit-style error with honest recovery (viewport-anchored/frame-scoped
 targeting, snapshot alternatives, "this page exceeds browser AX serialization"),
 and log a bounded CDP failure event so diagnostics can attribute the cause.
+
+## Simplification opportunity
+
+The unified snapshot-limit recovery text introduced by
+feature-query-node-limit-large-pages already carries frame-scoped-query
+guidance; this failure class should reuse that recovery surface rather than
+grow a parallel one.
