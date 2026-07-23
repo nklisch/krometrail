@@ -1,7 +1,7 @@
 ---
 id: feature-perf-artifact-pixel-pipeline-opt-2
 kind: story
-stage: implementing
+stage: done
 tags: [perf]
 parent: feature-perf-artifact-pixel-pipeline
 depends_on: []
