@@ -1,44 +1,72 @@
 ---
-id: idea-silent-trim-evicts-fresh-artifacts
+id: feature-retention-trim-transparency
+kind: feature
+stage: drafting
+tags: [store]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-23
 updated: 2026-07-23
-tags: [store, retention]
 ---
 
-In-session retention trimming runs at a high-water mark well below the
-configured budget and silently evicts freshly generated artifacts, while every
-agent-visible signal says retention is healthy. Found during the v1.6.0
+# Retention trim correctness and transparency
+
+## Brief
+
+In-session retention trimming evicted freshly generated artifacts while every
+agent-visible signal said retention was healthy. Found during the v1.6.0
 shakedown under sustained ~100 fps WebGL ingest (~18 MB/s, 25k frames,
-4.16 GB stored of a 10 GB budget).
+4.16 GB stored of a 10 GB configured budget). Grounding against the code shows
+two of the three surprises are defect-shaped:
 
-Observed on 1.6.0:
+- **Phantom-instance budget halving.** `effective_budget()` divides the
+  configured budget by census `live_instances()`. The session enforced
+  85% × (10 GB ÷ 2) = 4.25 GB because the census counted a second live
+  instance — almost certainly the pre-restart server whose recording cache the
+  startup log had already reclaimed as abandoned
+  (`retention.instance_reclaimed`). A lone session should trim at 8.5 GB.
+  `browser_status` also reports the configured budget (10 GB) while enforcing
+  the effective one (5 GB), which is actively misleading.
+- **Hollow artifact grace.** `DEFAULT_ARTIFACT_GRACE` (15 min) exists "so a
+  returned resource link is not already dying when the agent receives it", but
+  the strictly oldest-first reclaim walk hits the segments backing fresh
+  artifacts first (agents naturally derive artifacts from the oldest retained
+  window — investigate what just happened, keep recording) and the
+  `artifact_grace_overridden` path then evicts them anyway. Observed: artifacts
+  1–4 minutes old evicted; `usage.artifact_bytes` ended at 0.
+- **No trimming signal.** `RecordingBudgetState` only knows
+  Available/PausedBudget; continuous in-session trimming surfaced nowhere —
+  `budget_state: "available"`, `eviction_blocked: false` throughout.
 
-- `retention.trimmed` events fired continuously with
-  `high_water_bytes: 4250000000` (42.5% of the 10 GB budget); oldest_retained
-  advanced from 0.4 s to 252 s while `used_bytes` stayed ~4.16 GB.
-- The trim evicted artifacts generated 3-5 minutes earlier in the same
-  investigation (trim log byte sizes match the exact storyboard/difference-map/
-  filmstrip artifacts returned to the agent; `usage.artifact_bytes` ended at 0).
-  Their returned `krometrail://` URIs invalidate with no warning at generation
-  time and no pressure signal afterward.
-- Throughout, `browser_status` reported `budget_state: "available"`,
-  `eviction_blocked: false`, `recording_blocked: false` — nothing tells an
-  agent that active trimming is consuming the evidence it just produced.
-
-Eviction throughput itself was excellent (trims interleaved with zero capture
-disruption; drops stayed at 0.5% attributed queue blips) — this is a
-transparency/policy question, not a performance one.
-
-Questions/fix direction: (a) surface an explicit "in-session trimming active"
-retention state (and/or the high-water threshold) in `browser_status` and as a
-response warning when a returned resource's segment/artifact is at risk or
-already reclaimed; (b) reconsider whether derived artifacts should be
-first-evicted ahead of source segments, or whether recent artifacts deserve a
-short protection window / pin guidance in tool responses; (c) document the
-high-water policy in the retention contract so the 10 GB budget is not read as
-the live-session bound.
-
-Related smaller staleness found in the same pass: `resolve_temporal_range`'s
+Also folded in (same surface, found same pass): `resolve_temporal_range`'s
 `capture_quality.capture_status.at_range_start/at_range_end` always echo the
-session-initial all-zero status block (session_time ~11 ms) instead of status
-at those times.
+session-initial all-zero status block (session_time ~11 ms) instead of the
+capture status at those range bounds.
+
+Eviction throughput itself is excellent (trims interleaved with zero capture
+disruption; drops stayed at 0.5% attributed queue blips) — the fixes here are
+correctness and transparency, not performance.
+
+## Strategic decisions
+
+- **Grace policy — skip and reclaim newer**: the reclaim walk treats artifact
+  grace as an ordering exception: skip graced artifacts and their backing
+  segments and reclaim the next-oldest instead. Override grace only when
+  nothing else is reclaimable (true emergency), and surface that override as an
+  explicit response warning. — Makes the documented grace real in the common
+  agent pattern.
+- **Budget split — fix staleness, keep equal split**: root-cause and fix the
+  stale live-instance census count (an instance whose cache was reclaimed as
+  abandoned must not still count as live); keep the deliberate equal-split
+  policy; surface `effective_budget` and `live_instances` in `browser_status`
+  so the enforced number is visible. — Equal split stays for predictability
+  (prior review history), the bug and the opacity go.
+- **Signaling — informational, not alarming**: `browser_status` gains a
+  trimming/pressure state plus effective budget and instance count; temporal /
+  artifact / query responses note active trimming calmly with a concrete
+  how-far-back reference (the trimmed-through boundary / oldest-retained
+  session time or index) so range work is never surprised. Tone: a factual
+  note, not a warning klaxon — most sessions on ordinary pages will never hit
+  the limit. Recovery text may name `pin_resolved_range` where relevant.
