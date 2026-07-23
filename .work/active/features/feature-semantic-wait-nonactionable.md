@@ -1,9 +1,19 @@
 ---
-id: idea-semantic-wait-nonactionable
+id: feature-semantic-wait-nonactionable
+kind: feature
+stage: drafting
+tags: [browser, agent-ux]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-22
 updated: 2026-07-22
-tags: [browser, agent-ux]
 ---
+
+# Semantic waits match non-actionable content
+
+## Brief
 
 Semantic waits cannot match non-actionable content, and the failure mode is
 a bare timeout. `wait {condition: semantic}` shares `query_page`'s matching,
@@ -21,3 +31,10 @@ accessibility tree (snapshot-style, not query_page-style); or fail fast /
 warn when the queried role is one the actionable matcher can never return;
 and document the actionable-only scope in the wait schema description
 either way.
+
+## Simplification opportunity
+
+If wait-side matching widens to the snapshot-style tree, the wait condition
+and query_page stop sharing one matcher; keep the shared query language but
+name the two match scopes explicitly rather than adding a parallel query
+dialect. The wait schema description must state whichever scope ships.
