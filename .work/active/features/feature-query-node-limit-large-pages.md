@@ -1,7 +1,7 @@
 ---
 id: feature-query-node-limit-large-pages
 kind: feature
-stage: review
+stage: done
 tags: [bug]
 parent: null
 depends_on: []
