@@ -1370,21 +1370,27 @@ mod tests {
             .unwrap_err();
         assert_eq!(contradictory.code, ErrorCode::StaleReference);
 
-        let wrong_scope = RegionFilmstripEvidenceRequest {
-            range: range(),
-            region: krometrail_core::ProgressiveRegion::CurrentReference {
-                session_id: SessionId::from_uuid(Uuid::from_u128(99)),
+        let mut wrong_scope = RegionFilmstripEvidenceRequest::new(
+            range(),
+            krometrail_core::ProgressiveRegion::CurrentReference {
+                session_id: session(),
                 reference,
                 source_frame_id: frame_id(3),
             },
-            markers: vec![],
-            anchor: SessionTime::from_nanos(1),
-            tile_limit: 2,
-            background: Rgb8::new(0, 0, 0),
-            padding: Rgb8::new(1, 2, 3),
-            display_scale: AnalysisScale::Identity,
-            labels: labels(),
-            output: output(),
+            vec![],
+            SessionTime::from_nanos(1),
+            2,
+            Rgb8::new(0, 0, 0),
+            Rgb8::new(1, 2, 3),
+            AnalysisScale::Identity,
+            labels(),
+            output(),
+        )
+        .unwrap();
+        wrong_scope.region = krometrail_core::ProgressiveRegion::CurrentReference {
+            session_id: SessionId::from_uuid(Uuid::from_u128(99)),
+            reference,
+            source_frame_id: frame_id(3),
         };
         let error = service
             .execute(

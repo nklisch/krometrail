@@ -1055,6 +1055,8 @@ pub struct RegionFilmstripEvidenceRequest {
     pub display_scale: AnalysisScale,
     pub labels: ArtifactLabelsRequest,
     pub output: OutputLimitsRequest,
+    #[serde(skip)]
+    anchor_defaulted: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -1133,7 +1135,12 @@ impl RegionFilmstripEvidenceRequest {
             display_scale,
             labels,
             output,
+            anchor_defaulted: false,
         })
+    }
+
+    pub const fn anchor_was_defaulted(&self) -> bool {
+        self.anchor_defaulted
     }
 
     /// Proves that store metadata is the exact one-epoch source sequence this
@@ -1203,21 +1210,22 @@ impl RegionFilmstripEvidenceRequest {
 impl<'de> Deserialize<'de> for RegionFilmstripEvidenceRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: RegionFilmstripEvidenceRequestWire| {
-            let anchor = wire
-                .anchor
-                .unwrap_or(wire.range.resolved_anchor.effective_time);
-            Self::new(
+            let anchor_defaulted = wire.anchor.is_none();
+            let default_anchor = wire.range.resolved_anchor.effective_time;
+            let mut request = Self::new(
                 wire.range,
                 wire.region,
                 wire.markers,
-                anchor,
+                wire.anchor.unwrap_or(default_anchor),
                 wire.tile_limit,
                 wire.background,
                 wire.padding,
                 wire.display_scale,
                 wire.labels,
                 wire.output,
-            )
+            )?;
+            request.anchor_defaulted = anchor_defaulted;
+            Ok(request)
         })
     }
 }
@@ -2213,6 +2221,7 @@ mod tests {
         }
         let defaulted: RegionFilmstripEvidenceRequest = serde_json::from_value(wire).unwrap();
         assert!(defaulted.markers.is_empty());
+        assert!(defaulted.anchor_was_defaulted());
         assert_eq!(
             defaulted.anchor,
             defaulted.range.resolved_anchor.effective_time

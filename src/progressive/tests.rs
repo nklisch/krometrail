@@ -16,15 +16,17 @@ use krometrail_core::{
     BrowserEventSeverity, BrowserEventSink, BrowserEventSource, CallerRegionShape,
     CancellationSignal, CaptureOrdinal, CapturedFrame, CurrentReferenceGeometry,
     CurrentReferenceGeometryRequest, DeviceScaleFactor, EncodedFrame, ErrorCode, EvidenceScope,
-    FrameId, FrameSource, GenerateArtifactsRequest, IdSource, IdValue, ImageFormat,
-    KrometrailError, NodeReference, NonEmptyText, ObservedTime, OutputLimitsRequest,
-    PixelDimensions, PortFuture, ProgressiveEvidence, ProgressiveEvidenceContext,
-    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ProgressiveEvidenceStore,
-    ProgressiveRegion, RangeResolutionOptions, RecordingSink, RegionFilmstripEvidenceRequest,
-    RegionFilmstripRequest, ResolvedRange, ResolvedRangeEvidenceRequest, ResolvedReferenceGeometry,
-    RetentionStore, SessionId, SessionRange, SessionTime, SnapshotGeneration, SnapshotNodeId,
-    SourceFrameSelection, SourceFramesRequest, SourceReadLimitsRequest, TargetId, TargetLifecycle,
-    TargetLifecycleEvent, TemporalRangeAnchorKind,
+    FrameId, FrameSource, GenerateArtifactsRequest, IdSource, IdValue, ImageFormat, InteractionId,
+    InteractionWindow, KrometrailError, NodeReference, NonEmptyText, ObservedTime,
+    OutputLimitsRequest, PixelDimensions, PortFuture, ProgressiveEvidence,
+    ProgressiveEvidenceContext, ProgressiveEvidenceRequest, ProgressiveEvidenceResult,
+    ProgressiveEvidenceStore, ProgressiveRegion, RangeResolutionOptions, RecordingSink,
+    RegionFilmstripEvidenceRequest, RegionFilmstripRequest, ResolvedAnchor,
+    ResolvedAnchorReference, ResolvedRange, ResolvedRangeEvidenceRequest,
+    ResolvedReferenceGeometry, RetentionStore, SessionId, SessionRange, SessionTime,
+    SnapshotGeneration, SnapshotNodeId, SourceFrameSelection, SourceFramesRequest,
+    SourceReadLimitsRequest, TargetId, TargetLifecycle, TargetLifecycleEvent,
+    TemporalRangeAnchorKind,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -201,6 +203,77 @@ impl QualificationFixture {
         };
         *result
     }
+}
+
+#[tokio::test]
+async fn omitted_region_filmstrip_anchor_uses_source_frame_time_end_to_end() {
+    let fixture = QualificationFixture::new().await;
+    let bounds = SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(3)).unwrap();
+    let interaction_id = InteractionId::from_uuid(Uuid::from_u128(99));
+    let range = ResolvedRange::new_with_anchor(
+        fixture.session,
+        fixture.target,
+        TemporalRangeAnchorKind::Interaction,
+        ResolvedAnchor::new(
+            ResolvedAnchorReference::Interaction { interaction_id },
+            SessionTime::ZERO,
+            SessionTime::ZERO,
+        )
+        .unwrap(),
+        bounds,
+        bounds,
+        fixture.frame_ids.clone(),
+        vec![interaction_id],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        Some(InteractionWindow::new(Duration::ZERO, Duration::ZERO).unwrap()),
+        RangeResolutionOptions::DEFAULT,
+    )
+    .unwrap();
+    let region = ProgressiveRegion::ViewportCss {
+        rect: krometrail_core::CssRect::new(
+            krometrail_core::CssPoint::new(0.0, 0.0).unwrap(),
+            krometrail_core::CssSize::new(1.0, 1.0).unwrap(),
+        )
+        .unwrap(),
+        source_frame_id: fixture.frame_ids[0],
+    };
+    let explicit_request = RegionFilmstripEvidenceRequest::new(
+        range,
+        region,
+        vec![],
+        SessionTime::from_nanos(1),
+        3,
+        Rgb8::new(4, 5, 6),
+        Rgb8::new(250, 1, 249),
+        AnalysisScale::Identity,
+        labels(),
+        output(),
+    )
+    .unwrap();
+    let mut wire = serde_json::to_value(explicit_request).unwrap();
+    wire["anchor"] = serde_json::Value::Null;
+    let request: RegionFilmstripEvidenceRequest = serde_json::from_value(wire).unwrap();
+    assert!(request.anchor_was_defaulted());
+    assert_eq!(request.anchor, SessionTime::ZERO);
+
+    let result = fixture
+        .progressive
+        .execute(
+            ProgressiveEvidenceRequest::GenerateRegionFilmstrip(request),
+            ProgressiveEvidenceContext::default(),
+        )
+        .await
+        .unwrap();
+    let ProgressiveEvidenceResult::GenerateRegionFilmstrip(result) = result else {
+        unreachable!()
+    };
+    assert!(matches!(
+        result.generation.outcomes.as_slice(),
+        [ArtifactOutcome::Available { .. }]
+    ));
 }
 
 fn frame_id(value: u128) -> FrameId {

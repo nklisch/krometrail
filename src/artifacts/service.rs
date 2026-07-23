@@ -170,7 +170,12 @@ impl TemporalVisionArtifactService {
                         continue;
                     }
                 };
-                match prepare_generator(generator, &generator_plan, limits) {
+                match prepare_generator(
+                    generator,
+                    request.generator_anchor_was_defaulted(generator_index),
+                    &generator_plan,
+                    limits,
+                ) {
                     Ok(prepared) => {
                         let prepared = Arc::new(prepared);
                         for (kind, canonical_parameters) in &prepared.canonical_parameters {

@@ -35,11 +35,12 @@ pub(crate) struct GeneratedOutput {
 
 pub(crate) fn prepare_generator(
     request: &ArtifactGeneratorRequest,
+    anchor_was_defaulted: bool,
     epoch: &super::epoch::EpochPlan,
     limits: ArtifactWorkLimits,
 ) -> Result<PreparedGenerator> {
     let mut request = request.clone();
-    materialize_epoch_anchor(&mut request, epoch)?;
+    materialize_epoch_anchor(&mut request, anchor_was_defaulted, epoch)?;
     materialize_effective_scales(&mut request, epoch, limits)?;
     validate_output_limits(&request, limits)?;
     let canonical_parameters = request
@@ -59,24 +60,47 @@ pub(crate) fn prepare_generator(
 
 fn materialize_epoch_anchor(
     request: &mut ArtifactGeneratorRequest,
+    anchor_was_defaulted: bool,
     epoch: &super::epoch::EpochPlan,
 ) -> Result<()> {
-    let ArtifactGeneratorRequest::Storyboard(request) = request else {
-        return Ok(());
-    };
     let first = epoch
         .frames
         .first()
-        .ok_or_else(|| generation_error("storyboard visual epoch has no source frames"))?
+        .ok_or_else(|| generation_error("artifact visual epoch has no source frames"))?
         .metadata()
         .session_time();
     let last = epoch
         .frames
         .last()
-        .ok_or_else(|| generation_error("storyboard visual epoch has no source frames"))?
+        .ok_or_else(|| generation_error("artifact visual epoch has no source frames"))?
         .metadata()
         .session_time();
-    request.anchor = request.anchor.clamp(first, last);
+    match request {
+        ArtifactGeneratorRequest::Storyboard(request) => {
+            if anchor_was_defaulted {
+                // Omitted storyboard anchors use the first retained source frame, the same
+                // source-safe default used by region filmstrips.
+                request.anchor = first;
+            } else {
+                request.anchor = request.anchor.clamp(first, last);
+            }
+        }
+        ArtifactGeneratorRequest::RegionFilmstrip(request) if anchor_was_defaulted => {
+            request.anchor = request
+                .locator
+                .and_then(|locator| {
+                    epoch
+                        .frames
+                        .iter()
+                        .find(|frame| frame.metadata().id() == locator)
+                })
+                .map(|frame| frame.metadata().session_time())
+                .unwrap_or(first);
+        }
+        ArtifactGeneratorRequest::RegionFilmstrip(_)
+        | ArtifactGeneratorRequest::DifferenceMap(_)
+        | ArtifactGeneratorRequest::MotionHistory(_) => {}
+    }
     Ok(())
 }
 

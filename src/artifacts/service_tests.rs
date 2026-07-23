@@ -1234,8 +1234,8 @@ fn default_limits_fit_reproduced_high_dpi_sequence_with_fixed_combined_budget() 
     for generator in
         crate::debug_bundle::default_generators(&range, krometrail_core::OrientationPolicy::Include)
     {
-        let prepared = prepare_generator(&generator, &plans[0], limits).unwrap();
-        let repeated = prepare_generator(&generator, &plans[0], limits).unwrap();
+        let prepared = prepare_generator(&generator, false, &plans[0], limits).unwrap();
+        let repeated = prepare_generator(&generator, false, &plans[0], limits).unwrap();
         assert_eq!(prepared.canonical_parameters, repeated.canonical_parameters);
         let normalization = match &prepared.request {
             ArtifactGeneratorRequest::Storyboard(request) => request.normalization,
@@ -1296,7 +1296,7 @@ fn default_limits_fit_reproduced_high_dpi_sequence_with_fixed_combined_budget() 
     )
     .pop()
     .unwrap();
-    let prepared = prepare_generator(&difference_map, &oversized_plan[0], limits).unwrap();
+    let prepared = prepare_generator(&difference_map, false, &oversized_plan[0], limits).unwrap();
     let ArtifactGeneratorRequest::DifferenceMap(request) = prepared.request else {
         unreachable!()
     };
@@ -1398,7 +1398,7 @@ async fn proportional_high_dpi_bundle_executes_below_peak_not_cumulative_reserva
     let generators = crate::debug_bundle::default_generators(&range, OrientationPolicy::Include);
     let prepared: Vec<_> = generators
         .iter()
-        .map(|generator| prepare_generator(generator, &plans[0], limits).unwrap())
+        .map(|generator| prepare_generator(generator, false, &plans[0], limits).unwrap())
         .collect();
     for generator in &prepared {
         let normalization = match &generator.request {

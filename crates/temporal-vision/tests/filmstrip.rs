@@ -201,6 +201,25 @@ fn planning_preserves_fixed_coordinate_semantics_padding_thinning_and_locator_ch
 }
 
 #[test]
+fn explicit_anchor_outside_source_range_stays_rejected() {
+    let error = plan_region_filmstrip(
+        &fixture(),
+        RegionDefinition::FixedSourceImage {
+            rect: rect(0, 0, 1, 1),
+        },
+        Timestamp::from_nanos(50_000_000),
+        FilmstripTileLimit::DEFAULT,
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidParameter);
+    assert_eq!(
+        error.message.as_ref(),
+        "filmstrip anchor lies outside the source range"
+    );
+}
+
+#[test]
 fn generator_renders_traceable_padding_locator_gaps_and_deterministic_manifest() {
     let source = fixture();
     let region = RegionDefinition::FixedSourceImage {

@@ -639,6 +639,8 @@ pub struct ArtifactGenerationRequest {
     markers: Vec<ArtifactMarker>,
     generators: Vec<ArtifactGeneratorRequest>,
     failure_policy: ArtifactFailurePolicy,
+    #[serde(skip)]
+    defaulted_anchors: Vec<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -671,11 +673,30 @@ impl ArtifactGenerationRequest {
         generators: Vec<ArtifactGeneratorRequest>,
         failure_policy: ArtifactFailurePolicy,
     ) -> Result<Self> {
+        Self::new_with_defaulted_anchors(range, markers, generators, failure_policy, Vec::new())
+    }
+
+    fn new_with_defaulted_anchors(
+        range: ResolvedRange,
+        markers: Vec<ArtifactMarker>,
+        generators: Vec<ArtifactGeneratorRequest>,
+        failure_policy: ArtifactFailurePolicy,
+        defaulted_anchors: Vec<bool>,
+    ) -> Result<Self> {
         if generators.is_empty() {
             return Err(invalid(
                 "artifact request must contain at least one generator",
             ));
         }
+        let defaulted_anchors = if defaulted_anchors.is_empty() {
+            vec![false; generators.len()]
+        } else if defaulted_anchors.len() == generators.len() {
+            defaulted_anchors
+        } else {
+            return Err(invalid(
+                "artifact generator default-anchor metadata must match generator count",
+            ));
+        };
         let mut marker_ids = HashSet::with_capacity(markers.len());
         for marker in &markers {
             if !marker_ids.insert(marker.id.clone()) {
@@ -686,21 +707,25 @@ impl ArtifactGenerationRequest {
             }
         }
         let mut generators = generators;
-        for generator in &mut generators {
-            match generator {
-                ArtifactGeneratorRequest::Storyboard(request)
-                    if !range.resolved_range.contains(request.anchor)
-                        && request.anchor == SessionTime::ZERO =>
-                {
-                    request.anchor = range.resolved_anchor.effective_time;
+        for (generator, defaulted) in generators.iter_mut().zip(&defaulted_anchors) {
+            if *defaulted {
+                match generator {
+                    ArtifactGeneratorRequest::Storyboard(request) => {
+                        // Retain the resolved semantic anchor until the artifact epoch is
+                        // available; execution replaces this omitted value with a retained
+                        // source-frame time that temporal-vision can actually consume.
+                        request.anchor = range.resolved_anchor.effective_time;
+                    }
+                    ArtifactGeneratorRequest::RegionFilmstrip(request) => {
+                        request.anchor = range.resolved_anchor.effective_time;
+                    }
+                    ArtifactGeneratorRequest::DifferenceMap(_)
+                    | ArtifactGeneratorRequest::MotionHistory(_) => {
+                        return Err(invalid(
+                            "artifact default-anchor metadata requires an anchored generator",
+                        ));
+                    }
                 }
-                ArtifactGeneratorRequest::RegionFilmstrip(request)
-                    if !range.resolved_range.contains(request.anchor)
-                        && request.anchor == SessionTime::ZERO =>
-                {
-                    request.anchor = range.resolved_anchor.effective_time;
-                }
-                _ => {}
             }
         }
         for generator in &generators {
@@ -711,6 +736,7 @@ impl ArtifactGenerationRequest {
             markers,
             generators,
             failure_policy,
+            defaulted_anchors,
         })
     }
 
@@ -723,6 +749,9 @@ impl ArtifactGenerationRequest {
     pub fn generators(&self) -> &[ArtifactGeneratorRequest] {
         &self.generators
     }
+    pub fn generator_anchor_was_defaulted(&self, index: usize) -> bool {
+        self.defaulted_anchors.get(index).copied().unwrap_or(false)
+    }
     pub const fn failure_policy(&self) -> ArtifactFailurePolicy {
         self.failure_policy
     }
@@ -734,7 +763,15 @@ impl<'de> Deserialize<'de> for ArtifactGenerationRequest {
             deserializer,
             |wire: ArtifactGenerationRequestDeserializeWire| {
                 let mut generators = Vec::with_capacity(wire.generators.len());
+                let mut defaulted_anchors = Vec::with_capacity(wire.generators.len());
                 for value in wire.generators {
+                    let defaulted_anchor = value
+                        .get("generator")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|generator| {
+                            matches!(generator, "storyboard" | "region_filmstrip")
+                                && value.get("anchor").is_none_or(serde_json::Value::is_null)
+                        });
                     if let Some(generator) = value.get("generator").and_then(|value| value.as_str())
                         && matches!(generator, "storyboard" | "region_filmstrip")
                         && let Some(anchor) = value.get("anchor").filter(|value| !value.is_null())
@@ -749,8 +786,15 @@ impl<'de> Deserialize<'de> for ArtifactGenerationRequest {
                         serde_json::from_value(value)
                             .map_err(|error| invalid(error.to_string()))?,
                     );
+                    defaulted_anchors.push(defaulted_anchor);
                 }
-                Self::new(wire.range, wire.markers, generators, wire.failure_policy)
+                Self::new_with_defaulted_anchors(
+                    wire.range,
+                    wire.markers,
+                    generators,
+                    wire.failure_policy,
+                    defaulted_anchors,
+                )
             },
         )
     }
@@ -977,6 +1021,7 @@ mod tests {
             storyboard.anchor,
             request.range().resolved_anchor.effective_time
         );
+        assert!(request.generator_anchor_was_defaulted(0));
         assert_eq!(storyboard.tile_limit, DEFAULT_ARTIFACT_TILE_LIMIT);
         assert_eq!(storyboard.noise_floor, DEFAULT_ARTIFACT_NOISE_FLOOR);
         assert_eq!(storyboard.normalization.scale, AnalysisScale::FitLimits);

@@ -20,6 +20,7 @@ pub(super) async fn prepare_region(
     request: RegionFilmstripEvidenceRequest,
     context: &ProgressiveEvidenceContext,
 ) -> Result<PreparedRegion> {
+    let anchor_was_defaulted = request.anchor_was_defaulted();
     // Direct in-process callers can construct public-field values without Serde. Re-run the same
     // boundary constructor before any store or browser read.
     let request = RegionFilmstripEvidenceRequest::new(
@@ -88,6 +89,13 @@ pub(super) async fn prepare_region(
         .find(|frame| frame.id() == request.region.source_frame_id())
         .cloned()
         .ok_or_else(|| region_input_error("region locator frame is not retained"))?;
+
+    let mut request = request;
+    if anchor_was_defaulted {
+        // Omitted filmstrip anchors use the declared source frame's session time so the
+        // canonical default is inside both the resolved range and the visual source sequence.
+        request.anchor = source_frame.session_time();
+    }
 
     let mut mask = None;
     let mut viewport_mapping = None;
