@@ -15,9 +15,9 @@ use super::{BoundTarget, PageControl, malformed, operation_error, transport_erro
 use crate::transport::{CdpTransport, CommandScope, TransportError};
 
 // These bounds cover dense real-world documents (roughly 10k–50k DOM nodes) at an
-// estimated ~350 bytes/node of structural state, while keeping the worst-case
-// retained snapshot near 34 MiB with two 8 MiB text pools and still fail-closing
-// on pathological trees.
+// estimated ~350 bytes/node of structural state. The pathological retained envelope is
+// approximately 17.6 MB of backbone + an 8 MiB global AX/DOM text pool + up to ~50 MiB of
+// duplicated rendered/label text on adversarial trees; realistic pages are far below that ceiling.
 const MAX_SNAPSHOT_NODES: usize = 50_000;
 const MAX_SNAPSHOT_TEXT_BYTES: usize = 1 << 23;
 const MAX_ACCESSIBLE_PROPERTY_COUNT: usize = 32;
@@ -669,6 +669,11 @@ impl SnapshotRegistry {
                 !is_strict_descendant(node.id, scope.node_id, &active.parent_by_node)
             })
         };
+        let nodes_by_id = snapshot
+            .nodes
+            .iter()
+            .map(|node| (node.id, node))
+            .collect::<HashMap<_, _>>();
         let evaluate = |query: &krometrail_core::SemanticQuery, node: &SnapshotNode| {
             semantic_query_matches(
                 query,
@@ -679,7 +684,7 @@ impl SnapshotRegistry {
                     .unwrap_or(&SemanticNodeMetadata::default()),
                 &active.parent_by_node,
                 &active.semantic,
-                &snapshot.nodes,
+                &nodes_by_id,
             )
         };
 
@@ -753,6 +758,11 @@ impl SnapshotRegistry {
         snapshot: &PageSnapshot,
     ) -> Result<SemanticPresenceProbe> {
         let active = self.active_for_query(bound, snapshot, query.requires_dom_semantics())?;
+        let nodes_by_id = snapshot
+            .nodes
+            .iter()
+            .map(|node| (node.id, node))
+            .collect::<HashMap<_, _>>();
         let evaluate = |query: &SemanticQuery, node: &SnapshotNode| {
             semantic_query_matches(
                 query,
@@ -763,7 +773,7 @@ impl SnapshotRegistry {
                     .unwrap_or(&SemanticNodeMetadata::default()),
                 &active.parent_by_node,
                 &active.semantic,
-                &snapshot.nodes,
+                &nodes_by_id,
             )
         };
         let match_count = snapshot
@@ -969,7 +979,7 @@ fn semantic_query_matches(
     metadata: &SemanticNodeMetadata,
     parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
     semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
-    nodes: &[SnapshotNode],
+    nodes_by_id: &HashMap<SnapshotNodeId, &SnapshotNode>,
 ) -> bool {
     match query {
         SemanticQuery::Role {
@@ -984,7 +994,13 @@ fn semantic_query_matches(
                         .is_some_and(|value| name.matches(value))
                 })
                 && container_text.as_ref().is_none_or(|expected| {
-                    nearest_container_text_matches(node.id, expected, parents, semantic, nodes)
+                    nearest_container_text_matches(
+                        node.id,
+                        expected,
+                        parents,
+                        semantic,
+                        nodes_by_id,
+                    )
                 })
         }
         SemanticQuery::Label { text } => metadata.labels.iter().any(|label| text.matches(label)),
@@ -1001,11 +1017,11 @@ fn nearest_container_text_matches(
     expected: &krometrail_core::SemanticTextMatch,
     parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
     semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
-    nodes: &[SnapshotNode],
+    nodes_by_id: &HashMap<SnapshotNodeId, &SnapshotNode>,
 ) -> bool {
     let mut current = parents.get(&node).copied().flatten();
     while let Some(ancestor) = current {
-        let Some(ancestor_node) = nodes.iter().find(|candidate| candidate.id == ancestor) else {
+        let Some(ancestor_node) = nodes_by_id.get(&ancestor) else {
             return false;
         };
         if is_local_container_role(&ancestor_node.role) {
@@ -1102,7 +1118,7 @@ fn snapshot_node_limit_error(
     .with_retry(RetryAdvice::Never)
     .with_recovery(
         NonEmptyText::new(
-            "target a single frame with the `document` scope, or capture the page with `snapshot_page` (which reports omitted nodes explicitly) and act on the returned node references directly",
+            "for queries, target a single frame with the `document` scope; for waits, poll a frame-scoped `query_page` instead, or capture the page with `snapshot_page` (which reports omitted nodes explicitly) and act on the returned node references directly",
         )
         .expect("snapshot limit recovery is non-empty"),
     )
@@ -1263,10 +1279,30 @@ fn decode_dom_snapshot_with_geometry(
                 "DOM snapshot exceeds the semantic text limit",
             ));
         }
-        let mut ancestor = Some(node_index);
-        while let Some(index) = ancestor {
-            append_semantic_text(&mut rendered[index], &mut collapsed_text_bytes[index], text);
-            ancestor = decoded[index].parent;
+        append_semantic_text(
+            &mut rendered[node_index],
+            &mut collapsed_text_bytes[node_index],
+            text,
+        );
+    }
+
+    let mut children = vec![Vec::new(); node_count];
+    for (index, node) in decoded.iter().enumerate() {
+        if let Some(parent) = node.parent {
+            children[parent].push(index);
+        }
+    }
+    for index in (0..node_count).rev() {
+        for &child in &children[index] {
+            let child_collapsed_text_bytes = collapsed_text_bytes[child];
+            let (before, after) = rendered.split_at_mut(child);
+            let parent_rendered = &mut before[index];
+            append_semantic_text_summary(
+                parent_rendered,
+                &mut collapsed_text_bytes[index],
+                &after[0],
+                child_collapsed_text_bytes,
+            );
         }
     }
 
@@ -1300,14 +1336,18 @@ fn decode_dom_snapshot_with_geometry(
             push_label(&mut metadata, target.backend_node_id, text);
         }
     }
-    for node in &decoded {
-        let mut parent = node.parent;
-        while let Some(parent_index) = parent {
-            if decoded[parent_index].is_label {
-                push_label(&mut metadata, node.backend_node_id, &rendered[parent_index]);
-                break;
-            }
-            parent = decoded[parent_index].parent;
+    let mut nearest_label_ancestor = vec![None; node_count];
+    for index in 0..node_count {
+        nearest_label_ancestor[index] = decoded[index].parent.and_then(|parent| {
+            decoded[parent]
+                .is_label
+                .then_some(parent)
+                .or(nearest_label_ancestor[parent])
+        });
+    }
+    for (node, label_index) in decoded.iter().zip(nearest_label_ancestor) {
+        if let Some(label_index) = label_index {
+            push_label(&mut metadata, node.backend_node_id, &rendered[label_index]);
         }
         if let Some(labelledby) = &node.aria_labelledby {
             let mut composed = String::new();
@@ -1674,10 +1714,36 @@ fn append_semantic_text(destination: &mut String, collapsed_bytes: &mut usize, v
     if normalized.is_empty() {
         return;
     }
+    append_normalized_semantic_text(destination, collapsed_bytes, &normalized, normalized.len());
+}
+
+fn append_semantic_text_summary(
+    destination: &mut String,
+    collapsed_bytes: &mut usize,
+    rendered_text: &str,
+    true_collapsed_bytes: usize,
+) {
+    append_normalized_semantic_text(
+        destination,
+        collapsed_bytes,
+        rendered_text,
+        true_collapsed_bytes,
+    );
+}
+
+fn append_normalized_semantic_text(
+    destination: &mut String,
+    collapsed_bytes: &mut usize,
+    normalized: &str,
+    true_collapsed_bytes: usize,
+) {
+    if normalized.is_empty() {
+        return;
+    }
     let separator = usize::from(!destination.is_empty());
     *collapsed_bytes = collapsed_bytes
         .saturating_add(separator)
-        .saturating_add(normalized.len());
+        .saturating_add(true_collapsed_bytes);
     if destination.len() >= MAX_SEMANTIC_QUERY_TEXT_BYTES {
         return;
     }
@@ -2972,6 +3038,44 @@ mod tests {
         json!({"nodes": nodes})
     }
 
+    fn ax_tree_with_container_node_count(node_count: usize) -> Value {
+        assert!(node_count >= 3);
+        let mut root_children = vec![json!("container")];
+        root_children.extend((3..node_count).map(|index| json!(format!("filler-{index}"))));
+        let mut nodes = vec![
+            json!({
+                "nodeId": "root",
+                "ignored": false,
+                "role": {"value": "document"},
+                "childIds": root_children
+            }),
+            json!({
+                "nodeId": "container",
+                "ignored": false,
+                "role": {"value": "group"},
+                "backendDOMNodeId": 2,
+                "childIds": ["button"]
+            }),
+            json!({
+                "nodeId": "button",
+                "ignored": false,
+                "role": {"value": "button"},
+                "name": {"value": "Save"},
+                "backendDOMNodeId": 3,
+                "properties": [{"name": "focusable", "value": {"value": true}}]
+            }),
+        ];
+        nodes.extend((3..node_count).map(|index| {
+            json!({
+                "nodeId": format!("filler-{index}"),
+                "ignored": false,
+                "role": {"value": "generic"},
+                "backendDOMNodeId": index + 1
+            })
+        }));
+        json!({"nodes": nodes})
+    }
+
     fn ax_tree_with_name(name: String) -> Value {
         json!({"nodes":[
             {"nodeId":"root","ignored":false,"role":{"value":"document"},"childIds":["button"]},
@@ -2991,6 +3095,58 @@ mod tests {
                     "attributes": [[], []]
                 },
                 "layout": {"nodeIndex": [1], "text": [3]}
+            }]
+        })
+    }
+
+    fn dom_snapshot_with_container_node_count(node_count: usize) -> Value {
+        assert!(node_count >= 4);
+        let mut parent_indices = vec![-1_i64, 0, 1, 1];
+        parent_indices.extend(std::iter::repeat_n(0_i64, node_count - 4));
+        let mut node_names = vec![1, 1, 2, 4];
+        node_names.extend(std::iter::repeat_n(1, node_count - 4));
+        let mut backend_node_ids = vec![1, 2, 4, 3];
+        backend_node_ids.extend(5..=i64::try_from(node_count).unwrap());
+        json!({
+            "strings": ["main", "DIV", "#text", "Save action", "BUTTON"],
+            "documents": [{
+                "frameId": 0,
+                "nodes": {
+                    "parentIndex": parent_indices,
+                    "nodeName": node_names,
+                    "backendNodeId": backend_node_ids,
+                    "attributes": vec![json!([]); node_count]
+                },
+                "layout": {"nodeIndex": [2], "text": [3]}
+            }]
+        })
+    }
+
+    fn deep_chain_dom_snapshot(node_count: usize) -> Value {
+        assert!(node_count >= 2);
+        let parent_indices = (0..node_count)
+            .map(|index| {
+                if index == 0 {
+                    -1_i64
+                } else {
+                    i64::try_from(index - 1).unwrap()
+                }
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "strings": ["main", "DIV", "Deep action"],
+            "documents": [{
+                "frameId": 0,
+                "nodes": {
+                    "parentIndex": parent_indices,
+                    "nodeName": vec![1; node_count],
+                    "backendNodeId": (1..=i64::try_from(node_count).unwrap()).collect::<Vec<_>>(),
+                    "attributes": vec![json!([]); node_count]
+                },
+                "layout": {
+                    "nodeIndex": [node_count - 1],
+                    "text": [2]
+                }
             }]
         })
     }
@@ -3526,6 +3682,185 @@ mod tests {
         assert_eq!(probe.match_count, 1);
     }
 
+    #[tokio::test]
+    async fn dom_container_query_and_presence_accept_large_decoded_snapshots() {
+        let node_count = 8_000;
+        let transport = SnapshotTransport::default();
+        for _ in 0..4 {
+            transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        }
+        for _ in 0..2 {
+            transport.push(
+                "Accessibility.getFullAXTree",
+                ax_tree_with_container_node_count(node_count),
+            );
+            transport.push(
+                "DOMSnapshot.captureSnapshot",
+                dom_snapshot_with_container_node_count(node_count),
+            );
+        }
+        let mut control = page_control();
+        let bound = frame_bound();
+        let query = SemanticQuery::role_in_container(
+            "button",
+            None,
+            krometrail_core::SemanticTextMatch::new(
+                "Save action",
+                krometrail_core::SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query.clone(),
+            None,
+            10,
+        )
+        .unwrap();
+
+        let BrowserOperationResult::QueryPage(result) = control
+            .query_page(
+                &transport,
+                &bound,
+                request,
+                krometrail_core::SessionTime::ZERO,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected query result");
+        };
+        assert_eq!(result.outcome, SemanticQueryOutcome::Unique);
+        assert_eq!(result.matches.len(), 1);
+
+        let probe = control
+            .probe_semantic_presence(
+                &transport,
+                &bound,
+                &query,
+                krometrail_core::SessionTime::ZERO,
+            )
+            .await
+            .unwrap();
+        assert_eq!(probe.outcome, SemanticQueryOutcome::Unique);
+        assert_eq!(probe.match_count, 1);
+    }
+
+    #[test]
+    fn deep_chain_dom_decode_and_container_query_stay_linear() {
+        let node_count = 20_000;
+        let document = DocumentFingerprint {
+            frame_id: "main".into(),
+            loader_id: "loader".into(),
+        };
+        let metadata =
+            decode_dom_snapshot(&deep_chain_dom_snapshot(node_count), &document, target()).unwrap();
+        assert_eq!(metadata[&1].rendered_text, "Deep action");
+        assert_eq!(metadata[&(node_count as i64)].rendered_text, "Deep action");
+
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let nodes = (0..node_count)
+            .map(|index| {
+                let node_id = SnapshotNodeId::new(u32::try_from(index + 1).unwrap()).unwrap();
+                let last = index + 1 == node_count;
+                SnapshotNode {
+                    id: node_id,
+                    parent: (index > 0)
+                        .then(|| SnapshotNodeId::new(u32::try_from(index).unwrap()).unwrap()),
+                    depth: u16::try_from(index).unwrap(),
+                    role: if index == 0 {
+                        "group"
+                    } else if last {
+                        "button"
+                    } else {
+                        "statictext"
+                    }
+                    .into(),
+                    name: last.then(|| "Save".into()),
+                    value: None,
+                    description: None,
+                    properties: vec![],
+                    actionable: last,
+                    reference: last.then_some(NodeReference {
+                        target_id: target(),
+                        generation,
+                        node_id,
+                    }),
+                    document_rect: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let context = ObservationContext::new(
+            SessionId::from_uuid(uuid::Uuid::from_u128(12)),
+            target(),
+            1,
+            krometrail_core::SessionTime::ZERO,
+            krometrail_core::SessionTime::ZERO,
+        )
+        .unwrap();
+        let snapshot = PageSnapshot::new(context, generation, nodes, 0).unwrap();
+        let bound = frame_bound();
+        let mut registry = SnapshotRegistry::default();
+        let parent_by_node = snapshot
+            .nodes
+            .iter()
+            .map(|node| (node.id, node.parent))
+            .collect();
+        let semantic = metadata
+            .into_iter()
+            .map(|(backend, metadata)| {
+                (
+                    SnapshotNodeId::new(u32::try_from(backend).unwrap()).unwrap(),
+                    metadata,
+                )
+            })
+            .collect();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: bound.attachment_generation,
+                document,
+                frame: None,
+                bindings: HashMap::from([(
+                    SnapshotNodeId::new(u32::try_from(node_count).unwrap()).unwrap(),
+                    NodeBinding {
+                        backend_node_id: node_count as i64,
+                        expectation_role: ExpectationTargetRole::Other,
+                    },
+                )]),
+                node_by_backend: HashMap::new(),
+                semantic,
+                parent_by_node,
+                dom_semantics_captured: true,
+                next_node_id: u32::try_from(node_count).unwrap(),
+            },
+        );
+        let query = SemanticQuery::role_in_container(
+            "button",
+            None,
+            krometrail_core::SemanticTextMatch::new(
+                "Deep action",
+                krometrail_core::SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query,
+            None,
+            10,
+        )
+        .unwrap();
+        let result = registry.query(&bound, &request, &snapshot).unwrap();
+        assert_eq!(result.outcome, SemanticQueryOutcome::Unique);
+        assert_eq!(result.matches.len(), 1);
+    }
+
     #[test]
     fn raised_text_cap_allows_large_accessible_text_but_overflow_fails_closed() {
         let generation = SnapshotGeneration::new(1).unwrap();
@@ -3596,7 +3931,9 @@ mod tests {
         assert!(unified.message.as_str().contains(&limit));
         let recovery = unified.recovery.as_ref().unwrap().as_str();
         assert!(recovery.contains("`document`"));
+        assert!(recovery.contains("`query_page`"));
         assert!(recovery.contains("`snapshot_page`"));
+        assert!(recovery.contains("for waits"));
         assert!(recovery.contains("node references"));
         assert!(!recovery.contains("narrow the semantic query"));
         assert!(!recovery.contains("geometry"));
@@ -4456,7 +4793,7 @@ mod tests {
             reference: None,
             document_rect: None,
         };
-        let nodes = vec![
+        let nodes = [
             node(id(1), None, "document"),
             node(id(2), Some(id(1)), "presentation"),
             node(id(3), Some(id(2)), "none"),
@@ -4475,6 +4812,7 @@ mod tests {
                 ..Default::default()
             },
         )]);
+        let nodes_by_id = nodes.iter().map(|node| (node.id, node)).collect();
         let expected = krometrail_core::SemanticTextMatch::new(
             "Buy milk",
             krometrail_core::SemanticTextMatchMode::Exact,
@@ -4486,10 +4824,10 @@ mod tests {
             &expected,
             &parents,
             &semantic,
-            &nodes
+            &nodes_by_id
         ));
 
-        let authority_nodes = vec![
+        let authority_nodes = [
             node(id(1), None, "document"),
             node(id(2), Some(id(1)), "generic"),
             node(id(3), Some(id(2)), "listitem"),
@@ -4517,15 +4855,16 @@ mod tests {
                 },
             ),
         ]);
+        let authority_nodes_by_id = authority_nodes.iter().map(|node| (node.id, node)).collect();
         assert!(!nearest_container_text_matches(
             id(4),
             &expected,
             &authority_parents,
             &authority_semantic,
-            &authority_nodes
+            &authority_nodes_by_id
         ));
 
-        let generic_root = vec![
+        let generic_root = [
             node(id(1), None, "document"),
             node(id(2), Some(id(1)), "generic"),
             node(id(3), Some(id(2)), "checkbox"),
@@ -4549,12 +4888,13 @@ mod tests {
                 },
             ),
         ]);
+        let generic_root_nodes_by_id = generic_root.iter().map(|node| (node.id, node)).collect();
         assert!(!nearest_container_text_matches(
             id(3),
             &expected,
             &generic_root_parents,
             &generic_root_semantic,
-            &generic_root
+            &generic_root_nodes_by_id
         ));
     }
 

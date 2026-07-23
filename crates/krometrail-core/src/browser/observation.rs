@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     num::{NonZeroU32, NonZeroU64},
     sync::Arc,
 };
@@ -461,26 +461,25 @@ impl PageSnapshot {
         nodes: Vec<SnapshotNode>,
         omitted_node_count: u32,
     ) -> Result<Self> {
-        let mut seen = HashSet::new();
+        let mut seen = HashMap::new();
         for node in &nodes {
             if node.role.trim().is_empty() {
                 return Err(invalid("snapshot node role must not be empty"));
             }
-            if !seen.insert(node.id) {
+            if seen.insert(node.id, node.depth).is_some() {
                 return Err(invalid("snapshot node ids must be unique"));
             }
             match node.parent {
                 None if node.depth != 0 => {
                     return Err(invalid("root snapshot nodes must have depth zero"));
                 }
-                Some(parent) if !seen.contains(&parent) => {
+                Some(parent) if !seen.contains_key(&parent) => {
                     return Err(invalid("snapshot parents must precede children"));
                 }
                 Some(parent) => {
-                    let parent_depth = nodes
-                        .iter()
-                        .find(|candidate| candidate.id == parent)
-                        .map(|candidate| candidate.depth)
+                    let parent_depth = seen
+                        .get(&parent)
+                        .copied()
                         .ok_or_else(|| invalid("snapshot parent is missing"))?;
                     if node.depth != parent_depth.saturating_add(1) {
                         return Err(invalid("snapshot node depth does not follow its parent"));

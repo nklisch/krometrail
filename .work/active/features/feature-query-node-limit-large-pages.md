@@ -8,7 +8,7 @@ depends_on: []
 release_binding: null
 gate_origin: null
 created: 2026-07-22
-updated: 2026-07-22
+updated: 2026-07-23
 ---
 
 # Query and semantic-wait availability on large pages
@@ -323,10 +323,12 @@ raised bound and the corrected refusal automatically — no separate change.
   ownership surface and the requested tests live beside the decoder.
 - Review weight: standard default; feature-stage transition/review was not run
   because the caller explicitly required leaving the stage unchanged.
-- Files changed: `crates/krometrail-cdp/src/control/snapshot.rs` and this feature
-  item.
-- Tests added: an 8,000-node query/presence regression; AX and DOM text-cap
-  boundary regressions; and unified AX/DOM refusal-recovery wording coverage.
+- Files changed: `crates/krometrail-core/src/browser/observation.rs`,
+  `crates/krometrail-cdp/src/control/snapshot.rs`, and this feature item.
+- Tests added: an 8,000-node AX query/presence regression; an 8,000-node DOM
+  container-query/presence regression through the real decoder; AX and DOM
+  text-cap boundary regressions; unified AX/DOM refusal-recovery wording
+  coverage; and a 20,000-node deep-chain decode/query tripwire.
   The viewport truncation fixture was rebased to cover the raised symbol-sized
   bound.
 - Simplification: removed `query_exists` and the dead geometry recovery branch
@@ -335,9 +337,35 @@ raised bound and the corrected refusal automatically — no separate change.
 - Discrepancies from design: none in behavior or selected values. The existing
   viewport regression needed its fixed viewport width raised from 10,000px so it
   continued to select more than the new 50,000-node cap.
+- Correction: the earlier near-34 MB retained-snapshot envelope understated
+  duplicated per-ancestor rendered and label text; the pathological envelope is
+  now documented as roughly 17.6 MB backbone + 8 MiB global text + up to ~50 MiB
+  duplicated rendered/label text, with realistic pages far below it.
 - Gate results: `cargo fmt --all -- --check`,
   `bash scripts/check-wire-enum-schemas.sh`,
   `cargo check --workspace --all-targets --locked`,
   `cargo test --workspace --all-targets --locked`, and
   `cargo clippy --workspace --all-targets --locked -- -D warnings` all passed.
 - Adjacent issues parked: none.
+
+## Review fixes
+
+- Finding 1: `PageSnapshot::new` now records each validated node depth in a
+  `HashMap`, so parent-depth validation remains a single O(n) pass while
+  preserving all existing validation errors and messages.
+- Finding 2: normal DOM semantic decode now records own layout text once and
+  aggregates child summaries bottom-up in document order, preserving the
+  1,024-byte retained text and true collapsed-length accounting; nearest label
+  ancestors are precomputed in one forward pass.
+- Finding 3: query and semantic-presence evaluation now builds one O(1)
+  `SnapshotNodeId` lookup at the evaluation boundary for container-text
+  ancestor resolution, without changing matching semantics.
+- Finding 4: corrected the acquisition-bound comment to document the honest
+  pathological retained-memory envelope; no new cap was introduced.
+- Finding 5: unified recovery text now distinguishes frame-scoped `document`
+  guidance for queries from frame-scoped `query_page` polling for waits, while
+  retaining `snapshot_page` reference targeting as the explicit-omission path;
+  the wording regression asserts the wait guidance.
+- Finding 6: added an end-to-end ~8,000-node DOM fixture covering both a
+  `container_text` query and semantic presence probe through DOM decoding, plus
+  a 20,000-node deep-chain decode/query tripwire for the linear paths.
