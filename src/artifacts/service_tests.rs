@@ -571,6 +571,10 @@ async fn realistic_dimensions_sample_to_the_decoded_byte_budget_by_default() {
     let per_frame_decoded_bytes = WIDTH as usize * HEIGHT as usize * 4;
     let limits = ArtifactWorkLimits {
         max_decoded_bytes: NonZeroUsize::new(per_frame_decoded_bytes * 3).unwrap(),
+        // This test pins byte-budget sampling, not wall-time enforcement.
+        // Debug-build image work on a slow shared CI runner can exceed the
+        // production wall-clock, so decouple the assertion from it.
+        max_wall_time: std::time::Duration::from_secs(120),
         ..ArtifactWorkLimits::default()
     };
     let mut rig = rig_with_frame_dimensions(
@@ -635,6 +639,10 @@ async fn oversized_exact_difference_refuses_at_the_byte_bound(frequency_mode: Fr
         false,
         ArtifactWorkLimits {
             max_decoded_bytes: NonZeroUsize::new(per_frame_decoded_bytes).unwrap(),
+            // Pins the byte-bound refusal, not wall-time enforcement; keep the
+            // realistic-dimension work clear of the production wall-clock on
+            // slow debug-build CI runners.
+            max_wall_time: std::time::Duration::from_secs(120),
             ..ArtifactWorkLimits::default()
         },
     );
