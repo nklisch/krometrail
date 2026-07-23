@@ -24,8 +24,7 @@ const MAX_SNAPSHOT_TEXT_BYTES: usize = 1 << 23;
 const MAX_ACCESSIBLE_PROPERTY_COUNT: usize = 32;
 
 /// Unified recovery guidance shared by the node-limit and serialization-failure observation
-/// paths: frame-scoped `document` targeting, `snapshot_page` alternatives, and `take_screenshot`
-/// for pixels.
+/// paths: frame-scoped `document` targeting and `snapshot_page` alternatives.
 const SNAPSHOT_SCOPE_RECOVERY: &str = "for queries, target a single frame with the `document` scope; for waits, poll a frame-scoped `query_page` instead, or capture the page with `snapshot_page` (which reports omitted nodes explicitly) and act on the returned node references directly";
 
 /// Stable diagnostics event emitted at the CDP boundary when a whole-page serialization command

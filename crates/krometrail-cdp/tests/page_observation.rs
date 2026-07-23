@@ -222,9 +222,15 @@ async fn ax_serialization_failure_categories_have_the_same_classification() {
 
 #[tokio::test]
 async fn ax_serialization_disconnect_preserves_browser_disconnected_boundary() {
-    let error = ax_serialization_failure(TransportError::Disconnected).await;
-    assert_eq!(error.code, ErrorCode::BrowserDisconnected);
-    assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+    for transport_error in [
+        TransportError::Disconnected,
+        TransportError::Closed,
+        TransportError::SubscriptionClosed,
+    ] {
+        let error = ax_serialization_failure(transport_error).await;
+        assert_eq!(error.code, ErrorCode::BrowserDisconnected);
+        assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+    }
 }
 
 #[tokio::test]
@@ -623,6 +629,10 @@ async fn production_operation_port_routes_snapshot_screenshot_and_partial_live_e
         malformed_ax.code,
         krometrail_core::ErrorCode::PageObservationFailed
     );
+    // The malformed-response path must keep its original retry contract and stay
+    // outside the serialization-failure classification.
+    assert_eq!(malformed_ax.retry, RetryAdvice::Safe);
+    assert!(!malformed_ax.message.as_str().contains("serialize"));
 
     let calls = transport.command_calls();
     let screenshot_call = calls
