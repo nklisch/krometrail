@@ -337,6 +337,15 @@ fn log_temporal_video_availability(
             availability = "unavailable",
             qualification_stage = ?unavailable.map(|value| value.stage),
             reason = ?unavailable.map(|value| value.reason),
+            failed_check = unavailable
+                .and_then(|value| value.output_check)
+                .map(|detail| detail.check.name()),
+            expected_property = unavailable
+                .and_then(|value| value.output_check)
+                .map(|detail| detail.expected.to_string()),
+            observed_property = unavailable
+                .and_then(|value| value.output_check)
+                .map(|detail| detail.observed.to_string()),
             restart_required_for_change = true,
             "temporal video startup availability resolved"
         );

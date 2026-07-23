@@ -16,6 +16,7 @@ mod qualification;
 
 pub use discovery::FfmpegDiscoveryOptions;
 pub use encoder::QualifiedFfmpegEncoder;
+pub use mp4::{Mp4Check, Mp4Property, OutputValidationDetail};
 pub use qualification::{
     FfmpegQualification, FfmpegQualificationStage, FfmpegUnavailable, FfmpegUnavailableReason,
     qualify_ffmpeg,

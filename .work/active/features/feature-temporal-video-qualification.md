@@ -397,3 +397,41 @@ app-level tracing test is added (low value, high harness cost).
 - **Diagnostic content safety.** `Mp4Property` renders only container integers,
   a 4-byte codec tag, and pixel dimensions — no stderr, no filesystem paths, no
   frame content — staying inside existing privacy bounds.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the feature is one cohesive
+  FFmpeg validator/qualification bundle. The feature remains at
+  `stage: implementing` for the host to advance.
+- Review weight: standard by project default; no feature-stage review or commit
+  was performed because the caller owns stage transitions and serialization.
+- Files changed:
+  - `crates/krometrail-ffmpeg/src/mp4.rs`
+  - `crates/krometrail-ffmpeg/src/error.rs`
+  - `crates/krometrail-ffmpeg/src/qualification.rs`
+  - `crates/krometrail-ffmpeg/src/lib.rs`
+  - `src/app.rs`
+  - `crates/krometrail-ffmpeg/tests/ffmpeg_adapter.rs`
+  - `crates/krometrail-ffmpeg/tests/support/fixture_main.rs`
+  - `crates/krometrail-ffmpeg/tests/fixtures/video/README.md`
+  - `crates/krometrail-ffmpeg/tests/fixtures/video/terminal-hold-zero-h264.mp4`
+- Tests added: terminal-zero validator acceptance, non-terminal-zero rejection,
+  retained terminal-zero fixture validation, sample-duration mismatch detail,
+  bounded property display, codec/dimension detail assertions, full-path
+  terminal-zero qualification, and mapped dimension diagnostics.
+- Fixture provenance: Fedora FFmpeg 7.1.2/libx264 qualification output from
+  the two 2x2 RGBA PNG plus `ffconcat` fixed-policy probe; 1,508 bytes,
+  `stts = [(1,100000),(1,249999),(1,0)]`, SHA-256
+  `b3ac999ae30d653ea4ca1e19a5102154db9e0546d8f620794d84f5a4a4d32b50`.
+- Simplification: one `Mp4Check`/`Mp4Property`/`OutputValidationDetail`
+  surface carries bounded validation detail through the existing failure path;
+  no compatibility or encode-argument path was added.
+- Discrepancies from design: the existing parser did not retain dimensions for
+  unsupported codecs, so it now preserves those parsed dimensions to let the
+  requested `VideoCodec` diagnostic win; acceptance behavior is unchanged.
+  Recursive structural parse failures remain detail-free as specified.
+- Verification: `cargo fmt --all -- --check`,
+  `bash scripts/check-wire-enum-schemas.sh`, workspace check, workspace tests,
+  and workspace clippy with `-D warnings` all passed. Socket-bound CDP tests
+  required the approved elevated rerun; no source or fixture behavior depended
+  on that environment permission.

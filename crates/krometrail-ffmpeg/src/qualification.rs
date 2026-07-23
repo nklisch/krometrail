@@ -16,7 +16,7 @@ use crate::{
     encoder::QualifiedFfmpegEncoder,
     error::{AdapterFailure, AdapterFailureKind, AdapterFailureStage},
     job::PreparedEncodeJob,
-    mp4::{ValidatedMp4, validate_mp4},
+    mp4::{OutputValidationDetail, ValidatedMp4, validate_mp4},
     policy::{
         FFMPEG_ARGUMENT_POLICY_VERSION, FFMPEG_QUALIFICATION_TIMEOUT, MAX_FFMPEG_STDERR_BYTES,
         MAX_FFMPEG_VERSION_REPORT_BYTES,
@@ -51,6 +51,7 @@ pub enum FfmpegUnavailableReason {
 pub struct FfmpegUnavailable {
     pub stage: FfmpegQualificationStage,
     pub reason: FfmpegUnavailableReason,
+    pub output_check: Option<OutputValidationDetail>,
 }
 
 pub enum FfmpegQualification {
@@ -89,6 +90,7 @@ pub async fn qualify_ffmpeg(
     let mut final_failure = FfmpegUnavailable {
         stage: FfmpegQualificationStage::Discovery,
         reason: FfmpegUnavailableReason::NotFound,
+        output_check: None,
     };
     for candidate in candidates {
         if let Err(failure) = control.check(AdapterFailureStage::ExecutableIdentity) {
@@ -437,14 +439,22 @@ fn map_failure(failure: &AdapterFailure) -> FfmpegUnavailable {
         | AdapterFailureKind::DiagnosticOverflow
         | AdapterFailureKind::Internal => FfmpegUnavailableReason::ProcessFailed,
     };
-    FfmpegUnavailable { stage, reason }
+    FfmpegUnavailable {
+        stage,
+        reason,
+        output_check: failure.output_check,
+    }
 }
 
 fn unavailable(
     stage: FfmpegQualificationStage,
     reason: FfmpegUnavailableReason,
 ) -> FfmpegQualification {
-    FfmpegQualification::Unavailable(FfmpegUnavailable { stage, reason })
+    FfmpegQualification::Unavailable(FfmpegUnavailable {
+        stage,
+        reason,
+        output_check: None,
+    })
 }
 
 struct HexDigest([u8; 32]);

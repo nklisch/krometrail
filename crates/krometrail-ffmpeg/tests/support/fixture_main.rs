@@ -11,6 +11,10 @@ const VALID_MP4: &[u8] = include_bytes!(concat!(
     env!("KROMETRAIL_FFMPEG_FIXTURE_MANIFEST_DIR"),
     "/tests/fixtures/video/valid-h264.mp4"
 ));
+const TERMINAL_ZERO_MP4: &[u8] = include_bytes!(concat!(
+    env!("KROMETRAIL_FFMPEG_FIXTURE_MANIFEST_DIR"),
+    "/tests/fixtures/video/terminal-hold-zero-h264.mp4"
+));
 
 fn main() {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
@@ -60,6 +64,8 @@ fn main() {
     let output = PathBuf::from(arguments.last().expect("fixed output argument"));
     match effective_mode {
         "valid" => fs::write(output, VALID_MP4).unwrap(),
+        "terminal-hold-zero" => fs::write(output, TERMINAL_ZERO_MP4).unwrap(),
+        "wrong-dimensions" => fs::write(output, wrong_dimensions_mp4()).unwrap(),
         "invalid" => fs::write(output, b"not an mp4").unwrap(),
         "exit" => std::process::exit(17),
         "stderr-overflow" => {
@@ -81,6 +87,27 @@ fn main() {
         }
         _ => std::process::exit(91),
     }
+}
+
+fn wrong_dimensions_mp4() -> Vec<u8> {
+    let mut output = VALID_MP4.to_vec();
+    replace_at(&mut output, b"stsd", 44, [0, 2, 0, 2], [0, 4, 0, 2]);
+    replace_at(&mut output, b"tkhd", 80, [0, 2, 0, 0], [0, 4, 0, 0]);
+    output
+}
+
+fn replace_at(bytes: &mut [u8], marker: &[u8; 4], offset: usize, from: [u8; 4], to: [u8; 4]) {
+    let marker_offset = bytes
+        .windows(marker.len())
+        .position(|window| window == marker)
+        .expect("fixture marker must exist");
+    let field_offset = marker_offset + offset;
+    assert_eq!(
+        bytes[field_offset..field_offset + from.len()],
+        from,
+        "fixture field must have the expected dimensions"
+    );
+    bytes[field_offset..field_offset + from.len()].copy_from_slice(&to);
 }
 
 fn increment_encode_count(directory: &std::path::Path) -> u64 {

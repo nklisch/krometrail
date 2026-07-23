@@ -14,3 +14,10 @@ sentinel at microsecond PTS `[0, 100000, 349999]`. `ffprobe` reported one H.264 
 Regenerate only through the ignored opt-in real-FFmpeg qualification workflow with an explicit
 `KROMETRAIL_FFMPEG_FIXTURE_OUTPUT` path, then update this provenance and the hash together.
 Default tests only read the retained bytes and never invoke FFmpeg or contact a network.
+
+`terminal-hold-zero-h264.mp4` is the corresponding Fedora FFmpeg 7.1.2 exemplar. It was produced
+by the exact qualification shape: two staged 2x2 RGBA PNGs and an `ffconcat` timeline, encoded with
+the policy's `libx264`, `yuv420p`, 1 MHz track timebase, all-intra, fast-start MP4, and 350 ms
+duration arguments. Its `stts` entries are `[(1,100000),(1,249999),(1,0)]`; the muxer-defined
+terminal hold is stored as zero while the leading deltas remain exact. The file is 1508 bytes and
+its SHA-256 is `b3ac999ae30d653ea4ca1e19a5102154db9e0546d8f620794d84f5a4a4d32b50`.

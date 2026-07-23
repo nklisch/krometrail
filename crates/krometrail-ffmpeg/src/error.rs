@@ -1,5 +1,7 @@
 use sha2::{Digest, Sha256};
 
+use crate::mp4::OutputValidationDetail;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AdapterFailureStage {
     InputStaging,
@@ -37,6 +39,7 @@ pub(crate) struct AdapterFailure {
     pub(crate) kind: AdapterFailureKind,
     pub(crate) observed_bytes: Option<u64>,
     pub(crate) diagnostic_sha256: Option<[u8; 32]>,
+    pub(crate) output_check: Option<OutputValidationDetail>,
 }
 
 impl AdapterFailure {
@@ -46,6 +49,7 @@ impl AdapterFailure {
             kind,
             observed_bytes: None,
             diagnostic_sha256: None,
+            output_check: None,
         }
     }
 
@@ -60,6 +64,11 @@ impl AdapterFailure {
         self
     }
 
+    pub(crate) const fn with_output_check(mut self, detail: OutputValidationDetail) -> Self {
+        self.output_check = Some(detail);
+        self
+    }
+
     pub(crate) const fn at_stage(mut self, stage: AdapterFailureStage) -> Self {
         if !matches!(self.stage, AdapterFailureStage::ProcessCleanup) {
             self.stage = stage;
@@ -69,12 +78,16 @@ impl AdapterFailure {
 
     pub(crate) fn trace(&self) {
         let digest = self.diagnostic_sha256.map(HexDigest);
+        let output_check = self.output_check;
         tracing::debug!(
             event = "ffmpeg.adapter.failure",
             failure_stage = ?self.stage,
             failure_kind = ?self.kind,
             observed_bytes = self.observed_bytes,
             diagnostic_sha256 = digest.as_ref().map(ToString::to_string),
+            failed_check = output_check.map(|detail| detail.check.name()),
+            expected = output_check.map(|detail| detail.expected.to_string()),
+            observed = output_check.map(|detail| detail.observed.to_string()),
             "FFmpeg adapter operation failed"
         );
     }

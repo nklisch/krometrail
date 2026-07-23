@@ -14,7 +14,7 @@ use krometrail_core::{
 };
 use krometrail_ffmpeg::{
     FfmpegDiscoveryOptions, FfmpegQualification, FfmpegQualificationStage, FfmpegUnavailableReason,
-    qualify_ffmpeg,
+    Mp4Check, Mp4Property, OutputValidationDetail, qualify_ffmpeg,
 };
 use sha2::Digest as _;
 
@@ -125,6 +125,42 @@ async fn produced_contract_qualification_returns_safe_exact_identity() {
     );
     assert!(!encoder.identity().implementation_version().contains('/'));
     assert!(!encoder.identity().implementation_version().contains('\\'));
+}
+
+#[tokio::test]
+async fn terminal_hold_zero_fixture_qualifies_through_the_full_path() {
+    let fixture = support::FixtureExecutable::new("terminal-hold-zero");
+    assert!(matches!(
+        qualify(&fixture).await,
+        FfmpegQualification::Qualified(_)
+    ));
+}
+
+#[tokio::test]
+async fn output_validation_detail_reaches_unavailable_mapping() {
+    let fixture = support::FixtureExecutable::new("wrong-dimensions");
+    let FfmpegQualification::Unavailable(unavailable) = qualify(&fixture).await else {
+        panic!("wrong dimensions must not qualify");
+    };
+    assert_eq!(
+        unavailable.stage,
+        FfmpegQualificationStage::OutputValidation
+    );
+    assert_eq!(unavailable.reason, FfmpegUnavailableReason::InvalidOutput);
+    assert_eq!(
+        unavailable.output_check,
+        Some(OutputValidationDetail {
+            check: Mp4Check::VideoDimensions,
+            expected: Mp4Property::Dimensions {
+                width: 2,
+                height: 2,
+            },
+            observed: Mp4Property::Dimensions {
+                width: 4,
+                height: 2,
+            },
+        })
+    );
 }
 
 #[tokio::test]
