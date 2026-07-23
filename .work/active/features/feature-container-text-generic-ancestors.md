@@ -1,7 +1,7 @@
 ---
 id: feature-container-text-generic-ancestors
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -462,3 +462,13 @@ the existing test module of
   have rejected). No supported consumer depends on the old silence
   (agent-tool contract, Current Contract Discipline), but reviewers should
   treat changed test expectations as the new contract, not test drift.
+
+## Implementation notes
+
+- Execution capability: direct-read inline implementation; the feature is one cohesive core/CDP contract and documentation change.
+- Review weight: standard default; the caller explicitly keeps this feature at `stage: implementing` for the host to advance.
+- Files changed: `crates/krometrail-core/src/browser/observation.rs`, `crates/krometrail-core/src/browser/mod.rs`, `crates/krometrail-core/src/lib.rs`, `crates/krometrail-cdp/src/control/snapshot.rs`, `docs/SPEC.md`, `plugin/skills/krometrail/SKILL.md`, and `plugin/skills/krometrail/references/browser-contexts.md`.
+- Tests added/re-encoded: core no-match diagnostic filtering and serde round-trip, container-query stripping, and collapsed-byte normalization tests; CDP generic-row regression, transparent-wrapper, cap/document exclusion, authority, and diagnostic-gating coverage; the prior shared-page-text no-match assertion now verifies the bounded generic-row match.
+- Simplification: replaced `with_relaxed_candidates` directly with `with_no_match_diagnostics`, reused `RelaxedMatchCandidates` and its cap, and added no compatibility alias or parallel schema.
+- Discrepancies from design: none in runtime behavior. `bun run docs:build` regenerated `docs/public/llms-full.txt` successfully with no diff because the generator's curated source list excludes SPEC and plugin skill files. No `CLAUDE.md` exists in the repository.
+- Adjacent issues parked: none.

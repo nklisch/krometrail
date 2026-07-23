@@ -21,7 +21,8 @@ page, frame, or resource boundary.
   actionable reference.
 - For an unnamed control whose visible identity comes from its row, card, or other bounded ancestor,
   use a role query with `container_text`. This is a semantic ancestor relationship, not a spatial-nearness
-  heuristic; narrow ambiguous outcomes before acting.
+  heuristic; bounded generic row/card wrappers qualify while page-scale ancestors never do. Narrow
+  ambiguous outcomes before acting.
 - Call `list_page_assets` when resource identity, kind, timing, or browser-disclosed sizes can explain
   a layout or loading issue. Concise output gives counts by kind plus a small representative row set;
   request `expanded` for more rows or `full` for the complete acquired inventory. Acquisition is capped

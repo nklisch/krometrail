@@ -173,8 +173,10 @@ Callers can also describe a semantic locator by accessible role and name, label 
 identifier, optionally scoped to a descendant and a qualified same-origin/same-process frame (including a
 same-process `about:srcdoc` or `about:blank` frame whose opaque origin is inherited from its parent).
 Fresh opaque child documents such as `data:` frames are not same-origin-qualified, even when their
-parent is also opaque. A role query may qualify an unnamed
-control by text rendered within its nearest matching ancestor container; this bounded relationship never
+parent is also opaque. A role query may qualify an unnamed control by text rendered within its nearest
+semantic container role; that nearest explicit container is authoritative. When no such ancestor exists,
+a generic-role ancestor may qualify the control only while its whitespace-collapsed rendered text stays
+within a declared container-scope bound, so page-scale containers never qualify. The relationship never
 falls back to spatial proximity or unrelated page text. Krometrail resolves the locator through
 the active document snapshot registry and returns or acts through an exact generation-scoped reference. A no-match,
 ambiguous, or truncated result is an explicit successful query outcome, but it contains no actionable
@@ -184,7 +186,10 @@ additionally reports how many nodes the same query would have matched with every
 rather than a guess-and-retry loop. That count is scanned over the same bounded snapshot nodes, is capped at
 a declared candidate limit, and reports saturation at the cap. It is omitted when the query used no exact
 matcher, when the relaxation would still match nothing, or when the query matched. Semantic matching never silently selects one of several or potentially
-unreported nodes; callers narrow the query until it returns one unique reference before acting. Plain
+unreported nodes; callers narrow the query until it returns one unique reference before acting. A `no_match`
+result for a container-qualified role query additionally reports how many nodes the same role query would
+match with the container qualifier dropped, under the same declared candidate limit and saturation
+reporting. Plain
 role/name queries acquire only the selected document's accessibility tree. Container-text, label,
 rendered-text, and test-id queries additionally acquire DOM semantics. Completeness limits apply to
 the selected acquisition, not unrelated documents, and fail with bounded narrowing guidance. Exact and

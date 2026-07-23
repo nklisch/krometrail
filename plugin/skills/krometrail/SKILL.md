@@ -129,12 +129,17 @@ Refresh after frame navigation. Cross-origin, out-of-process, stale, or indeterm
 fails explicitly; never retry it against main-document coordinates.
 
 For an unnamed control whose visible identity is text in its surrounding row or card, add
-`container_text` to a role query. Krometrail qualifies the control against the nearest matching
-ancestor's rendered text; it does not use page-wide text or geometric proximity. For example:
+`container_text` to a role query. The nearest semantic container (such as a list item, row, cell, group,
+article, region, or label) decides the match when present. Without one, a bounded generic ancestor such
+as a styled row or card `div` qualifies while its collapsed rendered text stays small; page-level wrappers
+never qualify. Krometrail does not use geometric proximity. For example:
 
 ```json
 {"query":{"kind":"role","role":"checkbox","container_text":{"value":"Buy milk","mode":"exact","case_sensitive":false}}}
 ```
+
+On `no_match`, an `uncontained_match_candidates` count means the controls exist but none sits in a
+qualifying container; narrow with `scope` or revise the container text.
 
 Read [browser contexts and assets](references/browser-contexts.md) before work that reuses a named
 profile, opens popups, enters frames, or diagnoses resource loading.

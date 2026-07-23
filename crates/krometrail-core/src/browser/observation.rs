@@ -21,6 +21,10 @@ pub const MAX_SEMANTIC_MATCH_LIMIT: u16 = 100;
 /// reported count is marked saturated rather than becoming an unbounded page scan.
 pub const MAX_SEMANTIC_RELAXED_CANDIDATES: u16 = 100;
 pub const MAX_SEMANTIC_QUERY_TEXT_BYTES: usize = 1_024;
+/// The declared bound on generic-ancestor container eligibility. A generic-role ancestor may
+/// qualify a container-text query only while its whitespace-collapsed rendered text fits this
+/// many UTF-8 bytes; page-scale containers exceed it and never qualify.
+pub const MAX_GENERIC_CONTAINER_TEXT_BYTES: usize = 1_024;
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, schemars::JsonSchema,
@@ -656,6 +660,13 @@ fn normalize_semantic_text(value: &str, case_sensitive: bool) -> String {
     normalized
 }
 
+/// Collapsed byte length of rendered text under the same normalization semantic text matching
+/// uses (whitespace collapsing, invisible-format stripping, private-use glyphs as separators),
+/// without case folding.
+pub fn collapsed_semantic_text_bytes(value: &str) -> usize {
+    normalize_semantic_text(value, true).len()
+}
+
 const fn is_invisible_format(character: char) -> bool {
     matches!(
         character,
@@ -722,6 +733,25 @@ impl SemanticQuery {
         match self {
             Self::Role { container_text, .. } => container_text.is_some(),
             Self::Label { .. } | Self::Text { .. } | Self::TestId { .. } => true,
+        }
+    }
+
+    /// The same role query with the container qualifier dropped.
+    ///
+    /// `None` for non-role queries and role queries without `container_text`; this is how a
+    /// `no_match` result reports that matching controls exist outside any qualifying container.
+    pub fn without_container_text(&self) -> Option<Self> {
+        match self {
+            Self::Role {
+                role,
+                name,
+                container_text: Some(_),
+            } => Some(Self::Role {
+                role: role.clone(),
+                name: name.clone(),
+                container_text: None,
+            }),
+            _ => None,
         }
     }
 
@@ -918,10 +948,11 @@ pub struct SemanticMatch {
     pub name: Option<String>,
 }
 
-/// How many nodes an exact-mode query would have matched under `contains`.
+/// How many nodes a specific relaxation of a `no_match` query would have reached.
 ///
-/// Reported only on `no_match` for a query that used at least one exact text matcher. The scan is
-/// capped at [`MAX_SEMANTIC_RELAXED_CANDIDATES`]; `saturated` marks the cap being reached.
+/// The relaxation may be exact matchers relaxed to `contains`, or the container qualifier dropped.
+/// The scan is capped at [`MAX_SEMANTIC_RELAXED_CANDIDATES`]; `saturated` marks the cap being
+/// reached.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RelaxedMatchCandidates {
@@ -950,6 +981,10 @@ pub struct QueryPageResult {
     /// `contains` retry would have matched at least one node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relaxed_match_candidates: Option<RelaxedMatchCandidates>,
+    /// Present only on `no_match` of a container-qualified role query when the same query with
+    /// the container qualifier dropped would have matched at least one node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncontained_match_candidates: Option<RelaxedMatchCandidates>,
 }
 
 impl QueryPageResult {
@@ -959,15 +994,16 @@ impl QueryPageResult {
         matches: Vec<SemanticMatch>,
         max_matches: u16,
     ) -> Result<Self> {
-        Self::with_relaxed_candidates(context, generation, matches, max_matches, None)
+        Self::with_no_match_diagnostics(context, generation, matches, max_matches, None, None)
     }
 
-    pub fn with_relaxed_candidates(
+    pub fn with_no_match_diagnostics(
         context: ObservationContext,
         generation: SnapshotGeneration,
         mut matches: Vec<SemanticMatch>,
         max_matches: u16,
         relaxed_match_candidates: Option<RelaxedMatchCandidates>,
+        uncontained_match_candidates: Option<RelaxedMatchCandidates>,
     ) -> Result<Self> {
         if !(1..=MAX_SEMANTIC_MATCH_LIMIT).contains(&max_matches) {
             return Err(invalid("semantic match limit must be between 1 and 100"));
@@ -996,6 +1032,9 @@ impl QueryPageResult {
         let relaxed_match_candidates = relaxed_match_candidates
             .filter(|_| outcome == SemanticQueryOutcome::NoMatch)
             .filter(|candidates| candidates.count > 0);
+        let uncontained_match_candidates = uncontained_match_candidates
+            .filter(|_| outcome == SemanticQueryOutcome::NoMatch)
+            .filter(|candidates| candidates.count > 0);
         Ok(Self {
             context,
             generation,
@@ -1003,6 +1042,7 @@ impl QueryPageResult {
             matches,
             omitted_match_count,
             relaxed_match_candidates,
+            uncontained_match_candidates,
         })
     }
 }
@@ -1453,6 +1493,11 @@ mod tests {
         let icon_only =
             SemanticTextMatch::new("\u{e5cf}", SemanticTextMatchMode::Exact, false).unwrap();
         assert!(!icon_only.matches("\u{e5cf}"));
+
+        assert_eq!(
+            collapsed_semantic_text_bytes("  Filters\u{200b} \u{e5cf}\n now "),
+            "Filters now".len()
+        );
     }
 
     #[test]
@@ -1517,21 +1562,31 @@ mod tests {
     /// A no-match result is only useful if it says what a relaxed retry would reach, and only on
     /// the empty result — beside real matches it would read as a second, unranked match set.
     #[test]
-    fn relaxed_candidates_are_reported_only_for_an_empty_result() {
+    fn no_match_diagnostics_are_reported_only_for_an_empty_result() {
         let generation = SnapshotGeneration::new(7).unwrap();
-        let candidates = RelaxedMatchCandidates::new(3);
-        let no_match = QueryPageResult::with_relaxed_candidates(
+        let relaxed_candidates = RelaxedMatchCandidates::new(3);
+        let uncontained_candidates = RelaxedMatchCandidates::new(2);
+        let no_match = QueryPageResult::with_no_match_diagnostics(
             context(),
             generation,
             vec![],
             2,
-            Some(candidates),
+            Some(relaxed_candidates),
+            Some(uncontained_candidates),
         )
         .unwrap();
         assert_eq!(no_match.outcome, SemanticQueryOutcome::NoMatch);
-        assert_eq!(no_match.relaxed_match_candidates, Some(candidates));
+        assert_eq!(no_match.relaxed_match_candidates, Some(relaxed_candidates));
+        assert_eq!(
+            no_match.uncontained_match_candidates,
+            Some(uncontained_candidates)
+        );
+        let round_trip =
+            serde_json::from_value::<QueryPageResult>(serde_json::to_value(&no_match).unwrap())
+                .unwrap();
+        assert_eq!(round_trip, no_match);
 
-        let matched = QueryPageResult::with_relaxed_candidates(
+        let matched = QueryPageResult::with_no_match_diagnostics(
             context(),
             generation,
             vec![SemanticMatch {
@@ -1544,21 +1599,32 @@ mod tests {
                 name: Some("Cargo.toml, (File)".into()),
             }],
             2,
-            Some(candidates),
+            Some(relaxed_candidates),
+            Some(uncontained_candidates),
         )
         .unwrap();
         assert!(matched.relaxed_match_candidates.is_none());
+        assert!(matched.uncontained_match_candidates.is_none());
 
         // A relaxation that would also match nothing is silence, not a zero.
-        let empty = QueryPageResult::with_relaxed_candidates(
+        let empty = QueryPageResult::with_no_match_diagnostics(
             context(),
             generation,
             vec![],
             2,
             Some(RelaxedMatchCandidates::new(0)),
+            Some(RelaxedMatchCandidates::new(0)),
         )
         .unwrap();
         assert!(empty.relaxed_match_candidates.is_none());
+        assert!(empty.uncontained_match_candidates.is_none());
+        assert!(
+            !serde_json::to_value(&empty)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("uncontained_match_candidates")
+        );
     }
 
     #[test]
@@ -1613,6 +1679,36 @@ mod tests {
             SemanticQuery::Label { text: exact }
                 .relaxed_to_contains()
                 .is_some()
+        );
+
+        let containerized = SemanticQuery::role_in_container(
+            "checkbox",
+            Some(SemanticTextMatch::new("Buy", SemanticTextMatchMode::Exact, false).unwrap()),
+            SemanticTextMatch::new("Milk", SemanticTextMatchMode::Exact, false).unwrap(),
+        )
+        .unwrap();
+        let stripped = containerized
+            .without_container_text()
+            .expect("container qualifier is removable");
+        assert!(matches!(
+            stripped,
+            SemanticQuery::Role {
+                container_text: None,
+                ..
+            }
+        ));
+        assert!(
+            SemanticQuery::role("checkbox", None)
+                .unwrap()
+                .without_container_text()
+                .is_none()
+        );
+        assert!(
+            SemanticQuery::Text {
+                text: SemanticTextMatch::new("Milk", SemanticTextMatchMode::Exact, false).unwrap(),
+            }
+            .without_container_text()
+            .is_none()
         );
     }
 

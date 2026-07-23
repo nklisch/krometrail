@@ -68,6 +68,7 @@ const LOCAL_CONTAINER_ROLES: &[&str] = &[
     "label",
     "labeltext",
 ];
+const GENERIC_CONTAINER_ROLES: &[&str] = &["generic", "none", "presentation"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DocumentFingerprint {
@@ -660,12 +661,29 @@ impl SnapshotRegistry {
             None
         };
 
-        QueryPageResult::with_relaxed_candidates(
+        let uncontained_match_candidates = if matches.is_empty() {
+            request.query.without_container_text().map(|stripped| {
+                let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
+                let count = snapshot
+                    .nodes
+                    .iter()
+                    .filter(|node| node.reference.is_some() && in_scope(node))
+                    .filter(|node| evaluate(&stripped, node))
+                    .take(limit)
+                    .count();
+                krometrail_core::RelaxedMatchCandidates::new(count)
+            })
+        } else {
+            None
+        };
+
+        QueryPageResult::with_no_match_diagnostics(
             snapshot.context.clone(),
             snapshot.generation,
             matches,
             request.max_matches,
             relaxed_match_candidates,
+            uncontained_match_candidates,
         )
     }
 
@@ -880,11 +898,22 @@ fn nearest_container_text_matches(
             return false;
         };
         if is_local_container_role(&ancestor_node.role) {
-            // Rendered DOM text propagates through generic/page-level ancestors. The nearest
-            // explicit local container is the only authority for a container-qualified query.
+            // A semantic container declares an identity boundary: the nearest one is the sole
+            // authority for the query, exactly as before.
             return semantic
                 .get(&ancestor)
                 .is_some_and(|metadata| expected.matches(&metadata.rendered_text));
+        }
+        if is_generic_container_role(&ancestor_node.role)
+            && let Some(metadata) = semantic.get(&ancestor)
+            && krometrail_core::collapsed_semantic_text_bytes(&metadata.rendered_text)
+                <= krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES
+            && expected.matches(&metadata.rendered_text)
+        {
+            // Styling divs do not declare identity boundaries, so a bounded generic ancestor
+            // qualifies opportunistically and a non-matching one stays transparent. Rendered
+            // text only grows upward, so page-scale wrappers can never qualify a control.
+            return true;
         }
         current = parents.get(&ancestor).copied().flatten();
     }
@@ -893,6 +922,12 @@ fn nearest_container_text_matches(
 
 fn is_local_container_role(role: &str) -> bool {
     LOCAL_CONTAINER_ROLES
+        .iter()
+        .any(|candidate| role.eq_ignore_ascii_case(candidate))
+}
+
+fn is_generic_container_role(role: &str) -> bool {
+    GENERIC_CONTAINER_ROLES
         .iter()
         .any(|candidate| role.eq_ignore_ascii_case(candidate))
 }
@@ -3537,7 +3572,7 @@ mod tests {
     }
 
     #[test]
-    fn container_role_queries_use_only_the_nearest_explicit_local_ancestor() {
+    fn container_role_queries_preserve_authority_and_support_generic_ancestors() {
         let generation = SnapshotGeneration::new(1).unwrap();
         let root = SnapshotNodeId::new(1).unwrap();
         let first_container = SnapshotNodeId::new(2).unwrap();
@@ -3665,7 +3700,7 @@ mod tests {
                     (
                         first_container,
                         SemanticNodeMetadata {
-                            rendered_text: "Buy milk".into(),
+                            rendered_text: "First item".into(),
                             ..Default::default()
                         },
                     ),
@@ -3686,7 +3721,7 @@ mod tests {
                     (
                         generic_wrapper,
                         SemanticNodeMetadata {
-                            rendered_text: "Unrelated sibling text".into(),
+                            rendered_text: "Buy milk".into(),
                             ..Default::default()
                         },
                     ),
@@ -3734,7 +3769,7 @@ mod tests {
         };
         assert_eq!(
             registry
-                .query(&bound, &request("Buy milk"), &snapshot)
+                .query(&bound, &request("First item"), &snapshot)
                 .unwrap()
                 .matches[0]
                 .reference
@@ -3750,12 +3785,19 @@ mod tests {
                 .node_id,
             second_checkbox
         );
+        let page_text = registry
+            .query(&bound, &request("Page-wide unrelated text"), &snapshot)
+            .unwrap();
         assert_eq!(
-            registry
-                .query(&bound, &request("Page-wide unrelated text"), &snapshot)
-                .unwrap()
-                .outcome,
+            page_text.outcome,
             krometrail_core::SemanticQueryOutcome::NoMatch
+        );
+        assert_eq!(
+            page_text
+                .uncontained_match_candidates
+                .expect("the role matches when the container qualifier is dropped")
+                .count,
+            3
         );
         let shared_page_text = QueryPageRequest::new(
             krometrail_core::PageSelection::Target(target()),
@@ -3763,7 +3805,7 @@ mod tests {
                 "checkbox",
                 None,
                 krometrail_core::SemanticTextMatch::new(
-                    "unrelated sibling",
+                    "Buy",
                     krometrail_core::SemanticTextMatchMode::Contains,
                     false,
                 )
@@ -3774,13 +3816,212 @@ mod tests {
             20,
         )
         .unwrap();
+        let shared_page_text_result = registry
+            .query(&bound, &shared_page_text, &snapshot)
+            .unwrap();
         assert_eq!(
-            registry
-                .query(&bound, &shared_page_text, &snapshot)
-                .unwrap()
-                .outcome,
+            shared_page_text_result.outcome,
+            krometrail_core::SemanticQueryOutcome::Unique
+        );
+        assert_eq!(
+            shared_page_text_result.matches[0].reference.node_id,
+            uncontained_checkbox
+        );
+
+        // Both explanations can coexist: the exact container text misses, while the relaxed
+        // container and the unqualified role each identify useful follow-up candidates.
+        let both_diagnostics = registry
+            .query(
+                &bound,
+                &QueryPageRequest::new(
+                    krometrail_core::PageSelection::Target(target()),
+                    SemanticQuery::role_in_container(
+                        "checkbox",
+                        None,
+                        krometrail_core::SemanticTextMatch::new(
+                            "Buy",
+                            krometrail_core::SemanticTextMatchMode::Exact,
+                            false,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                    None,
+                    20,
+                )
+                .unwrap(),
+                &snapshot,
+            )
+            .unwrap();
+        assert_eq!(
+            both_diagnostics.outcome,
             krometrail_core::SemanticQueryOutcome::NoMatch
         );
+        assert_eq!(
+            both_diagnostics
+                .relaxed_match_candidates
+                .expect("the contains relaxation reaches the generic row")
+                .count,
+            1
+        );
+        assert_eq!(
+            both_diagnostics
+                .uncontained_match_candidates
+                .expect("the stripped role reaches all checkboxes")
+                .count,
+            3
+        );
+
+        // Once the generic row exceeds the bound it no longer qualifies, but its control remains
+        // visible in the uncontained diagnostic.
+        registry
+            .targets
+            .get_mut(&target())
+            .unwrap()
+            .active
+            .as_mut()
+            .unwrap()
+            .semantic
+            .insert(
+                generic_wrapper,
+                SemanticNodeMetadata {
+                    rendered_text: "x"
+                        .repeat(krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES + 1),
+                    ..Default::default()
+                },
+            );
+        let capped = registry
+            .query(&bound, &shared_page_text, &snapshot)
+            .unwrap();
+        assert_eq!(
+            capped.outcome,
+            krometrail_core::SemanticQueryOutcome::NoMatch
+        );
+        assert_eq!(
+            capped
+                .uncontained_match_candidates
+                .expect("the role still matches outside a qualifying container")
+                .count,
+            3
+        );
+    }
+
+    #[test]
+    fn generic_container_walk_skips_transparent_wrappers_and_excludes_page_text() {
+        let id = |value| SnapshotNodeId::new(value).unwrap();
+        let node = |id: SnapshotNodeId, parent: Option<SnapshotNodeId>, role: &str| SnapshotNode {
+            id,
+            parent,
+            depth: 0,
+            role: role.into(),
+            name: None,
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+            document_rect: None,
+        };
+        let nodes = vec![
+            node(id(1), None, "document"),
+            node(id(2), Some(id(1)), "presentation"),
+            node(id(3), Some(id(2)), "none"),
+            node(id(4), Some(id(3)), "checkbox"),
+        ];
+        let parents = HashMap::from([
+            (id(1), None),
+            (id(2), Some(id(1))),
+            (id(3), Some(id(2))),
+            (id(4), Some(id(3))),
+        ]);
+        let semantic = HashMap::from([(
+            id(2),
+            SemanticNodeMetadata {
+                rendered_text: "Buy milk".into(),
+                ..Default::default()
+            },
+        )]);
+        let expected = krometrail_core::SemanticTextMatch::new(
+            "Buy milk",
+            krometrail_core::SemanticTextMatchMode::Exact,
+            false,
+        )
+        .unwrap();
+        assert!(nearest_container_text_matches(
+            id(4),
+            &expected,
+            &parents,
+            &semantic,
+            &nodes
+        ));
+
+        let authority_nodes = vec![
+            node(id(1), None, "document"),
+            node(id(2), Some(id(1)), "generic"),
+            node(id(3), Some(id(2)), "listitem"),
+            node(id(4), Some(id(3)), "checkbox"),
+        ];
+        let authority_parents = HashMap::from([
+            (id(1), None),
+            (id(2), Some(id(1))),
+            (id(3), Some(id(2))),
+            (id(4), Some(id(3))),
+        ]);
+        let authority_semantic = HashMap::from([
+            (
+                id(2),
+                SemanticNodeMetadata {
+                    rendered_text: "Buy milk".into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                id(3),
+                SemanticNodeMetadata {
+                    rendered_text: "Ship release".into(),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert!(!nearest_container_text_matches(
+            id(4),
+            &expected,
+            &authority_parents,
+            &authority_semantic,
+            &authority_nodes
+        ));
+
+        let generic_root = vec![
+            node(id(1), None, "document"),
+            node(id(2), Some(id(1)), "generic"),
+            node(id(3), Some(id(2)), "checkbox"),
+        ];
+        let generic_root_parents =
+            HashMap::from([(id(1), None), (id(2), Some(id(1))), (id(3), Some(id(2)))]);
+        let generic_root_semantic = HashMap::from([
+            (
+                id(1),
+                SemanticNodeMetadata {
+                    rendered_text: "Buy milk".into(),
+                    ..Default::default()
+                },
+            ),
+            (
+                id(2),
+                SemanticNodeMetadata {
+                    rendered_text: "x"
+                        .repeat(krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES + 1),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert!(!nearest_container_text_matches(
+            id(3),
+            &expected,
+            &generic_root_parents,
+            &generic_root_semantic,
+            &generic_root
+        ));
     }
 
     /// Reproduces the decorated-accessible-name case: `role=link, name={exact "Cargo.toml"}`
@@ -3906,6 +4147,7 @@ mod tests {
             .expect("an exact no-match reports its relaxed candidate count");
         assert_eq!(candidates.count, 2);
         assert!(!candidates.saturated);
+        assert!(exact.uncontained_match_candidates.is_none());
 
         // The relaxed query itself matches, so there is nothing to explain.
         let relaxed = registry
@@ -3920,6 +4162,7 @@ mod tests {
             .unwrap();
         assert_eq!(relaxed.matches.len(), 2);
         assert!(relaxed.relaxed_match_candidates.is_none());
+        assert!(relaxed.uncontained_match_candidates.is_none());
 
         // An exact no-match whose relaxation also matches nothing stays silent.
         let hopeless = registry
