@@ -1,7 +1,7 @@
 ---
 id: feature-perf-store-ingestion-accounting-opt-1
 kind: story
-stage: implementing
+stage: done
 tags: [perf]
 parent: feature-perf-store-ingestion-accounting
 depends_on: []
