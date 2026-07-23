@@ -81,8 +81,8 @@ use reconnect::{
 pub(crate) use runtime::VisibilityProbeError;
 pub(crate) use runtime::parse_visibility_result;
 use runtime::{
-    ConnectionResources, ProcessDeathSignal, SupervisorRuntime, apply_effects, parse_target_info,
-    run_supervisor, setup_connection, setup_connection_with_target_limit,
+    ConnectionResources, ProcessDeathSignal, SupervisorRuntime, apply_effects, apply_effects_until,
+    parse_target_info, run_supervisor, setup_connection, setup_connection_with_target_limit,
 };
 #[cfg(test)]
 use runtime::{TargetEventKind, parse_event, refresh_capture_geometry, restore_session_domains};

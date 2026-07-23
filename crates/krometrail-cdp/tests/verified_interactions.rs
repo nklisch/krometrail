@@ -1182,11 +1182,11 @@ async fn dispatched_click_survives_lost_gesture_acknowledgement() {
     session.stop().await.unwrap();
 }
 
-/// Reconciliation may publish the discovered target before its attach effect
-/// completes. A side-channel deadline must not cancel that effect and strand
-/// the target in the supervisor's authoritative state.
+/// A popup discovered just before the reconciliation ceiling cannot extend the operation through
+/// an attach effect that is held past that same ceiling. The failed target is reduced coherently
+/// and the interaction retains its honest attempt-plus-empty-facts result.
 #[tokio::test(start_paused = true)]
-async fn stalled_reconciliation_attach_runs_to_completion_after_side_channel_deadline() {
+async fn stalled_reconciliation_attach_is_fenced_by_side_channel_deadline() {
     let transport = ScriptedCdp::chrome();
     startup_script(&transport);
     transport.push_response("Page.getLayoutMetrics", layout());
@@ -1203,6 +1203,14 @@ async fn stalled_reconciliation_attach_runs_to_completion_after_side_channel_dea
         .iter()
         .filter(|call| call.method == "Target.attachToTarget")
         .count();
+    let runtime_evaluations = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Runtime.evaluate")
+        .count();
+    // Keep completion settling open long enough for the window-open signal to
+    // be attributed before the reconciliation inventory arrives.
+    transport.hold_method_after("Runtime.evaluate", runtime_evaluations + 2);
     transport.hold_method("Target.attachToTarget");
     transport.push_response(
         "Target.getTargets",
@@ -1225,23 +1233,44 @@ async fn stalled_reconciliation_attach_runs_to_completion_after_side_channel_dea
         }
     });
     transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    transport
+        .wait_for_command_count("Runtime.evaluate", runtime_evaluations + 3)
+        .await;
+    transport.push_scoped_event(
+        "Page.windowOpen",
+        Some("session-a"),
+        json!({"url":"http://popup/","windowName":"popup","windowFeatures":[],"userGesture":true}),
+    );
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    transport.release_method("Runtime.evaluate");
+    transport
         .wait_for_command_count("Target.attachToTarget", attach_before + 1)
         .await;
     tokio::time::advance(std::time::Duration::from_secs(2)).await;
     tokio::task::yield_now().await;
     assert!(
-        !operation.is_finished(),
-        "the deadline must not cancel an in-flight authoritative attach"
+        operation.is_finished(),
+        "the reconciliation effect must not outlive the shared side-channel ceiling"
     );
-    transport.release_method("Target.attachToTarget");
     let result = operation.await.unwrap().unwrap();
     let BrowserOperationResult::Click(result) = result else {
         panic!("click result")
     };
     assert_eq!(
-        result.record.postcondition.new_pages.unwrap().pages.len(),
-        1
+        result.record.postcondition.signals.window_open_attempts,
+        Some(1)
     );
+    let new_pages = result
+        .record
+        .postcondition
+        .new_pages
+        .expect("a successful inventory pull keeps honest empty page facts");
+    assert!(new_pages.pages.is_empty());
+    transport.release_method("Target.attachToTarget");
     session.stop().await.unwrap();
 }
 

@@ -483,3 +483,11 @@ the test log for future bound tuning.
   deadline behavior is covered by a dedicated deterministic test in the
   existing batch suite.
 - Adjacent issues parked: none.
+
+- Accepted cross-model review finding: the reconciliation inventory poll used
+  the shared ceiling but its attach/enable effects could outlive it. Fixed by
+  applying the same deadline to each reconciliation effect, with timeout
+  reduction and cleanup preserving coherent partial state. The paused-clock
+  `stalled_reconciliation_attach_is_fenced_by_side_channel_deadline` regression
+  holds `Target.attachToTarget` after a late inventory response and verifies
+  bounded completion with honest attempts and empty page facts.

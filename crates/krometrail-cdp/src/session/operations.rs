@@ -332,7 +332,7 @@ pub(super) async fn reconcile_targets_once(
     shared: &Arc<SessionShared>,
 ) -> Result<()> {
     let infos = fetch_target_infos(transport).await?;
-    apply_target_reconciliation(state, transport, shared, infos).await
+    apply_target_reconciliation(state, transport, shared, infos, None).await
 }
 
 /// Read-only target inventory acquisition. This is the only phase that a
@@ -366,14 +366,15 @@ async fn fetch_target_infos(transport: &Arc<dyn CdpTransport>) -> Result<Vec<Tra
         })
 }
 
-/// Applies a fetched inventory and runs every resulting external effect to
-/// completion. Callers must not wrap this phase in a cancellation timeout:
-/// the reducer publishes authoritative state before attach/enable effects run.
+/// Applies a fetched inventory and runs its external effects under the caller's shared ceiling.
+/// A timed-out adoption is reduced to the existing failed lifecycle so the authoritative state
+/// never retains a target whose attach/enable queue was cancelled halfway through.
 async fn apply_target_reconciliation(
     state: &mut SupervisorState,
     transport: &Arc<dyn CdpTransport>,
     shared: &Arc<SessionShared>,
     infos: Vec<TransportTargetInfo>,
+    effect_deadline: Option<tokio::time::Instant>,
 ) -> Result<()> {
     let reduction = reduce(state.clone(), SupervisorInput::InitialTargets(infos))?;
     *state = reduction.state;
@@ -381,17 +382,34 @@ async fn apply_target_reconciliation(
         .browser_event_support
         .lock()
         .expect("browser event support lock");
-    apply_effects(
-        state,
-        reduction.effects,
-        Arc::clone(transport),
-        Arc::clone(&shared.subscribers),
-        shared.capture.clone(),
-        Arc::clone(&shared.browser_events),
-        browser_event_support,
-        None,
-    )
-    .await?;
+    match effect_deadline {
+        Some(effect_deadline) => {
+            apply_effects_until(
+                state,
+                reduction.effects,
+                Arc::clone(transport),
+                Arc::clone(&shared.subscribers),
+                shared.capture.clone(),
+                Arc::clone(&shared.browser_events),
+                browser_event_support,
+                effect_deadline,
+            )
+            .await?
+        }
+        None => {
+            apply_effects(
+                state,
+                reduction.effects,
+                Arc::clone(transport),
+                Arc::clone(&shared.subscribers),
+                shared.capture.clone(),
+                Arc::clone(&shared.browser_events),
+                browser_event_support,
+                None,
+            )
+            .await?
+        }
+    }
     *shared.state.lock().expect("session state lock") = state.clone();
     Ok(())
 }
@@ -467,7 +485,7 @@ async fn attach_side_channel_facts(
             let Ok(Ok(infos)) = infos else {
                 break;
             };
-            if apply_target_reconciliation(state, transport, shared, infos)
+            if apply_target_reconciliation(state, transport, shared, infos, Some(ceiling))
                 .await
                 .is_err()
             {

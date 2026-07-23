@@ -190,6 +190,61 @@ pub(super) async fn apply_effects(
     browser_event_support: crate::compatibility::BrowserEventSupport,
     shutdown_deadline: Option<ShutdownDeadline>,
 ) -> Result<()> {
+    apply_effects_with_deadline(
+        state,
+        effects,
+        transport,
+        subscribers,
+        capture,
+        browser_events,
+        browser_event_support,
+        shutdown_deadline,
+        None,
+    )
+    .await
+}
+
+/// Applies effects with a cooperative ceiling owned by a caller that must return a bounded
+/// observation result. Each transport-bearing effect is fenced individually so a timed-out
+/// adoption can reduce to the existing failed lifecycle and clean up its event runtime instead of
+/// leaving the reducer state waiting on an effect that was cancelled mid-queue.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn apply_effects_until(
+    state: &mut SupervisorState,
+    effects: Vec<SupervisorEffect>,
+    transport: Arc<dyn CdpTransport>,
+    subscribers: Arc<SubscriberRegistry>,
+    capture: Option<Arc<CaptureRuntime>>,
+    browser_events: Arc<SessionDomainAuthority>,
+    browser_event_support: crate::compatibility::BrowserEventSupport,
+    deadline: tokio::time::Instant,
+) -> Result<()> {
+    apply_effects_with_deadline(
+        state,
+        effects,
+        transport,
+        subscribers,
+        capture,
+        browser_events,
+        browser_event_support,
+        None,
+        Some(deadline),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn apply_effects_with_deadline(
+    state: &mut SupervisorState,
+    effects: Vec<SupervisorEffect>,
+    transport: Arc<dyn CdpTransport>,
+    subscribers: Arc<SubscriberRegistry>,
+    capture: Option<Arc<CaptureRuntime>>,
+    browser_events: Arc<SessionDomainAuthority>,
+    browser_event_support: crate::compatibility::BrowserEventSupport,
+    shutdown_deadline: Option<ShutdownDeadline>,
+    effect_deadline: Option<tokio::time::Instant>,
+) -> Result<()> {
     let mut queue = VecDeque::from(effects);
     while let Some(effect) = queue.pop_front() {
         match effect {
@@ -208,13 +263,15 @@ pub(super) async fn apply_effects(
                 }
             }
             SupervisorEffect::Attach { target_key } => {
-                let result = transport
-                    .send_raw(
+                let result = bounded_transport_command(
+                    effect_deadline,
+                    transport.send_raw(
                         &CommandScope::Browser,
                         "Target.attachToTarget",
                         serde_json::json!({"targetId": target_key, "flatten": true}),
-                    )
-                    .await;
+                    ),
+                )
+                .await;
                 let input = result
                     .ok()
                     .and_then(|value| {
@@ -235,14 +292,16 @@ pub(super) async fn apply_effects(
                 queue.extend(reduction.effects);
             }
             SupervisorEffect::ReleaseWaitingTarget { session } => {
-                if transport
-                    .send_raw(
+                if bounded_transport_command(
+                    effect_deadline,
+                    transport.send_raw(
                         &CommandScope::Session(session.clone()),
                         "Runtime.runIfWaitingForDebugger",
                         serde_json::json!({}),
-                    )
-                    .await
-                    .is_err()
+                    ),
+                )
+                .await
+                .is_err()
                 {
                     tracing::debug!(
                         session = %session.as_str(),
@@ -251,13 +310,15 @@ pub(super) async fn apply_effects(
                 }
             }
             SupervisorEffect::Detach { session } => {
-                let _ = transport
-                    .send_raw(
+                let _ = bounded_transport_command(
+                    effect_deadline,
+                    transport.send_raw(
                         &CommandScope::Browser,
                         "Target.detachFromTarget",
                         serde_json::json!({"sessionId": session.as_str()}),
-                    )
-                    .await;
+                    ),
+                )
+                .await;
             }
             SupervisorEffect::RestoreViewport { context, viewport } => {
                 let current = state
@@ -276,15 +337,21 @@ pub(super) async fn apply_effects(
                     transport_session: context.transport_session,
                     visibility: krometrail_core::TargetVisibility::Unknown,
                 };
-                if !current
-                    || crate::control::viewport::apply_viewport(
-                        transport.as_ref(),
-                        &bound,
-                        Some(viewport),
+                let viewport_applied = if current {
+                    bounded_future(
+                        effect_deadline,
+                        crate::control::viewport::apply_viewport(
+                            transport.as_ref(),
+                            &bound,
+                            Some(viewport),
+                        ),
                     )
                     .await
-                    .is_err()
-                {
+                    .is_some_and(|result| result.is_ok())
+                } else {
+                    false
+                };
+                if !viewport_applied {
                     queue.retain(|effect| match effect {
                         SupervisorEffect::RestoreSessionDomains { target_key, .. }
                         | SupervisorEffect::ProbeInitialVisibility { target_key, .. }
@@ -332,24 +399,44 @@ pub(super) async fn apply_effects(
                             attachment_generation: target.target.attachment_generation,
                             transport_session: session.clone(),
                         });
-                let restored = match binding {
-                    Some(binding) => browser_events
-                        .restore_target(binding, transport.as_ref(), browser_event_support)
-                        .await
-                        .map(|_| ())
-                        .map_err(|_| ()),
-                    None => Err(()),
+                let Some(binding) = binding else {
+                    let compatibility = state.compatibility.clone();
+                    let previous = std::mem::replace(state, SupervisorState::new(compatibility));
+                    let reduction = reduce(
+                        previous,
+                        SupervisorInput::InitialVisibilityProbeFailed { target_key },
+                    )?;
+                    *state = reduction.state;
+                    queue.extend(reduction.effects);
+                    continue;
                 };
-                if restored.is_ok() {
+                let binding_for_cleanup = binding.clone();
+                let restored = bounded_future(
+                    effect_deadline,
+                    browser_events.restore_target(
+                        binding,
+                        transport.as_ref(),
+                        browser_event_support,
+                    ),
+                )
+                .await
+                .is_some_and(|result| result.is_ok());
+                if restored {
                     queue.push_front(SupervisorEffect::ProbeInitialVisibility {
                         target_key,
                         session,
                     });
                 } else {
+                    browser_events.retire_target(
+                        binding_for_cleanup.target_id,
+                        Some(binding_for_cleanup.attachment_generation),
+                    );
                     let compatibility = state.compatibility.clone();
                     let previous = std::mem::replace(state, SupervisorState::new(compatibility));
-                    let reduction =
-                        reduce(previous, SupervisorInput::TargetAttachFailed { target_key })?;
+                    let reduction = reduce(
+                        previous,
+                        SupervisorInput::InitialVisibilityProbeFailed { target_key },
+                    )?;
                     *state = reduction.state;
                     queue.extend(reduction.effects);
                 }
@@ -358,29 +445,29 @@ pub(super) async fn apply_effects(
                 target_key,
                 session,
             } => {
-                let input = match transport
-					.send_raw(
-						&CommandScope::Session(session),
-						"Runtime.evaluate",
-						serde_json::json!({"expression": "document.visibilityState", "returnByValue": true}),
-					)
-					.await
-				{
-					Ok(value) => parse_visibility_result(&value)
-						.map(|visibility| SupervisorInput::VisibilityChanged {
-							target_key: target_key.clone(),
-							visibility,
-							observed_at: browser_events
-								.session_time()
-								.unwrap_or(krometrail_core::SessionTime::ZERO),
-						})
-						.unwrap_or_else(|_| SupervisorInput::InitialVisibilityProbeFailed {
-							target_key: target_key.clone(),
-						}),
-					Err(_) => SupervisorInput::InitialVisibilityProbeFailed {
-						target_key: target_key.clone(),
-					},
-				};
+                let input = match bounded_transport_command(
+                    effect_deadline,
+                    transport.send_raw(
+                        &CommandScope::Session(session),
+                        "Runtime.evaluate",
+                        serde_json::json!({"expression": "document.visibilityState", "returnByValue": true}),
+                    ),
+                )
+                .await
+                {
+                    Ok(value) => parse_visibility_result(&value)
+                        .map(|visibility| SupervisorInput::VisibilityChanged {
+                            target_key: target_key.clone(),
+                            visibility,
+                            observed_at: browser_events
+                                .session_time()
+                                .unwrap_or(krometrail_core::SessionTime::ZERO),
+                        })
+                        .unwrap_or_else(|_| SupervisorInput::InitialVisibilityProbeFailed {
+                            target_key: target_key.clone(),
+                        }),
+                    Err(_) => SupervisorInput::InitialVisibilityProbeFailed { target_key },
+                };
                 let compatibility = state.compatibility.clone();
                 let previous = std::mem::replace(state, SupervisorState::new(compatibility));
                 let reduction = reduce(previous, input)?;
@@ -536,6 +623,25 @@ pub(super) async fn apply_effects(
         }
     }
     Ok(())
+}
+
+async fn bounded_future<T>(
+    deadline: Option<tokio::time::Instant>,
+    future: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, future).await.ok(),
+        None => Some(future.await),
+    }
+}
+
+async fn bounded_transport_command(
+    deadline: Option<tokio::time::Instant>,
+    command: impl std::future::Future<Output = std::result::Result<Value, TransportError>>,
+) -> std::result::Result<Value, TransportError> {
+    bounded_future(deadline, command)
+        .await
+        .unwrap_or(Err(TransportError::Timeout))
 }
 
 fn observe_supervisor_event(browser_events: &SessionDomainAuthority, event: &BrowserSessionEvent) {

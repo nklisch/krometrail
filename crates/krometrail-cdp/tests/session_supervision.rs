@@ -68,6 +68,7 @@ struct CaptureTestIds {
 struct SessionCatalogProbe {
     records: Arc<Mutex<Vec<RecordingSession>>>,
     fail_put: bool,
+    fail_terminal_put: bool,
 }
 
 impl SessionCatalogProbe {
@@ -75,6 +76,15 @@ impl SessionCatalogProbe {
         Self {
             records: Arc::new(Mutex::new(Vec::new())),
             fail_put,
+            fail_terminal_put: false,
+        }
+    }
+
+    fn failing_terminal_write() -> Self {
+        Self {
+            records: Arc::new(Mutex::new(Vec::new())),
+            fail_put: false,
+            fail_terminal_put: true,
         }
     }
 }
@@ -84,7 +94,10 @@ impl RecordingCatalog for SessionCatalogProbe {
         &self,
         session: RecordingSession,
     ) -> PortFuture<'_, krometrail_core::Result<()>> {
-        if self.fail_put {
+        if self.fail_put
+            || (self.fail_terminal_put
+                && session.lifecycle() == krometrail_core::SessionLifecycle::Ended)
+        {
             return Box::pin(std::future::ready(Err(
                 krometrail_core::KrometrailError::new(
                     krometrail_core::ErrorCode::PersistenceFailed,
@@ -94,6 +107,18 @@ impl RecordingCatalog for SessionCatalogProbe {
         }
         self.records.lock().unwrap().push(session);
         Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn note_terminal_session(&self, session: RecordingSession) {
+        let mut records = self.records.lock().unwrap();
+        if let Some(existing) = records
+            .iter_mut()
+            .find(|record| record.id() == session.id())
+        {
+            *existing = session;
+        } else {
+            records.push(session);
+        }
     }
 
     fn put_target(
@@ -233,6 +258,49 @@ async fn connect_persists_recording_session_and_shutdown_ends_it() {
     assert_eq!(ended.id(), records[0].id());
     assert_eq!(ended.lifecycle(), krometrail_core::SessionLifecycle::Ended);
     assert!(ended.ended_at().unwrap() >= ended.started_at());
+}
+
+#[tokio::test]
+async fn terminal_catalog_write_failure_keeps_readers_fail_closed() {
+    let initial = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    initial.hold_events_open();
+    initial.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "probe-session"}),
+    );
+    initial.push_response("Target.attachToTarget", json!({"sessionId": "session-a"}));
+    let factory = Arc::new(support::scripted_cdp::ScriptedCdpFactory::new([
+        Arc::clone(&initial),
+    ]));
+    let catalog = SessionCatalogProbe::failing_terminal_write();
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        factory,
+    )
+    .with_session_catalog(
+        Arc::new(catalog.clone()),
+        Arc::new(FixedWallClock(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+        )),
+        DiskBudgetBytes::new(1024).unwrap(),
+        vec![CapabilityId::Control],
+    );
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake").unwrap(),
+        ))
+        .await
+        .unwrap();
+
+    session.stop().await.unwrap();
+    let records = catalog.records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].lifecycle(),
+        krometrail_core::SessionLifecycle::Ended
+    );
 }
 
 #[tokio::test]

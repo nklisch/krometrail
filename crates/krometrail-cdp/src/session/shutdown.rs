@@ -388,7 +388,11 @@ pub(super) async fn finish_state_and_persist(
         *record = record_value.clone();
         record_value
     };
-    if let Err(error) = assembly.catalog.put_session(record).await {
+    if let Err(error) = assembly.catalog.put_session(record.clone()).await {
+        // The ended in-memory session is authoritative even if the durable rewrite failed. The
+        // catalog keeps this terminal record in its read authority so temporal resolution cannot
+        // classify the session as live and emit a false not-yet-elapsed refinement.
+        assembly.catalog.note_terminal_session(record.clone());
         tracing::warn!(
             event = "recording.session.ended_persist_failed",
             error_code = error.code.as_str(),

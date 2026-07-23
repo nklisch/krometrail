@@ -472,3 +472,12 @@ the existing test module of
 - Simplification: replaced `with_relaxed_candidates` directly with `with_no_match_diagnostics`, reused `RelaxedMatchCandidates` and its cap, and added no compatibility alias or parallel schema.
 - Discrepancies from design: none in runtime behavior. `bun run docs:build` regenerated `docs/public/llms-full.txt` successfully with no diff because the generator's curated source list excludes SPEC and plugin skill files. No `CLAUDE.md` exists in the repository.
 - Adjacent issues parked: none.
+
+- Accepted cross-model review finding: the bounded `rendered_text` value was
+  being truncated before generic-ancestor eligibility was checked, making the
+  1024-byte cap ineffective for decoder-produced snapshots. Fixed by carrying
+  a saturating, uncapped collapsed-byte count alongside the bounded text in
+  both DOM snapshot decoders; generic ancestors now require the true count to
+  be within the cap while allowlisted-role authority is unchanged. The cap
+  regression in `control::snapshot::tests::container_role_queries_preserve_authority_and_support_generic_ancestors`
+  now drives over-cap text through the actual DOM snapshot decoding path.

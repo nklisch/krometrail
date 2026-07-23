@@ -404,7 +404,6 @@ pub fn build_qualification_runtime(
         &config.data_root(),
         config.retention_budget,
         Arc::clone(&clock),
-        Arc::clone(&wall_clock),
     )?;
     let ids: Arc<dyn IdSource> = Arc::new(super::ProcessIdSource);
     let mcp_config = McpConfig::default();

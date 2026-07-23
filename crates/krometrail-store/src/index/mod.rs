@@ -15,6 +15,7 @@ pub(crate) mod segments;
 mod timeline;
 
 use std::{
+    collections::HashMap,
     fs, io,
     path::PathBuf,
     sync::{Mutex, MutexGuard},
@@ -36,6 +37,10 @@ pub struct IndexStoreConfig {
 /// File-backed searchable metadata authority.
 pub struct SqliteIndex {
     connection: Mutex<Connection>,
+    /// Read-path terminal authority for the narrow case where an ended session cannot be durably
+    /// rewritten. Normal reads remain backed by SQLite; this overlay only prevents a failed
+    /// terminal write from making an ended session appear live in the current process.
+    terminal_session_overrides: Mutex<HashMap<SessionId, krometrail_core::RecordingSession>>,
     database_path: PathBuf,
     segments_directory: PathBuf,
 }
@@ -122,6 +127,7 @@ impl SqliteIndex {
         }
         Ok(Self {
             connection: Mutex::new(connection),
+            terminal_session_overrides: Mutex::new(HashMap::new()),
             database_path: config.database_path,
             segments_directory: config.segments_directory,
         })

@@ -93,7 +93,22 @@ struct NodeBinding {
 struct SemanticNodeMetadata {
     labels: Vec<String>,
     rendered_text: String,
+    /// The normalized rendered-text length before the agent-facing value was bounded.
+    ///
+    /// DOM snapshots retain only a bounded prefix for matching and diagnostics, but generic
+    /// ancestor eligibility must still see the true collapsed size so a page-scale wrapper cannot
+    /// qualify a control merely because its prefix fits the bound.
+    collapsed_text_bytes: usize,
     test_id: Option<String>,
+}
+
+impl SemanticNodeMetadata {
+    fn true_collapsed_text_bytes(&self) -> usize {
+        self.collapsed_text_bytes
+            .max(krometrail_core::collapsed_semantic_text_bytes(
+                &self.rendered_text,
+            ))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -998,7 +1013,7 @@ fn nearest_container_text_matches(
         }
         if is_generic_container_role(&ancestor_node.role)
             && let Some(metadata) = semantic.get(&ancestor)
-            && krometrail_core::collapsed_semantic_text_bytes(&metadata.rendered_text)
+            && metadata.true_collapsed_text_bytes()
                 <= krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES
             && expected.matches(&metadata.rendered_text)
         {
@@ -1225,6 +1240,7 @@ fn decode_dom_snapshot_with_geometry(
         }
     }
     let mut rendered = vec![String::new(); node_count];
+    let mut collapsed_text_bytes = vec![0_usize; node_count];
     for (node_index, text) in layout_nodes.iter().zip(layout_text) {
         let node_index = node_index
             .as_u64()
@@ -1250,7 +1266,7 @@ fn decode_dom_snapshot_with_geometry(
         }
         let mut ancestor = Some(node_index);
         while let Some(index) = ancestor {
-            append_semantic_text(&mut rendered[index], text);
+            append_semantic_text(&mut rendered[index], &mut collapsed_text_bytes[index], text);
             ancestor = decoded[index].parent;
         }
     }
@@ -1264,6 +1280,7 @@ fn decode_dom_snapshot_with_geometry(
                 SemanticNodeMetadata {
                     labels: Vec::new(),
                     rendered_text: rendered[index].clone(),
+                    collapsed_text_bytes: collapsed_text_bytes[index],
                     test_id: node.test_id.clone(),
                 },
             )
@@ -1295,9 +1312,14 @@ fn decode_dom_snapshot_with_geometry(
         }
         if let Some(labelledby) = &node.aria_labelledby {
             let mut composed = String::new();
+            let mut composed_bytes = 0;
             for id in labelledby.split_ascii_whitespace() {
                 if let Some(label_index) = id_to_index.get(id) {
-                    append_semantic_text(&mut composed, &rendered[*label_index]);
+                    append_semantic_text(
+                        &mut composed,
+                        &mut composed_bytes,
+                        &rendered[*label_index],
+                    );
                 }
             }
             push_label(&mut metadata, node.backend_node_id, &composed);
@@ -1469,6 +1491,7 @@ fn decode_viewport_scoped_dom_snapshot(
     }
 
     let mut rendered = HashMap::<usize, String>::new();
+    let mut collapsed_text_bytes = HashMap::<usize, usize>::new();
     for (node_index, text) in layout_nodes.iter().zip(layout_text) {
         let node_index = node_index
             .as_u64()
@@ -1498,7 +1521,11 @@ fn decode_viewport_scoped_dom_snapshot(
         let mut ancestor = Some(node_index);
         while let Some(index) = ancestor {
             if selected.contains(&index) {
-                append_semantic_text(rendered.entry(index).or_default(), text);
+                append_semantic_text(
+                    rendered.entry(index).or_default(),
+                    collapsed_text_bytes.entry(index).or_default(),
+                    text,
+                );
             }
             ancestor = decoded.get(&index).and_then(|node| node.parent);
         }
@@ -1512,6 +1539,7 @@ fn decode_viewport_scoped_dom_snapshot(
                 SemanticNodeMetadata {
                     labels: Vec::new(),
                     rendered_text: rendered.get(index).cloned().unwrap_or_default(),
+                    collapsed_text_bytes: collapsed_text_bytes.get(index).copied().unwrap_or(0),
                     test_id: node.test_id.clone(),
                 },
             )
@@ -1552,10 +1580,11 @@ fn decode_viewport_scoped_dom_snapshot(
         }
         if let Some(labelledby) = &node.aria_labelledby {
             let mut composed = String::new();
+            let mut composed_bytes = 0;
             for id in labelledby.split_ascii_whitespace() {
                 if let Some(label_index) = id_to_index.get(id) {
                     if let Some(text) = rendered.get(label_index) {
-                        append_semantic_text(&mut composed, text);
+                        append_semantic_text(&mut composed, &mut composed_bytes, text);
                     }
                 }
             }
@@ -1641,12 +1670,18 @@ fn bounded_semantic_value(value: &str) -> Option<String> {
     (!value.is_empty() && value.len() <= MAX_SEMANTIC_QUERY_TEXT_BYTES).then(|| value.to_owned())
 }
 
-fn append_semantic_text(destination: &mut String, value: &str) {
+fn append_semantic_text(destination: &mut String, collapsed_bytes: &mut usize, value: &str) {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() || destination.len() >= MAX_SEMANTIC_QUERY_TEXT_BYTES {
+    if normalized.is_empty() {
         return;
     }
     let separator = usize::from(!destination.is_empty());
+    *collapsed_bytes = collapsed_bytes
+        .saturating_add(separator)
+        .saturating_add(normalized.len());
+    if destination.len() >= MAX_SEMANTIC_QUERY_TEXT_BYTES {
+        return;
+    }
     let remaining = MAX_SEMANTIC_QUERY_TEXT_BYTES - destination.len();
     if remaining <= separator {
         return;
@@ -3651,6 +3686,23 @@ mod tests {
         })
     }
 
+    fn over_cap_generic_container_dom_snapshot() -> Value {
+        let over_cap_text = "x".repeat(krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES + 1);
+        json!({
+            "strings": ["main", "DIV", "#text", over_cap_text],
+            "documents": [{
+                "frameId": 0,
+                "nodes": {
+                    "parentIndex": [-1, 0, 1, 1],
+                    "nodeName": [1, 1, 2, 1],
+                    "backendNodeId": [1, 7, 8, 9],
+                    "attributes": [[], [], [], []]
+                },
+                "layout": {"nodeIndex": [2], "text": [3]}
+            }]
+        })
+    }
+
     #[test]
     fn dom_snapshot_enriches_text_labels_and_test_identifiers() {
         let metadata = decode_dom_snapshot(
@@ -4149,6 +4201,27 @@ mod tests {
 
         // Once the generic row exceeds the bound it no longer qualifies, but its control remains
         // visible in the uncontained diagnostic.
+        let decoded = decode_dom_snapshot(
+            &over_cap_generic_container_dom_snapshot(),
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+        )
+        .unwrap();
+        let over_cap_metadata = decoded
+            .get(&7)
+            .cloned()
+            .expect("DOM decoder retains the generic wrapper metadata");
+        assert_eq!(
+            over_cap_metadata.rendered_text.len(),
+            krometrail_core::MAX_SEMANTIC_QUERY_TEXT_BYTES
+        );
+        assert!(
+            over_cap_metadata.collapsed_text_bytes
+                > krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES
+        );
         registry
             .targets
             .get_mut(&target())
@@ -4157,14 +4230,7 @@ mod tests {
             .as_mut()
             .unwrap()
             .semantic
-            .insert(
-                generic_wrapper,
-                SemanticNodeMetadata {
-                    rendered_text: "x"
-                        .repeat(krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES + 1),
-                    ..Default::default()
-                },
-            );
+            .insert(generic_wrapper, over_cap_metadata);
         let capped = registry
             .query(&bound, &shared_page_text, &snapshot)
             .unwrap();

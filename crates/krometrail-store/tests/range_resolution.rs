@@ -7,8 +7,8 @@ use krometrail_core::{
     DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, ErrorCode, FrameId, ImageFormat,
     IntervalAnchorScope, MarkerId, ObservationKind, ObservationPayloadRef, ObservedTime,
     PageTarget, ProfileIdentity, ProfileRef, RangeResolutionOptions, RecordingCatalog,
-    RecordingSession, RecordingSink, SessionId, SessionLifecycle, SessionRange, SessionTime,
-    TargetId, TemporalRangeAnchor, TemporalRangeResolver, TimelineObservation, TimelineStore,
+    RecordingSession, RecordingSink, SessionId, SessionRange, SessionTime, TargetId,
+    TemporalRangeAnchor, TemporalRangeResolver, TimelineObservation, TimelineStore,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -734,64 +734,6 @@ async fn absent_session_record_omits_not_yet_elapsed_refinement() {
 }
 
 #[tokio::test]
-async fn end_dangling_sessions_marks_prior_boot_sessions_ended() {
-    use krometrail_core::RetentionPolicy;
-
-    let fixture = Fixture::new().await;
-    let mut recording = fixture
-        .index
-        .session(fixture.session)
-        .await
-        .unwrap()
-        .unwrap();
-    recording
-        .transition(SessionLifecycle::Recording, None)
-        .unwrap();
-    fixture.index.put_session(recording).await.unwrap();
-
-    let ended = fixture
-        .index
-        .end_dangling_sessions(SystemTime::UNIX_EPOCH + Duration::from_secs(5))
-        .unwrap();
-    assert_eq!(ended, 1);
-    let persisted = fixture
-        .index
-        .session(fixture.session)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(persisted.lifecycle(), SessionLifecycle::Ended);
-    assert!(persisted.ended_at().unwrap() >= persisted.started_at());
-    assert_eq!(
-        fixture
-            .index
-            .end_dangling_sessions(SystemTime::UNIX_EPOCH + Duration::from_secs(6))
-            .unwrap(),
-        0
-    );
-
-    let resolved = fixture
-        .resolver_at(12)
-        .resolve(
-            TemporalRangeAnchor::SessionTime {
-                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
-                range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30))
-                    .unwrap(),
-            },
-            RangeResolutionOptions {
-                retention: RetentionPolicy::AllowPartial,
-                ..RangeResolutionOptions::DEFAULT
-            },
-        )
-        .await
-        .unwrap();
-    assert!(!resolved.retention_warnings.iter().any(|warning| matches!(
-        warning,
-        krometrail_core::RetentionWarning::RequestedEndNotYetElapsed { .. }
-    )));
-}
-
-#[tokio::test]
 async fn live_elapsed_idle_tail_keeps_partially_captured_without_refinement() {
     use krometrail_core::{RetentionPolicy, RetentionWarning};
 
@@ -825,6 +767,78 @@ async fn live_elapsed_idle_tail_keeps_partially_captured_without_refinement() {
             .iter()
             .any(|warning| matches!(warning, RetentionWarning::PartiallyCaptured { .. }))
     );
+    assert!(
+        !resolved
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::RequestedEndNotYetElapsed { .. }))
+    );
+}
+
+#[tokio::test]
+async fn terminal_catalog_write_failure_is_fail_closed_for_live_session_now() {
+    use krometrail_core::{RetentionPolicy, RetentionWarning};
+
+    let fixture = Fixture::new().await;
+    let mut recording = fixture
+        .index
+        .session(fixture.session)
+        .await
+        .unwrap()
+        .unwrap();
+    recording
+        .transition(krometrail_core::SessionLifecycle::Recording, None)
+        .unwrap();
+    fixture.index.put_session(recording.clone()).await.unwrap();
+
+    let mut ended = recording;
+    ended
+        .transition(krometrail_core::SessionLifecycle::Stopping, None)
+        .unwrap();
+    ended
+        .transition(
+            krometrail_core::SessionLifecycle::Ended,
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1)),
+        )
+        .unwrap();
+    // Force the durable terminal rewrite to fail, then exercise the shutdown path's read-authority
+    // fallback. SQLite still contains the recording row, but readers must see the ended state.
+    let failure_connection =
+        rusqlite::Connection::open(fixture._directory.path().join("index.sqlite3")).unwrap();
+    failure_connection
+        .execute_batch(
+            "CREATE TRIGGER fail_terminal_session_update BEFORE UPDATE OF record_json ON sessions \
+             BEGIN SELECT RAISE(FAIL, 'terminal write failed'); END;",
+        )
+        .unwrap();
+    assert!(fixture.index.put_session(ended.clone()).await.is_err());
+    fixture.index.note_terminal_session(ended);
+    assert_eq!(
+        fixture
+            .index
+            .session(fixture.session)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle(),
+        krometrail_core::SessionLifecycle::Ended
+    );
+
+    let resolved = fixture
+        .resolver_at(12)
+        .resolve(
+            TemporalRangeAnchor::SessionTime {
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
+                range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30))
+                    .unwrap(),
+            },
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .await
+        .unwrap();
     assert!(
         !resolved
             .retention_warnings

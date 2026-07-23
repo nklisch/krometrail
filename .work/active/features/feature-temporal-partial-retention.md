@@ -492,3 +492,13 @@ untouched.
   explicit-range refusal assertion and was updated in place. The qualification composition path also receives
   the same catalog assembly so every production connector composition persists session metadata.
 - Adjacent issues parked: none.
+
+- Accepted cross-model review finding: a failed terminal `Ended` catalog write
+  could leave a durable `Recording` row that falsely refined live-session
+  resolution, while the proposed startup `end_dangling_sessions` sweep was
+  unreachable because each process acquires a fresh instance root. Fixed by
+  adding terminal-state authority to the existing `RecordingCatalog` read path
+  and recording that authority from shutdown when the durable rewrite fails.
+  Removed the unreachable sweep, call site, and test. Regressions are covered
+  by `terminal_catalog_write_failure_keeps_readers_fail_closed` and
+  `terminal_catalog_write_failure_is_fail_closed_for_live_session_now`.
