@@ -17,7 +17,7 @@ use crate::{
 use super::{
     SqliteIndex, codec,
     range::evicted_ranges,
-    segments::{StoredAddress, register_segment_tx},
+    segments::{SegmentUsageDelta, StoredAddress, register_segment_tx},
     timeline::append_observation_tx,
 };
 
@@ -25,11 +25,12 @@ pub(crate) fn index_frame_tx(
     transaction: &Transaction<'_>,
     frame: &EncodedFrame,
     commit: &FrameWriteCommit,
-) -> krometrail_core::Result<()> {
+) -> krometrail_core::Result<SegmentUsageDelta> {
+    let mut usage_delta = SegmentUsageDelta::default();
     if let Some(sealed) = &commit.sealed_segment {
-        register_segment_tx(transaction, sealed)?;
+        usage_delta = usage_delta.combine(register_segment_tx(transaction, sealed)?)?;
     }
-    register_segment_tx(transaction, &commit.active_segment)?;
+    usage_delta = usage_delta.combine(register_segment_tx(transaction, &commit.active_segment)?)?;
     let metadata = frame.metadata();
     if commit.active_segment.segment_id != commit.address.segment_id
         || commit.active_segment.session_id != metadata.session_id()
@@ -83,7 +84,8 @@ pub(crate) fn index_frame_tx(
         ObservationPayloadRef::Frame(metadata.id()),
     )
     .map_err(|_| persistence_error("frame cannot form a timeline observation"))?;
-    append_observation_tx(transaction, &observation, Some(metadata.capture_ordinal()))
+    append_observation_tx(transaction, &observation, Some(metadata.capture_ordinal()))?;
+    Ok(usage_delta)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,7 +99,7 @@ impl SqliteIndex {
         &self,
         frame_ids: &[FrameId],
     ) -> krometrail_core::Result<Vec<FrameReadSnapshot>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare(&snapshot_select("f.frame_id=?1", ""))
             .map_err(|_| persistence_error("could not prepare coherent frame lookup"))?;
@@ -123,11 +125,11 @@ impl SqliteIndex {
         target_id: TargetId,
         range: SessionRange,
     ) -> krometrail_core::Result<Vec<FrameReadSnapshot>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare(&snapshot_select(
                 "f.session_id=?1 AND f.target_id=?2 AND f.session_time_be>=?3 AND f.session_time_be<=?4",
-                "ORDER BY f.capture_ordinal_be ASC, f.session_time_be ASC, f.frame_id ASC",
+                "ORDER BY f.session_time_be ASC, f.capture_ordinal_be ASC",
             ))
             .map_err(|_| persistence_error("could not prepare coherent frame range lookup"))?;
         let rows = statement
@@ -162,7 +164,7 @@ impl SqliteIndex {
                     .expect("static frame error is non-empty"),
             ));
         }
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare(&snapshot_select(
                 "f.session_id=?1 AND f.target_id=?2 AND f.capture_ordinal_be>=?3 AND f.capture_ordinal_be<=?4",
@@ -280,7 +282,7 @@ impl FrameSource for SqliteIndex {
     ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
         Box::pin(async move {
             let addresses = {
-                let connection = self.connection()?;
+                let connection = self.read_connection()?;
                 let mut statement = connection
                     .prepare(
                         "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id, \
@@ -311,7 +313,7 @@ impl FrameSource for SqliteIndex {
         frame_ids: Vec<FrameId>,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<CapturedFrame>>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let mut statement = connection
                 .prepare(
                     "SELECT frame_id, session_id, target_id, capture_ordinal_be, source_time_be, \
@@ -345,7 +347,7 @@ impl FrameSource for SqliteIndex {
     ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
         Box::pin(async move {
             let addresses = {
-                let connection = self.connection()?;
+                let connection = self.read_connection()?;
                 let mut statement = connection
                     .prepare(
                         "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id, \
@@ -353,7 +355,7 @@ impl FrameSource for SqliteIndex {
                          FROM frames f JOIN segments s USING(segment_id) \
                          WHERE f.session_id=?1 AND f.target_id=?2 \
                            AND f.session_time_be>=?3 AND f.session_time_be<=?4 \
-                         ORDER BY f.capture_ordinal_be ASC, f.session_time_be ASC, f.frame_id ASC",
+                         ORDER BY f.session_time_be ASC, f.capture_ordinal_be ASC",
                     )
                     .map_err(|_| persistence_error("could not prepare frame range lookup"))?;
                 let rows = statement
@@ -397,7 +399,7 @@ impl FrameSource for SqliteIndex {
                 ));
             }
             let addresses = {
-                let connection = self.connection()?;
+                let connection = self.read_connection()?;
                 let mut statement = connection
                     .prepare(
                         "SELECT f.frame_id, f.session_id, f.target_id, f.segment_id, \
@@ -440,7 +442,7 @@ impl FrameSource for SqliteIndex {
         range: SessionRange,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<CapturedFrame>>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let mut statement = connection
                 .prepare(
                     "SELECT frame_id, session_id, target_id, capture_ordinal_be, source_time_be, \
@@ -448,7 +450,7 @@ impl FrameSource for SqliteIndex {
                             viewport_width, viewport_height, device_scale, warnings_json \
                      FROM frames WHERE session_id=?1 AND target_id=?2 \
                        AND session_time_be>=?3 AND session_time_be<=?4 \
-                     ORDER BY capture_ordinal_be ASC, session_time_be ASC, frame_id ASC",
+                     ORDER BY session_time_be ASC, capture_ordinal_be ASC",
                 )
                 .map_err(|_| persistence_error("could not prepare frame metadata range lookup"))?;
             let rows = statement
@@ -485,7 +487,7 @@ impl FrameSource for SqliteIndex {
                         .expect("static frame error is non-empty"),
                 ));
             }
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let mut statement = connection
                 .prepare(
                     "SELECT frame_id, session_id, target_id, capture_ordinal_be, source_time_be, \
@@ -523,18 +525,31 @@ impl FrameSource for SqliteIndex {
         target_id: TargetId,
     ) -> PortFuture<'_, krometrail_core::Result<FrameAvailability>> {
         Box::pin(async move {
-            let connection = self.connection()?;
-            let (start, end): (Option<Vec<u8>>, Option<Vec<u8>>) = connection
+            let connection = self.read_connection()?;
+            let values = [
+                codec::id(session_id.as_uuid()).to_vec(),
+                codec::id(target_id.as_uuid()).to_vec(),
+            ];
+            let start: Option<Vec<u8>> = connection
                 .query_row(
-                    "SELECT min(session_time_be), max(session_time_be) FROM frames \
-                     WHERE session_id=?1 AND target_id=?2",
-                    params![
-                        codec::id(session_id.as_uuid()).to_vec(),
-                        codec::id(target_id.as_uuid()).to_vec(),
-                    ],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    "SELECT session_time_be FROM frames \
+                     WHERE session_id=?1 AND target_id=?2 \
+                     ORDER BY session_time_be ASC LIMIT 1",
+                    params![&values[0], &values[1]],
+                    |row| row.get(0),
                 )
-                .map_err(|_| persistence_error("could not query frame availability"))?;
+                .optional()
+                .map_err(|_| persistence_error("could not query earliest frame availability"))?;
+            let end: Option<Vec<u8>> = connection
+                .query_row(
+                    "SELECT session_time_be FROM frames \
+                     WHERE session_id=?1 AND target_id=?2 \
+                     ORDER BY session_time_be DESC LIMIT 1",
+                    params![&values[0], &values[1]],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|_| persistence_error("could not query latest frame availability"))?;
             let retained_bounds = match (start, end) {
                 (Some(start), Some(end)) => Some(
                     SessionRange::new(

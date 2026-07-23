@@ -61,7 +61,7 @@ impl CaptureGapStore for SqliteIndex {
         range: SessionRange,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<CaptureGap>>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let mut statement = connection
                 .prepare(
                     "SELECT gap_id, session_id, target_id, start_time_be, end_time_be, \

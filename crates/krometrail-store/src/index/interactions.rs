@@ -132,7 +132,7 @@ impl SqliteIndex {
         &self,
         interaction_id: InteractionId,
     ) -> krometrail_core::Result<Option<(InteractionAnchor, Option<InteractionRecord>)>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         read_raw_by_id(&connection, codec::id(interaction_id.as_uuid()).as_ref())?
             .map(decode_interaction)
             .transpose()
@@ -156,7 +156,7 @@ impl InteractionAnchorSource for SqliteIndex {
         target_id: TargetId,
     ) -> PortFuture<'_, krometrail_core::Result<Option<InteractionAnchor>>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let raw = connection
                 .query_row(
                     "SELECT interaction_id, session_id, target_id, operation, started_time_be, \

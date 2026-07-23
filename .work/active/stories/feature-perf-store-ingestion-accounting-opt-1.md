@@ -56,3 +56,13 @@ No schema change; no version bump; no cache clear.
 - [ ] Existing store + recovery + retention tests pass.
 - [ ] Out-of-band strace on the btrfs data dir shows fsyncs/frame drop from 4.13
       toward ~0 in steady state.
+
+## Implementation notes
+
+- Switched the SQLite writer to WAL + `synchronous=NORMAL`, added the maintained
+  2,000-mutation checkpoint policy, and kept unconditional checkpoint barriers at
+  segment seal/rotation and session flush/stop. The writer/mutation gate remains
+  the sole owner of checkpoints.
+- Existing recovery, retention, and segment durability tests pass unchanged in
+  protective intent. `strace` was attempted but is unavailable on this machine,
+  so fsync counts were not asserted.

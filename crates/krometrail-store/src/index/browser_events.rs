@@ -220,7 +220,7 @@ impl BrowserEventSource for SqliteIndex {
         selector: BrowserEventSelector,
     ) -> PortFuture<'_, krometrail_core::Result<u64>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let (filter, values) = selector_filter(&selector, "")?;
             connection
                 .query_row(
@@ -247,7 +247,7 @@ impl BrowserEventSource for SqliteIndex {
                     "browser event cursor does not match its selector",
                 ));
             }
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let (mut filter, mut values) = selector_filter(&selector, "")?;
             if let Some(cursor) = cursor {
                 filter.push_str(
@@ -283,7 +283,7 @@ impl BrowserEventSource for SqliteIndex {
         limit: EventCandidateLimit,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<BrowserEvent>>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let (filter, mut values) = selector_filter(&selector, "")?;
             values.push(SqlValue::Integer(i64::from(limit.get())));
             query_events(
@@ -315,7 +315,7 @@ impl BrowserEventSource for SqliteIndex {
                     "browser event nearest request is out of range",
                 ));
             }
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let mut events = BTreeMap::new();
             for focus in focus_times {
                 for (operator, order) in [("<=", "DESC"), (">=", "ASC")] {
@@ -358,7 +358,7 @@ impl BrowserEventSource for SqliteIndex {
                     "browser event unavailable request is out of range",
                 ));
             }
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let mut statement = connection
                 .prepare(
                     "SELECT session_id,target_id,start_time_be,end_time_be,first_ordinal_be,\
@@ -407,7 +407,7 @@ impl BrowserEventSource for SqliteIndex {
                     "capture status sample request is out of range",
                 ));
             }
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let base = "session_id=? AND target_id=? AND kind='capture_status_changed'";
             let scope = vec![
                 SqlValue::Blob(codec::id(session_id.as_uuid()).to_vec()),

@@ -49,3 +49,15 @@ only schema change (v12 → v13). See the parent feature body for profiling data
       and re-initialised; config/profiles/diagnostics untouched.
 - [ ] Existing maintenance/deletion/recovery/schema-catalog tests pass (assertions
       updated).
+
+## Implementation notes
+
+- Added schema v13's partial `timeline_frame_ref_idx` and replaced per-frame
+  timeline deletes in maintenance and segment eviction with chunked set-based
+  deletes keyed by frame payload sort keys. Cache replacement preserves
+  configuration, managed profiles, and diagnostics; the v12 schema assertions
+  now verify current v13 bootstrap behavior.
+- The eviction probe reports 76.469 µs after the change, but does not force a
+  reclaim under the default public budget; it is recorded as a scaffold smoke
+  timing rather than as the target segment comparison.
+- The plan probe confirms `timeline_frame_ref_idx` covers the set-based delete.

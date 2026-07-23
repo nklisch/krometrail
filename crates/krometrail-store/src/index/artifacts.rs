@@ -262,7 +262,7 @@ impl SqliteIndex {
         key: ArtifactCacheKey,
         ready_only: bool,
     ) -> krometrail_core::Result<Option<ArtifactRow>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         artifact_by_cache_connection(&connection, key, ready_only)
     }
 
@@ -270,7 +270,7 @@ impl SqliteIndex {
         &self,
         artifact_id: ArtifactId,
     ) -> krometrail_core::Result<Option<ArtifactRow>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         artifact_by_id_connection(&connection, artifact_id)
     }
 
@@ -278,12 +278,12 @@ impl SqliteIndex {
         &self,
         artifact_id: ArtifactId,
     ) -> krometrail_core::Result<Vec<ArtifactSourceRow>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         artifact_sources_connection(&connection, artifact_id)
     }
 
     pub(crate) fn artifact_rows(&self) -> krometrail_core::Result<Vec<ArtifactRow>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare(&format!("{} ORDER BY artifact_id", artifact_select("1=1")))
             .map_err(|_| persistence_error("could not prepare artifact recovery scan"))?;

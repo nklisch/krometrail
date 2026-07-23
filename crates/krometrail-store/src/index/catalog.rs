@@ -53,7 +53,7 @@ impl RecordingCatalog for SqliteIndex {
             {
                 return Ok(Some(session));
             }
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let json: Option<String> = connection
                 .query_row(
                     "SELECT record_json FROM sessions WHERE session_id=?1",
@@ -81,7 +81,7 @@ impl RecordingCatalog for SqliteIndex {
         target_id: TargetId,
     ) -> PortFuture<'_, krometrail_core::Result<Option<PageTarget>>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let json: Option<String> = connection
                 .query_row(
                     "SELECT record_json FROM targets WHERE session_id=?1 AND target_id=?2",

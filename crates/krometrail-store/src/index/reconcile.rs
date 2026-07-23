@@ -151,7 +151,7 @@ pub(crate) fn upsert_recovered_frame_tx(
     if frame_exists(transaction, frame.metadata().id())? {
         return Ok(false);
     }
-    index_frame_tx(transaction, frame, commit)?;
+    let _usage_delta = index_frame_tx(transaction, frame, commit)?;
     Ok(true)
 }
 
@@ -159,7 +159,8 @@ pub(crate) fn register_segment_tx(
     transaction: &Transaction<'_>,
     registration: &SegmentRegistration,
 ) -> krometrail_core::Result<()> {
-    super::segments::register_segment_tx(transaction, registration)
+    let _usage_delta = super::segments::register_segment_tx(transaction, registration)?;
+    Ok(())
 }
 
 pub(crate) fn list_segment_usage(

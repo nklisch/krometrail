@@ -55,3 +55,15 @@ feature body for full rationale.
 - [ ] Accumulator == full SQL snapshot after every seal/reclaim in tests (drift 0);
       status figures unchanged within accepted WAL slack.
 - [ ] Existing retention/budget/status tests pass.
+
+## Implementation notes
+
+- Added SQL-derived `UsageAccumulator` state with segment/artifact deltas,
+  startup rebuild, seal/checkpoint/reclaim reconciliation, and a debug assertion
+  that corrects drift toward SQL truth. Budget decisions now use the accumulator
+  plus an O(1) live-page probe; status retains the full snapshot path.
+- Retained bounds now narrow by `segment_created_idx` and seek each tied segment
+  through `frame_range_idx`; the final plan has no temp sort.
+- The release scaffold measured append means of 120.586 µs, 114.062 µs, and
+  123.878 µs at 1k, 5k, and 20k retained frames respectively, versus the
+  pre-change 539.784 µs, 1.656144 ms, and 6.652687 ms.

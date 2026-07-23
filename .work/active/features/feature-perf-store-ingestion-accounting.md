@@ -614,3 +614,41 @@ write transactions/frame 3 → 1.
 - **Benchmark noise:** btrfs figures are filesystem- and machine-specific; treat
   microbenchmarks as directional and validate the flat-append and fsync-count
   claims on the same btrfs `$HOME` data dir used for the baseline.
+
+## Implementation notes
+
+- Implemented Opt 1–4 in dependency order. Metadata remains WAL-backed with
+  `synchronous=NORMAL`; the writer uses a 2,000-mutation checkpoint counter plus
+  unconditional seal/rotation and flush/stop barriers. Segment payload durability
+  was not weakened: recovery still re-derives both frame rows and frame timeline
+  observations from surviving segment records.
+- Added the derived `UsageAccumulator`, startup/seal/reclaim reconciliation and
+  drift assertion, segment/artifact deltas, segment-first retained-bound seeks,
+  the v13 `timeline_frame_ref_idx`, chunked frame-reference deletes, four
+  read-only connections, aligned range reads, and split availability seeks.
+- Added the ignored public-API scaffold at
+  `crates/krometrail-store/tests/perf_baseline.rs`. Release probe results on this
+  machine (before → final after) were:
+
+  | Probe | Before | After |
+  |---|---:|---:|
+  | `append_flat_vs_size` retained=1k | 539.784 µs mean / 586.279 µs p99 | 120.586 µs / 144.21 µs |
+  | retained=5k | 1.656144 ms / 1.792137 ms | 114.062 µs / 134.92 µs |
+  | retained=20k | 6.652687 ms / 6.695759 ms | 123.878 µs / 143.489 µs |
+  | `append_btrfs_steady` | 1.684116 ms / 1.728027 ms | 126.432 µs / 212.18 µs |
+  | `read_one_frame_under_ingest` | 51.716 µs / 75.68 µs | 74.534 µs / 114.77 µs |
+  | `frame_availability_ms` | 355.196 µs / 383.299 µs | 14.867 µs / 42.67 µs |
+
+- The final query-plan probe reports `segment_created_idx`, `frame_range_idx`,
+  and `timeline_frame_ref_idx` seeks with no temp sort. The range-read SQL omits
+  the unreachable `frame_id` tie term so the existing index can provide that
+  plan; capture ordinal is unique per session/target and the co-monotonic guard
+  preserves the observable order.
+- `evict_segment_ms` measured 184.84 µs before and 76.469 µs after, but the
+  scaffold's default public budget does not force reclaim; these are harness smoke
+  timings, not the designed ~190-frame eviction comparison. `strace` is not
+  installed on this machine, so no fsync count is claimed or fabricated.
+- Verification: `cargo fmt --all -- --check`; wire-enum schema check; locked
+  workspace check, tests, and clippy with `-D warnings` all pass. The v12 schema
+  assertions were rebased to v13 while preserving cache-reset and preservation
+  behavior. No item stage fields were changed.

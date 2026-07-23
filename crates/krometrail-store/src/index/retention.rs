@@ -139,7 +139,7 @@ impl SqliteIndex {
         &self,
         request: &RetentionPinRequest,
     ) -> krometrail_core::Result<ProgressivePinSnapshot> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let session_exists = connection
             .query_row(
                 "SELECT 1 FROM sessions WHERE session_id=?1",
@@ -311,7 +311,7 @@ impl SqliteIndex {
     /// cutoff can never be computed against a different time source than the rows
     /// it is compared with.
     pub(crate) fn now_unix_ms(&self) -> krometrail_core::Result<i64> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         connection
             .query_row(
                 "SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER)",
@@ -325,7 +325,7 @@ impl SqliteIndex {
         &self,
         segment_id: SegmentId,
     ) -> krometrail_core::Result<Vec<ArtifactCandidate>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare(
                 "SELECT DISTINCT a.artifact_id, a.session_id, a.relative_path, a.byte_len_be \
@@ -430,11 +430,6 @@ impl SqliteIndex {
             })
     }
 
-    pub(crate) fn usage_snapshot(&self) -> krometrail_core::Result<UsageSnapshot> {
-        let connection = self.connection()?;
-        usage_snapshot(&connection)
-    }
-
     /// Usage for read-only status, computed without writing or checkpointing.
     ///
     /// The stored `index` usage row is only refreshed by mutating paths, so a
@@ -442,8 +437,14 @@ impl SqliteIndex {
     /// mutated yet. Deriving the index class from live pages instead keeps status
     /// honest while staying a pure read. The one accepted imprecision is that
     /// pages still sitting in an un-checkpointed WAL may not be counted yet.
-    pub(crate) fn live_usage_snapshot(&self) -> krometrail_core::Result<UsageSnapshot> {
+    #[allow(dead_code)]
+    pub(crate) fn usage_snapshot(&self) -> krometrail_core::Result<UsageSnapshot> {
         let connection = self.connection()?;
+        usage_snapshot(&connection)
+    }
+
+    pub(crate) fn live_usage_snapshot(&self) -> krometrail_core::Result<UsageSnapshot> {
+        let connection = self.read_connection()?;
         let mut snapshot = usage_snapshot(&connection)?;
         let (live_pages, _) = super::maintenance::sqlite_page_usage(&connection)?;
         let index_bytes = live_pages.saturating_sub(snapshot.usage.browser_event_bytes);
@@ -463,7 +464,7 @@ impl SqliteIndex {
         &self,
         session_id: SessionId,
     ) -> krometrail_core::Result<Vec<SegmentCandidate>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare(
                 // Sealed only. Session deletion runs after `flush_session`, so every
@@ -493,7 +494,7 @@ impl SqliteIndex {
         &self,
         session_id: SessionId,
     ) -> krometrail_core::Result<Vec<ArtifactCandidate>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare(
                 "SELECT artifact_id, session_id, relative_path, byte_len_be FROM artifacts \
@@ -888,30 +889,100 @@ fn retained_bounds(
         connection: &Connection,
         ascending: bool,
     ) -> krometrail_core::Result<Option<RetainedPoint>> {
-        let sql = if ascending {
-            "SELECT f.session_id, f.target_id, f.session_time_be \
-             FROM frames f JOIN segments s USING(segment_id) \
-             ORDER BY s.created_unix_ms ASC, f.session_time_be ASC, f.frame_id ASC LIMIT 1"
+        struct Candidate {
+            session_id: Vec<u8>,
+            target_id: Vec<u8>,
+            frame_id: Vec<u8>,
+            session_time: u64,
+            capture_ordinal: u64,
+        }
+
+        // First narrow by the indexed creation authority. A creation timestamp can
+        // tie across targets, so inspect every tied segment and let the covering
+        // frame-range index select that segment's endpoint without a global sort.
+        let segment_sql = if ascending {
+            "SELECT segment_id, session_id, target_id FROM segments \
+             WHERE created_unix_ms = (SELECT min(created_unix_ms) FROM segments)"
         } else {
-            "SELECT f.session_id, f.target_id, f.session_time_be \
-             FROM frames f JOIN segments s USING(segment_id) \
-             ORDER BY s.created_unix_ms DESC, f.session_time_be DESC, f.frame_id DESC LIMIT 1"
+            "SELECT segment_id, session_id, target_id FROM segments \
+             WHERE created_unix_ms = (SELECT max(created_unix_ms) FROM segments)"
         };
-        let raw = connection
-            .query_row(sql, [], |row| {
+        let segments = connection
+            .prepare(segment_sql)
+            .map_err(|_| persistence_error("could not prepare retained segment bounds"))?
+            .query_map([], |row| {
                 Ok((
                     row.get::<_, Vec<u8>>(0)?,
                     row.get::<_, Vec<u8>>(1)?,
                     row.get::<_, Vec<u8>>(2)?,
                 ))
             })
-            .optional()
-            .map_err(|_| persistence_error("could not query retained bounds"))?;
-        raw.map(|(session, target, time)| {
+            .map_err(|_| persistence_error("could not query retained segment bounds"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| persistence_error("could not read retained segment bounds"))?;
+
+        let frame_sql = if ascending {
+            "SELECT frame_id, session_time_be, capture_ordinal_be FROM frames \
+             WHERE session_id=?1 AND target_id=?2 AND segment_id=?3 \
+             ORDER BY session_time_be ASC, capture_ordinal_be ASC LIMIT 1"
+        } else {
+            "SELECT frame_id, session_time_be, capture_ordinal_be FROM frames \
+             WHERE session_id=?1 AND target_id=?2 AND segment_id=?3 \
+             ORDER BY session_time_be DESC, capture_ordinal_be DESC LIMIT 1"
+        };
+        let mut best: Option<Candidate> = None;
+        for (segment_id, session_id, target_id) in segments {
+            let candidate = connection
+                .query_row(
+                    frame_sql,
+                    params![session_id, target_id, segment_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, Vec<u8>>(1)?,
+                            row.get::<_, Vec<u8>>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|_| persistence_error("could not query retained frame bounds"))?;
+            let Some((frame_id, time, ordinal)) = candidate else {
+                continue;
+            };
+            let candidate = Candidate {
+                session_id,
+                target_id,
+                frame_id,
+                session_time: codec::decode_u64(&time)?,
+                capture_ordinal: codec::decode_u64(&ordinal)?,
+            };
+            let replace = best.as_ref().is_none_or(|current| {
+                let candidate_key = (
+                    candidate.session_time,
+                    candidate.capture_ordinal,
+                    &candidate.frame_id,
+                );
+                let current_key = (
+                    current.session_time,
+                    current.capture_ordinal,
+                    &current.frame_id,
+                );
+                if ascending {
+                    candidate_key < current_key
+                } else {
+                    candidate_key > current_key
+                }
+            });
+            if replace {
+                best = Some(candidate);
+            }
+        }
+
+        best.map(|candidate| {
             Ok(RetainedPoint {
-                session_id: SessionId::from_uuid(codec::decode_id(&session)?),
-                target_id: TargetId::from_uuid(codec::decode_id(&target)?),
-                session_time: SessionTime::from_nanos(codec::decode_u64(&time)?),
+                session_id: SessionId::from_uuid(codec::decode_id(&candidate.session_id)?),
+                target_id: TargetId::from_uuid(codec::decode_id(&candidate.target_id)?),
+                session_time: SessionTime::from_nanos(candidate.session_time),
             })
         })
         .transpose()

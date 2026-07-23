@@ -1,5 +1,5 @@
 use krometrail_core::{ArtifactId, SegmentId, SessionId, SessionRange, SessionTime, TargetId};
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params, params_from_iter};
 use uuid::Uuid;
 
 use crate::persistence_error;
@@ -151,7 +151,7 @@ impl SqliteIndex {
     }
 
     pub(crate) fn deletion_batches(&self) -> krometrail_core::Result<Vec<DeletionBatch>> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare(
                 "SELECT batch_id, kind, session_id, state FROM deletion_batches \
@@ -259,7 +259,8 @@ impl SqliteIndex {
                             |row| row.get(0),
                         )
                         .map_err(|_| persistence_error("could not count deleted frames"))?;
-                    // Payload JSON is a typed serde shape. Delete exact references before frame rows.
+                    // Frame timeline references use the frame id as their binary
+                    // sort key. Delete them in bounded sets before frame rows.
                     let mut refs = transaction
                         .prepare("SELECT frame_id FROM frames WHERE segment_id=?1")
                         .map_err(|_| {
@@ -273,18 +274,16 @@ impl SqliteIndex {
                             persistence_error("could not read deleted frame references")
                         })?;
                     drop(refs);
-                    for raw in ids {
-                        let id = krometrail_core::FrameId::from_uuid(codec::decode_id(&raw)?);
-                        let payload = serde_json::to_string(
-                            &krometrail_core::ObservationPayloadRef::Frame(id),
-                        )
-                        .map_err(|_| {
-                            persistence_error("could not encode deleted frame reference")
-                        })?;
+                    for chunk in ids.chunks(900) {
+                        let placeholders = std::iter::repeat_n("?", chunk.len())
+                            .collect::<Vec<_>>()
+                            .join(",");
                         transaction
                             .execute(
-                                "DELETE FROM timeline_observations WHERE kind='frame' AND payload_json=?1",
-                                params![payload],
+                                &format!(
+                                    "DELETE FROM timeline_observations WHERE kind='frame' AND payload_sort_key IN ({placeholders})"
+                                ),
+                                params_from_iter(chunk.iter()),
                             )
                             .map_err(|_| persistence_error("could not remove frame timeline metadata"))?;
                     }

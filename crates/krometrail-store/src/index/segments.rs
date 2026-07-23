@@ -5,12 +5,58 @@ use crate::{SegmentRegistration, persistence_error};
 
 use super::{codec, ensure_identity};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SegmentUsageDelta {
+    pub removed: u64,
+    pub added: u64,
+}
+
+impl SegmentUsageDelta {
+    pub(crate) fn from_transition(before: Option<u64>, after: u64) -> Self {
+        match before {
+            Some(before) if before >= after => Self {
+                removed: before - after,
+                added: 0,
+            },
+            Some(before) => Self {
+                removed: 0,
+                added: after - before,
+            },
+            None => Self {
+                removed: 0,
+                added: after,
+            },
+        }
+    }
+
+    pub(crate) fn combine(self, other: Self) -> krometrail_core::Result<Self> {
+        Ok(Self {
+            removed: self
+                .removed
+                .checked_add(other.removed)
+                .ok_or_else(|| crate::persistence_error("segment usage delta overflow"))?,
+            added: self
+                .added
+                .checked_add(other.added)
+                .ok_or_else(|| crate::persistence_error("segment usage delta overflow"))?,
+        })
+    }
+}
+
 pub(crate) fn register_segment_tx(
     transaction: &Transaction<'_>,
     registration: &SegmentRegistration,
-) -> krometrail_core::Result<()> {
+) -> krometrail_core::Result<SegmentUsageDelta> {
     ensure_identity(transaction, registration.session_id, registration.target_id)?;
     let segment_key = codec::id(registration.segment_id.as_uuid()).to_vec();
+    let previous_bytes: Option<Vec<u8>> = transaction
+        .query_row(
+            "SELECT byte_len_be FROM usage WHERE class='segment' AND object_key=?1",
+            params![&segment_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| persistence_error("could not query segment usage"))?;
     let existing_sequence: Option<i64> = transaction
         .query_row(
             "SELECT retention_sequence FROM segments WHERE segment_id=?1",
@@ -76,7 +122,14 @@ pub(crate) fn register_segment_tx(
             ],
         )
         .map_err(|_| persistence_error("could not register segment usage"))?;
-    Ok(())
+    let previous_bytes = previous_bytes
+        .as_deref()
+        .map(codec::decode_u64)
+        .transpose()?;
+    Ok(SegmentUsageDelta::from_transition(
+        previous_bytes,
+        registration.file_bytes,
+    ))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

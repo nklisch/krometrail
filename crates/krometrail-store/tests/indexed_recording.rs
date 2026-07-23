@@ -128,6 +128,53 @@ async fn indexed_writes_are_queryable_by_id_range_and_open_or_sealed_address() {
 }
 
 #[tokio::test]
+async fn frame_range_order_matches_capture_order_for_co_monotonic_capture() {
+    let fixture = Fixture::new(RotationConfig::suggested());
+    for ordinal in 1..=4 {
+        fixture
+            .sink
+            .append_frame(fixture.frame(
+                100 + u128::from(ordinal),
+                fixture.target,
+                ordinal,
+                ordinal,
+            ))
+            .await
+            .unwrap();
+    }
+    let range = SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(4)).unwrap();
+    let current = fixture
+        .sink
+        .frames_in_range(fixture.session, fixture.target, range)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|frame| frame.metadata().id())
+        .collect::<Vec<_>>();
+    let connection = Connection::open(fixture.database_path()).unwrap();
+    let old_order = connection
+        .prepare(
+            "SELECT frame_id FROM frames \
+             WHERE session_id=?1 AND target_id=?2 AND session_time_be>=?3 AND session_time_be<=?4 \
+             ORDER BY capture_ordinal_be ASC, session_time_be ASC, frame_id ASC",
+        )
+        .unwrap()
+        .query_map(
+            rusqlite::params![
+                fixture.session.as_uuid().as_bytes().to_vec(),
+                fixture.target.as_uuid().as_bytes().to_vec(),
+                1_u64.to_be_bytes().to_vec(),
+                4_u64.to_be_bytes().to_vec(),
+            ],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .unwrap()
+        .map(|row| FrameId::from_uuid(Uuid::from_slice(&row.unwrap()).unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(current, old_order);
+}
+
+#[tokio::test]
 async fn index_failure_after_append_leaves_only_a_readable_orphan_record() {
     let fixture = Fixture::new(RotationConfig::suggested());
     let first = fixture.frame(20, fixture.target, 1, 1);

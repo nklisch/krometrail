@@ -118,7 +118,7 @@ impl TimelineStore for SqliteIndex {
         range: SessionRange,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<TimelineObservation>>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let mut statement = connection
                 .prepare(
                     "SELECT session_id, target_id, session_time_be, source_time_be, \
@@ -155,7 +155,7 @@ impl TimelineStore for SqliteIndex {
         query: TimelineRangeQuery,
     ) -> PortFuture<'_, krometrail_core::Result<TimelineRangeSlice>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let (where_sql, kind_names) = selected_range_sql(&query);
             // Heterogeneous parameter list: scope/range are blobs, kinds are text.
             let scope_params: &[&dyn rusqlite::ToSql] = &[

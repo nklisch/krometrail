@@ -1,6 +1,9 @@
 use std::{
     collections::HashSet,
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 #[cfg(feature = "qualification-support")]
@@ -43,13 +46,76 @@ use crate::{
         deletion::{DeletionKind, DeletionObject, DeletionObjectKind, DeletionState},
         frames::{FrameReadSnapshot, index_frame_tx},
         retention::{ArtifactCandidate, SegmentCandidate, SegmentReclaimFilter},
-        segments::register_segment_tx,
+        segments::{SegmentUsageDelta, register_segment_tx},
     },
     persistence_error,
     retention::removal::RemovalWorker,
 };
 
 const RECORD_ENVELOPE_ALLOWANCE: u64 = 4096;
+const WAL_CHECKPOINT_MUTATION_INTERVAL: u64 = 2_000;
+
+/// Derived bytes outside SQLite's live-page measurement.
+///
+/// SQLite pages already include frame metadata, browser events, and their
+/// indexes. The accumulator therefore tracks only segment and artifact payload
+/// usage; `budget_total_bytes` adds the O(1) live-page probe. SQL usage rows and
+/// segment reconciliation remain the durable authorities.
+struct UsageAccumulator {
+    total_bytes: AtomicU64,
+}
+
+impl UsageAccumulator {
+    const fn empty() -> Self {
+        Self {
+            total_bytes: AtomicU64::new(0),
+        }
+    }
+
+    fn load(&self) -> u64 {
+        self.total_bytes.load(Ordering::Acquire)
+    }
+
+    fn apply_delta(&self, removed: u64, added: u64) -> krometrail_core::Result<()> {
+        let mut current = self.load();
+        loop {
+            let next = current
+                .checked_sub(removed)
+                .and_then(|value| value.checked_add(added))
+                .ok_or_else(|| persistence_error("usage accumulator delta overflow"))?;
+            match self.total_bytes.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    fn replace_from_snapshot(
+        &self,
+        snapshot: &crate::index::retention::UsageSnapshot,
+    ) -> krometrail_core::Result<()> {
+        let derived = snapshot
+            .usage
+            .segment_bytes
+            .checked_add(snapshot.usage.artifact_bytes)
+            .ok_or_else(|| persistence_error("usage accumulator initialization overflow"))?;
+        let previous = self.total_bytes.swap(derived, Ordering::AcqRel);
+        if previous != 0 && previous != derived {
+            tracing::error!(
+                previous,
+                derived,
+                "usage accumulator drift corrected from SQL truth"
+            );
+            debug_assert_eq!(previous, derived);
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EvidenceReadKind {
@@ -100,6 +166,7 @@ pub struct RecordingStore {
     clock: Arc<dyn MonotonicClock>,
     segments: Arc<SegmentWriter>,
     index: Arc<SqliteIndex>,
+    usage_accumulator: UsageAccumulator,
     removal: RemovalWorker,
     artifact_files: ArtifactFiles,
     artifact_publications: PublicationRegistry,
@@ -179,6 +246,7 @@ impl RecordingStore {
                 .saturating_add(RECORD_ENVELOPE_ALLOWANCE),
             segments,
             index,
+            usage_accumulator: UsageAccumulator::empty(),
             removal,
             artifact_files,
             artifact_publications: PublicationRegistry::new(),
@@ -195,6 +263,7 @@ impl RecordingStore {
         store.resume_deletions()?;
         store.recover_artifacts()?;
         store.recover_browser_events()?;
+        store.reconcile_accumulator()?;
         Ok(store)
     }
 
@@ -468,22 +537,29 @@ impl RecordingStore {
         let transaction = connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|_| persistence_error("could not begin segment registration"))?;
+        let mut usage_delta = SegmentUsageDelta::default();
         for registration in registrations {
-            register_segment_tx(&transaction, registration)?;
+            usage_delta = usage_delta.combine(register_segment_tx(&transaction, registration)?)?;
         }
         transaction
             .commit()
-            .map_err(|_| persistence_error("could not commit segment registration"))
+            .map_err(|_| persistence_error("could not commit segment registration"))?;
+        self.usage_accumulator
+            .apply_delta(usage_delta.removed, usage_delta.added)
     }
 
     async fn flush_all(&self) -> krometrail_core::Result<()> {
         let registrations = self.segments.flush_all_indexable().await?;
-        self.register_segments(&registrations).await
+        self.register_segments(&registrations).await?;
+        self.index.checkpoint_truncate()?;
+        self.reconcile_accumulator()
     }
 
     async fn flush_session(&self, session_id: SessionId) -> krometrail_core::Result<()> {
         let registrations = self.segments.flush_indexable(session_id).await?;
-        self.register_segments(&registrations).await
+        self.register_segments(&registrations).await?;
+        self.index.checkpoint_truncate()?;
+        self.reconcile_accumulator()
     }
 
     fn set_budget_state(&self, next: RecordingBudgetState) {
@@ -508,9 +584,16 @@ impl RecordingStore {
             .expect("budget state lock poisoned")
     }
 
-    fn refresh_usage(&self) -> krometrail_core::Result<crate::index::retention::UsageSnapshot> {
-        self.index.refresh_index_usage()?;
-        self.index.usage_snapshot()
+    fn reconcile_accumulator(&self) -> krometrail_core::Result<()> {
+        let snapshot = self.index.live_usage_snapshot()?;
+        self.usage_accumulator.replace_from_snapshot(&snapshot)
+    }
+
+    fn budget_total_bytes(&self) -> krometrail_core::Result<u64> {
+        self.usage_accumulator
+            .load()
+            .checked_add(self.index.live_index_page_bytes()?)
+            .ok_or_else(|| persistence_error("budget usage overflow"))
     }
 
     fn status_from_snapshot(
@@ -543,7 +626,10 @@ impl RecordingStore {
     }
 
     fn current_status(&self) -> krometrail_core::Result<RetentionStatus> {
-        self.status_from_snapshot(self.refresh_usage()?, self.current_budget_state())
+        self.status_from_snapshot(
+            self.index.live_usage_snapshot()?,
+            self.current_budget_state(),
+        )
     }
 
     fn progressive_pin_state_locked(
@@ -571,8 +657,7 @@ impl RecordingStore {
             .get()
             .checked_add(RECORD_ENVELOPE_ALLOWANCE)
             .ok_or_else(|| persistence_error("frame storage estimate overflow"))?;
-        let snapshot = self.refresh_usage()?;
-        let total = snapshot.usage.total_bytes()?;
+        let total = self.budget_total_bytes()?;
         // One decision basis for the whole append. The share is an equal division
         // of the total, so the bytes about to be written need no separate
         // accounting: `total + required <= effective` already refuses a frame of
@@ -592,10 +677,8 @@ impl RecordingStore {
         self.flush_all().await?;
         self.cleanup_to(effective.saturating_sub(required), None)
             .await?;
-        let snapshot = self.refresh_usage()?;
-        if snapshot
-            .usage
-            .total_bytes()?
+        let total = self.budget_total_bytes()?;
+        if total
             .checked_add(required)
             .is_some_and(|needed| needed <= effective)
         {
@@ -669,32 +752,32 @@ impl RecordingStore {
     }
 
     async fn enforce_locked(&self) -> krometrail_core::Result<RetentionStatus> {
-        let mut snapshot = self.refresh_usage()?;
-        if self.usage_is_within_budget(&snapshot)? {
+        let mut total = self.budget_total_bytes()?;
+        if self.usage_is_within_budget(total)? {
             self.set_budget_state(RecordingBudgetState::Available);
-            return self.status_from_snapshot(snapshot, RecordingBudgetState::Available);
+            return self.status_from_snapshot(
+                self.index.live_usage_snapshot()?,
+                RecordingBudgetState::Available,
+            );
         }
         self.flush_all().await?;
         self.cleanup_to(self.effective_budget(), None).await?;
-        snapshot = self.refresh_usage()?;
-        let state = if self.usage_is_within_budget(&snapshot)? {
+        total = self.budget_total_bytes()?;
+        let state = if self.usage_is_within_budget(total)? {
             RecordingBudgetState::Available
         } else {
             RecordingBudgetState::PausedBudget
         };
         self.set_budget_state(state);
-        self.status_from_snapshot(snapshot, state)
+        self.status_from_snapshot(self.index.live_usage_snapshot()?, state)
     }
 
-    fn usage_is_within_budget(
-        &self,
-        snapshot: &crate::index::retention::UsageSnapshot,
-    ) -> krometrail_core::Result<bool> {
-        let total = snapshot.usage.total_bytes()?;
+    fn usage_is_within_budget(&self, total: u64) -> krometrail_core::Result<bool> {
         let effective = self.effective_budget();
         if total <= effective {
             return Ok(true);
         }
+        let snapshot = self.index.live_usage_snapshot()?;
         if snapshot.open_segment_count != 1
             || total.saturating_sub(effective) > self.open_overhead_limit
         {
@@ -801,7 +884,7 @@ impl RecordingStore {
     ) -> krometrail_core::Result<ReclaimOutcome> {
         let mut outcome = ReclaimOutcome::default();
         loop {
-            let over_target = self.refresh_usage()?.usage.total_bytes()? > target_bytes;
+            let over_target = self.budget_total_bytes()? > target_bytes;
             let filter = if over_target {
                 SegmentReclaimFilter {
                     created_before_unix_ms: None,
@@ -916,9 +999,10 @@ impl RecordingStore {
         &self,
         row: &ArtifactRow,
     ) -> krometrail_core::Result<()> {
+        self.reconcile_accumulator()?;
         self.cleanup_to(self.effective_budget(), Some(row.artifact_id))
             .await?;
-        if self.refresh_usage()?.usage.total_bytes()? <= self.effective_budget() {
+        if self.budget_total_bytes()? <= self.effective_budget() {
             self.set_budget_state(RecordingBudgetState::Available);
             return Ok(());
         }
@@ -945,6 +1029,8 @@ impl RecordingStore {
         committed.state = DeletionState::MetadataRemoved;
         self.removal.finalize(committed).await?;
         self.index.finalize_deletion(&batch)?;
+        self.usage_accumulator.apply_delta(removed_bytes, 0)?;
+        self.reconcile_accumulator()?;
         Ok((segments, frames, artifacts, removed_bytes))
     }
 
@@ -953,11 +1039,8 @@ impl RecordingStore {
         request: SourceFramesRequest,
     ) -> krometrail_core::Result<Vec<SourceFrameRead>> {
         let selected_ids = request.selected_frame_ids();
-        let snapshots = {
-            let _mutation = self.mutations.lock().await;
-            self.reject_deleted(request.range.session_id)?;
-            self.index.frame_read_snapshots_by_id(&selected_ids)?
-        };
+        self.reject_deleted(request.range.session_id)?;
+        let snapshots = self.index.frame_read_snapshots_by_id(&selected_ids)?;
         if snapshots.len() != selected_ids.len() {
             return Err(source_read_not_found(snapshots.first()));
         }
@@ -1048,9 +1131,8 @@ impl RecordingStore {
         &self,
         request: RetrieveSourceFrameRequest,
     ) -> krometrail_core::Result<SourceFrameRead> {
+        self.reject_deleted(request.scope.session_id)?;
         let snapshot = {
-            let _mutation = self.mutations.lock().await;
-            self.reject_deleted(request.scope.session_id)?;
             let snapshots = match self.index.frame_read_snapshots_by_id(&[request.frame_id]) {
                 Ok(snapshots) => snapshots,
                 Err(error) if error.code == ErrorCode::NotFound => {
@@ -1275,10 +1357,7 @@ impl FrameSource for RecordingStore {
         frame_ids: Vec<FrameId>,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
         Box::pin(async move {
-            let snapshots = {
-                let _mutation = self.mutations.lock().await;
-                self.index.frame_read_snapshots_by_id(&frame_ids)?
-            };
+            let snapshots = self.index.frame_read_snapshots_by_id(&frame_ids)?;
             self.read_frame_snapshots(snapshots, EvidenceReadKind::Source)
                 .await
         })
@@ -1289,7 +1368,6 @@ impl FrameSource for RecordingStore {
         frame_ids: Vec<FrameId>,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::CapturedFrame>>> {
         Box::pin(async move {
-            let _mutation = self.mutations.lock().await;
             let snapshots = self.index.frame_read_snapshots_by_id(&frame_ids)?;
             for snapshot in &snapshots {
                 self.reject_deleted(snapshot.metadata.session_id())?;
@@ -1308,12 +1386,10 @@ impl FrameSource for RecordingStore {
         range: SessionRange,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
         Box::pin(async move {
-            let snapshots = {
-                let _mutation = self.mutations.lock().await;
-                self.reject_deleted(session_id)?;
-                self.index
-                    .frame_read_snapshots_in_range(session_id, target_id, range)?
-            };
+            self.reject_deleted(session_id)?;
+            let snapshots = self
+                .index
+                .frame_read_snapshots_in_range(session_id, target_id, range)?;
             self.read_frame_snapshots(snapshots, EvidenceReadKind::Source)
                 .await
         })
@@ -1327,12 +1403,10 @@ impl FrameSource for RecordingStore {
         end: krometrail_core::CaptureOrdinal,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<EncodedFrame>>> {
         Box::pin(async move {
-            let snapshots = {
-                let _mutation = self.mutations.lock().await;
-                self.reject_deleted(session_id)?;
-                self.index
-                    .frame_read_snapshots_in_ordinal_range(session_id, target_id, start, end)?
-            };
+            self.reject_deleted(session_id)?;
+            let snapshots = self
+                .index
+                .frame_read_snapshots_in_ordinal_range(session_id, target_id, start, end)?;
             self.read_frame_snapshots(snapshots, EvidenceReadKind::Source)
                 .await
         })
@@ -1345,7 +1419,6 @@ impl FrameSource for RecordingStore {
         range: SessionRange,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::CapturedFrame>>> {
         Box::pin(async move {
-            let _mutation = self.mutations.lock().await;
             self.reject_deleted(session_id)?;
             Ok(self
                 .index
@@ -1364,7 +1437,6 @@ impl FrameSource for RecordingStore {
         end: krometrail_core::CaptureOrdinal,
     ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::CapturedFrame>>> {
         Box::pin(async move {
-            let _mutation = self.mutations.lock().await;
             self.reject_deleted(session_id)?;
             Ok(self
                 .index
@@ -1381,7 +1453,6 @@ impl FrameSource for RecordingStore {
         target_id: TargetId,
     ) -> PortFuture<'_, krometrail_core::Result<krometrail_core::FrameAvailability>> {
         Box::pin(async move {
-            let _mutation = self.mutations.lock().await;
             self.reject_deleted(session_id)?;
             FrameSource::frame_availability(self.index.as_ref(), session_id, target_id).await
         })
@@ -1505,7 +1576,10 @@ impl ArtifactStore for RecordingStore {
                 self.index.stage_artifact(&publication)?
             };
             let row = match staged {
-                StageArtifact::Staged(row) => row,
+                StageArtifact::Staged(row) => {
+                    self.usage_accumulator.apply_delta(0, row.byte_len)?;
+                    row
+                }
                 StageArtifact::Existing(existing) if existing.state == ArtifactState::Ready => {
                     let snapshot = {
                         let _mutation = self.mutations.lock().await;
@@ -1748,7 +1822,10 @@ impl ArtifactStore for RecordingStore {
                 self.index.stage_video_artifact(&publication)?
             };
             let row = match staged {
-                StageArtifact::Staged(row) => row,
+                StageArtifact::Staged(row) => {
+                    self.usage_accumulator.apply_delta(0, row.byte_len)?;
+                    row
+                }
                 StageArtifact::Existing(existing) if existing.state == ArtifactState::Ready => {
                     let snapshot = {
                         let _mutation = self.mutations.lock().await;
@@ -1925,9 +2002,12 @@ impl BrowserEventSink for RecordingStore {
             // Measure before the immediate transaction so its budget decision starts
             // from checkpointed live-page accounting. The transaction then considers
             // only bounded inserts and bounded event-only evictions.
-            let managed_usage = self.refresh_usage()?.usage.total_bytes()?;
+            let managed_usage = self.budget_total_bytes()?;
             self.index
-                .append_browser_event_batch(batch, self.effective_budget(), managed_usage)
+                .append_browser_event_batch(batch, self.effective_budget(), managed_usage)?;
+            self.index
+                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)?;
+            Ok(())
         })
     }
 }
@@ -2026,12 +2106,30 @@ impl RecordingSink for RecordingStore {
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(|_| persistence_error("could not begin indexed frame persistence"))
                 .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
-            index_frame_tx(&transaction, &frame, &commit)
+            let usage_delta = index_frame_tx(&transaction, &frame, &commit)
                 .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
             transaction
                 .commit()
                 .map_err(|_| persistence_error("could not commit indexed frame metadata"))
                 .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
+            drop(connection);
+            self.usage_accumulator
+                .apply_delta(usage_delta.removed, usage_delta.added)
+                .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
+            if commit.sealed_segment.is_some() {
+                self.index.checkpoint_truncate().map_err(|error| {
+                    classify_sink_failure(PersistenceOperation::FrameIndex, error)
+                })?;
+                self.reconcile_accumulator().map_err(|error| {
+                    classify_sink_failure(PersistenceOperation::FrameIndex, error)
+                })?;
+            } else {
+                self.index
+                    .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)
+                    .map_err(|error| {
+                        classify_sink_failure(PersistenceOperation::FrameIndex, error)
+                    })?;
+            }
             Ok(commit.address)
         })
     }
@@ -2042,7 +2140,11 @@ impl RecordingSink for RecordingStore {
             self.reject_deleted(gap.session_id())?;
             CaptureGapStore::append_gap(self.index.as_ref(), gap)
                 .await
-                .map_err(|error| classify_sink_failure(PersistenceOperation::GapIndex, error))
+                .map_err(|error| classify_sink_failure(PersistenceOperation::GapIndex, error))?;
+            self.index
+                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)
+                .map_err(|error| classify_sink_failure(PersistenceOperation::GapIndex, error))?;
+            Ok(())
         })
     }
 
@@ -2091,7 +2193,10 @@ impl InteractionEvidenceSink for RecordingStore {
                 record.as_ref(),
                 persisted_at,
                 navigation_id,
-            )
+            )?;
+            self.index
+                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)?;
+            Ok(())
         })
     }
 }
@@ -2104,7 +2209,10 @@ impl TimelineStore for RecordingStore {
         Box::pin(async move {
             let _mutation = self.mutations.lock().await;
             self.reject_deleted(observation.session_id())?;
-            TimelineStore::append(self.index.as_ref(), observation).await
+            TimelineStore::append(self.index.as_ref(), observation).await?;
+            self.index
+                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)?;
+            Ok(())
         })
     }
 
@@ -2289,12 +2397,12 @@ impl RetentionStore for RecordingStore {
     /// Status is a read. Serialising it behind the gate made it wait out whatever
     /// eviction or deletion happened to be running, which is the opposite of what
     /// an agent checking on a store under pressure needs. It therefore also skips
-    /// the WAL checkpoint that `refresh_usage` performs: object usage comes
-    /// straight from the accounting rows and is exact, while the index-page class
-    /// may lag until the next mutation refreshes it. Trading a slightly stale
-    /// page figure for a status call that never blocks is the right side of that
-    /// bargain, and every mutating path still refreshes before it decides
-    /// anything.
+    /// the WAL checkpoint that the append-path accounting used to perform: object
+    /// usage comes straight from the accounting rows and is exact, while the
+    /// index-page class may lag until the checkpoint policy catches up. Trading a
+    /// slightly stale page figure for a status call that never blocks is the right
+    /// side of that bargain; mutating paths use the derived budget total and
+    /// reconcile at their durability barriers.
     fn status(&self) -> PortFuture<'_, krometrail_core::Result<RetentionStatus>> {
         Box::pin(async move {
             self.status_from_snapshot(

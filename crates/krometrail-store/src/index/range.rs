@@ -143,7 +143,7 @@ impl TimelineAnchorSource for SqliteIndex {
             }
             let payload_json = serde_json::to_string(&payload)
                 .map_err(|_| persistence_error("could not encode range anchor payload"))?;
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let raw = connection
                 .query_row(
                     "SELECT session_id, target_id, session_time_be, source_time_be, \
@@ -168,7 +168,7 @@ impl TimelineAnchorSource for SqliteIndex {
         kind: ObservationKind,
     ) -> PortFuture<'_, krometrail_core::Result<Option<TimelineObservation>>> {
         Box::pin(async move {
-            let connection = self.connection()?;
+            let connection = self.read_connection()?;
             let raw = connection
                 .query_row(
                     "SELECT session_id, target_id, session_time_be, source_time_be, \

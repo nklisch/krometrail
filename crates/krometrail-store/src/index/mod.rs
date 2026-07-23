@@ -18,7 +18,10 @@ use std::{
     collections::HashMap,
     fs, io,
     path::PathBuf,
-    sync::{Mutex, MutexGuard},
+    sync::{
+        Mutex, MutexGuard,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -37,6 +40,9 @@ pub struct IndexStoreConfig {
 /// File-backed searchable metadata authority.
 pub struct SqliteIndex {
     connection: Mutex<Connection>,
+    read_pool: Vec<Mutex<Connection>>,
+    next_read_connection: AtomicUsize,
+    pending_checkpoint_mutations: AtomicU64,
     /// Read-path terminal authority for the narrow case where an ended session cannot be durably
     /// rewritten. Normal reads remain backed by SQLite; this overlay only prevents a failed
     /// terminal write from making an ended session appear live in the current process.
@@ -95,8 +101,11 @@ impl SqliteIndex {
                 "metadata database did not enable write-ahead logging",
             ));
         }
+        // NORMAL keeps process-crash WAL replay durable while the bounded checkpoint
+        // policy aligns power-loss exposure with segment seal/rotation durability;
+        // recovery re-derives segment-backed metadata and observations from payloads.
         connection
-            .pragma_update(None, "synchronous", "FULL")
+            .pragma_update(None, "synchronous", "NORMAL")
             .map_err(|_| persistence_error("could not configure metadata durability"))?;
         let foreign_keys: u32 = connection
             .pragma_query_value(None, "foreign_keys", |row| row.get(0))
@@ -104,7 +113,7 @@ impl SqliteIndex {
         let synchronous: u32 = connection
             .pragma_query_value(None, "synchronous", |row| row.get(0))
             .map_err(|_| persistence_error("could not verify metadata durability"))?;
-        if foreign_keys != 1 || synchronous != 2 {
+        if foreign_keys != 1 || synchronous != 1 {
             return Err(persistence_error(
                 "metadata database safety settings were not retained",
             ));
@@ -125,8 +134,12 @@ impl SqliteIndex {
                 })?;
             }
         }
+        let read_pool = open_read_pool(&config.database_path, config.busy_timeout)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            read_pool,
+            next_read_connection: AtomicUsize::new(0),
+            pending_checkpoint_mutations: AtomicU64::new(0),
             terminal_session_overrides: Mutex::new(HashMap::new()),
             database_path: config.database_path,
             segments_directory: config.segments_directory,
@@ -137,6 +150,14 @@ impl SqliteIndex {
         self.connection
             .lock()
             .map_err(|_| persistence_error("metadata connection is unavailable"))
+    }
+
+    pub(crate) fn read_connection(&self) -> krometrail_core::Result<MutexGuard<'_, Connection>> {
+        let index =
+            self.next_read_connection.fetch_add(1, Ordering::Relaxed) % self.read_pool.len();
+        self.read_pool[index]
+            .lock()
+            .map_err(|_| persistence_error("metadata read connection is unavailable"))
     }
 
     pub(crate) fn database_path(&self) -> &std::path::Path {
@@ -165,6 +186,42 @@ fn open_metadata_connection(config: &IndexStoreConfig) -> krometrail_core::Resul
         .pragma_update(None, "foreign_keys", true)
         .map_err(|_| persistence_error("could not enable metadata foreign keys"))?;
     Ok(connection)
+}
+
+fn open_read_pool(
+    database_path: &std::path::Path,
+    busy_timeout: Duration,
+) -> krometrail_core::Result<Vec<Mutex<Connection>>> {
+    const READ_CONNECTIONS: usize = 4;
+    (0..READ_CONNECTIONS)
+        .map(|_| {
+            let connection = Connection::open_with_flags(
+                database_path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .map_err(|_| persistence_error("could not open a metadata read connection"))?;
+            connection
+                .busy_timeout(busy_timeout)
+                .map_err(|_| persistence_error("could not configure metadata read contention"))?;
+            connection
+                .pragma_update(None, "foreign_keys", true)
+                .map_err(|_| persistence_error("could not enable metadata read foreign keys"))?;
+            connection
+                .pragma_update(None, "query_only", true)
+                .map_err(|_| {
+                    persistence_error("could not make metadata read connection read-only")
+                })?;
+            let journal: String = connection
+                .pragma_query_value(None, "journal_mode", |row| row.get(0))
+                .map_err(|_| persistence_error("could not verify metadata read journal mode"))?;
+            if !journal.eq_ignore_ascii_case("wal") {
+                return Err(persistence_error(
+                    "metadata read connection did not observe write-ahead logging",
+                ));
+            }
+            Ok(Mutex::new(connection))
+        })
+        .collect()
 }
 
 fn clear_recording_cache(config: &IndexStoreConfig) -> krometrail_core::Result<()> {
@@ -307,7 +364,7 @@ mod tests {
             .unwrap();
         assert_eq!(journal, "wal");
         assert_eq!(foreign_keys, 1);
-        assert_eq!(synchronous, 2);
+        assert_eq!(synchronous, 1);
         assert_eq!(timeout, 321);
         assert_eq!(version, schema::CURRENT_SCHEMA_VERSION);
         assert_eq!(

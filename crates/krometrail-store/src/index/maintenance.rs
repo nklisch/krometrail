@@ -1,5 +1,5 @@
 use krometrail_core::{ByteOffset, FrameId, SegmentId, SessionId};
-use rusqlite::params;
+use rusqlite::{params, params_from_iter};
 
 use super::{SqliteIndex, codec};
 use crate::persistence_error;
@@ -32,48 +32,72 @@ pub(crate) struct UsageEntry {
 }
 
 impl SqliteIndex {
-    pub(crate) fn refresh_index_usage(&self) -> krometrail_core::Result<u64> {
-        // A checkpoint makes SQLite pages, rather than transient WAL length, the
-        // accounting authority. Browser-event usage is a classified subset of
-        // those live pages and is subtracted once from the index class.
-        let mut connection = self.connection()?;
-        let checkpoint_busy: i64 = connection
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
-            .map_err(|_| persistence_error("could not checkpoint index usage"))?;
-        if checkpoint_busy != 0 {
-            return Err(persistence_error("index usage checkpoint is busy"));
+    pub(crate) fn live_index_page_bytes(&self) -> krometrail_core::Result<u64> {
+        let connection = self.read_connection()?;
+        sqlite_page_usage(&connection).map(|(live, _)| live)
+    }
+
+    /// Checkpoint the metadata WAL after a bounded number of mutations.
+    ///
+    /// The counter is deliberately maintained in memory: checking WAL state
+    /// with a pragma on every frame would recreate the hot-path cost this
+    /// policy replaces. Segment seals and explicit flushes use the unconditional
+    /// barrier below.
+    pub(crate) fn checkpoint_if_wal_exceeds(
+        &self,
+        max_wal_pages: u64,
+    ) -> krometrail_core::Result<u64> {
+        if max_wal_pages == 0 {
+            return Err(persistence_error(
+                "metadata WAL checkpoint threshold must be greater than zero",
+            ));
         }
-        let (live_bytes, _) = sqlite_page_usage(&connection)?;
-        let browser_event_bytes = class_usage(&connection, UsageClass::BrowserEvent)?;
-        let index_bytes = live_bytes
-            .checked_sub(browser_event_bytes)
-            .ok_or_else(|| persistence_error("browser event usage exceeds live index pages"))?;
-        let transaction = connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|_| persistence_error("could not begin index usage refresh"))?;
-        transaction
-            .execute(
-                "INSERT INTO usage(class, object_key, session_id, byte_len_be) \
-                 VALUES ('index', ?1, NULL, ?2) \
-                 ON CONFLICT(class, object_key) DO UPDATE SET byte_len_be=excluded.byte_len_be \
-                 WHERE usage.byte_len_be != excluded.byte_len_be",
-                params![
-                    b"live-pages".as_slice(),
-                    codec::u64_blob(index_bytes).to_vec()
-                ],
-            )
-            .map_err(|_| persistence_error("could not refresh index usage"))?;
-        transaction
-            .commit()
-            .map_err(|_| persistence_error("could not commit index usage refresh"))?;
-        Ok(live_bytes)
+        let pending = self
+            .pending_checkpoint_mutations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        if pending < max_wal_pages {
+            return Ok(0);
+        }
+        match self.checkpoint_truncate() {
+            Ok(bytes) => {
+                self.pending_checkpoint_mutations
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+                Ok(bytes)
+            }
+            Err(error) => {
+                self.pending_checkpoint_mutations
+                    .store(max_wal_pages, std::sync::atomic::Ordering::Relaxed);
+                Err(error)
+            }
+        }
+    }
+
+    /// Force the metadata WAL through SQLite's durability barrier.
+    pub(crate) fn checkpoint_truncate(&self) -> krometrail_core::Result<u64> {
+        let connection = self.connection()?;
+        let (busy, _log_pages, checkpointed_pages): (i64, i64, i64) = connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(|_| persistence_error("could not checkpoint metadata WAL"))?;
+        if busy != 0 {
+            return Err(persistence_error("metadata WAL checkpoint is busy"));
+        }
+        let page_size: u64 = connection
+            .pragma_query_value(None, "page_size", |row| row.get(0))
+            .map_err(|_| persistence_error("could not read metadata page size"))?;
+        u64::try_from(checkpointed_pages)
+            .ok()
+            .and_then(|pages| pages.checked_mul(page_size))
+            .ok_or_else(|| persistence_error("metadata WAL checkpoint size overflow"))
     }
 
     pub(crate) fn session_usage_bytes(
         &self,
         session_id: SessionId,
     ) -> krometrail_core::Result<u64> {
-        let connection = self.connection()?;
+        let connection = self.read_connection()?;
         let mut statement = connection
             .prepare("SELECT byte_len_be FROM usage WHERE session_id=?1")
             .map_err(|_| persistence_error("could not prepare session usage lookup"))?;
@@ -126,16 +150,24 @@ impl SqliteIndex {
             .map(|value| codec::decode_id(&value).map(FrameId::from_uuid))
             .collect::<krometrail_core::Result<_>>()?;
         drop(statement);
-        for frame_id in &ids {
-            let payload_json =
-                serde_json::to_string(&krometrail_core::ObservationPayloadRef::Frame(*frame_id))
-                    .map_err(|_| persistence_error("could not encode frame timeline reference"))?;
+        for chunk in ids.chunks(900) {
+            let keys: Vec<Vec<u8>> = chunk
+                .iter()
+                .map(|frame_id| codec::id(frame_id.as_uuid()).to_vec())
+                .collect();
+            let placeholders = std::iter::repeat_n("?", keys.len())
+                .collect::<Vec<_>>()
+                .join(",");
             transaction
                 .execute(
-                    "DELETE FROM timeline_observations WHERE kind='frame' AND payload_json=?1",
-                    params![payload_json],
+                    &format!(
+                        "DELETE FROM timeline_observations WHERE kind='frame' AND payload_sort_key IN ({placeholders})"
+                    ),
+                    params_from_iter(keys.iter()),
                 )
                 .map_err(|_| persistence_error("could not remove frame timeline metadata"))?;
+        }
+        for frame_id in &ids {
             transaction
                 .execute(
                     "DELETE FROM frames WHERE frame_id=?1",
@@ -239,26 +271,6 @@ pub(crate) fn sqlite_page_usage(
         .checked_mul(page_size)
         .ok_or_else(|| persistence_error("index freelist usage overflow"))?;
     Ok((live, reusable))
-}
-
-fn class_usage(
-    connection: &rusqlite::Connection,
-    class: UsageClass,
-) -> krometrail_core::Result<u64> {
-    let mut statement = connection
-        .prepare("SELECT byte_len_be FROM usage WHERE class=?1 ORDER BY object_key")
-        .map_err(|_| persistence_error("could not prepare class usage lookup"))?;
-    let rows = statement
-        .query_map(params![class.as_str()], |row| row.get::<_, Vec<u8>>(0))
-        .map_err(|_| persistence_error("could not query class usage"))?;
-    let mut total = 0_u64;
-    for row in rows {
-        let raw = row.map_err(|_| persistence_error("could not read class usage"))?;
-        total = total
-            .checked_add(codec::decode_u64(&raw)?)
-            .ok_or_else(|| persistence_error("class usage overflow"))?;
-    }
-    Ok(total)
 }
 
 #[cfg(test)]

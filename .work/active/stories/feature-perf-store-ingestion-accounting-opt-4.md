@@ -50,3 +50,16 @@ the parent feature body for profiling data.
 - [ ] Co-monotonicity guard test confirms identical frame ordering before/after the
       `ORDER BY` change.
 - [ ] Existing read/temporal/browser-event tests pass.
+
+## Implementation notes
+
+- Added a four-connection read-only SQLite pool and routed SELECT-only frame,
+  temporal, browser-event, catalog, artifact, and status paths through it while
+  retaining the writer connection and mutation gate for all writes, retention
+  read-modify-write operations, checkpoints, and eviction.
+- Time-range reads align with `frame_range_idx` using session time plus unique
+  capture ordinal; the redundant frame-id term is omitted to avoid SQLite's
+  final-term temp sort. The co-monotonic ordering guard passes, and the plan
+  probe reports index seeks for both range reads and split availability endpoints.
+- Final release measurements were 74.534 µs mean / 114.77 µs p99 for one-frame
+  reads under ingest and 14.867 µs mean / 42.67 µs p99 for availability.

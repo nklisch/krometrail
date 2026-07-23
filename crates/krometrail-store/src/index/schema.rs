@@ -2,10 +2,9 @@ use rusqlite::{Connection, TransactionBehavior};
 
 use crate::persistence_error;
 
-// Version 12: expectation-channel attempt demotion changes registry-derived
-// interaction-note decoding; older rows are incompatible and must be cleared
-// with the incompatible cache.
-pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 12;
+// Version 13: frame timeline references gain a partial payload-sort index for
+// set-based segment eviction; older caches are disposable and are cleared.
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 13;
 
 // `created_unix_ms` on `segments` and `artifacts` is the age-out clock.
 //
@@ -268,6 +267,7 @@ CREATE INDEX browser_event_priority_idx ON browser_events(session_id,target_id,c
 CREATE INDEX browser_event_retention_idx ON browser_events(retention_sequence,event_id);
 CREATE INDEX browser_event_unavailable_idx ON browser_event_unavailable_ranges(session_id,target_id,start_time_be,end_time_be,unavailable_id);
 CREATE UNIQUE INDEX browser_event_timeline_ref_idx ON timeline_observations(kind,payload_sort_key) WHERE kind='browser_event';
+CREATE INDEX timeline_frame_ref_idx ON timeline_observations(payload_sort_key) WHERE kind='frame';
 CREATE TRIGGER segments_retention_sequence_required_insert
 BEFORE INSERT ON segments WHEN NEW.retention_sequence IS NULL
 BEGIN SELECT RAISE(ABORT, 'segment retention sequence is required'); END;
@@ -396,6 +396,7 @@ mod tests {
             "segment_created_idx",
             "segment_retention_idx",
             "segment_retention_sequence_idx",
+            "timeline_frame_ref_idx",
             "timeline_range_idx",
         ];
         let actual_indexes: Vec<_> = catalog(&connection)
@@ -538,7 +539,7 @@ mod tests {
 
     #[test]
     fn incompatible_versions_are_classified_without_mutation() {
-        for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, u32::MAX] {
+        for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, u32::MAX] {
             let mut connection = Connection::open_in_memory().unwrap();
             connection
                 .execute("CREATE TABLE retained(value TEXT) STRICT", [])
