@@ -1,9 +1,8 @@
 use std::{collections::HashSet, future::Future, time::Duration};
 
 use krometrail_core::{
-    BrowserOperationResult, DEFAULT_SEMANTIC_MATCH_LIMIT, DocumentReadiness, ElementLocator,
-    ElementState, ErrorCode, EvaluationValue, KrometrailError, ObservationContext,
-    QueryPageRequest, Result, RetryAdvice, SemanticQuery, SemanticQueryOutcome, SessionTime,
+    DocumentReadiness, ElementLocator, ElementState, ErrorCode, EvaluationValue, KrometrailError,
+    ObservationContext, Result, RetryAdvice, SemanticQuery, SemanticQueryOutcome, SessionTime,
     UrlMatch, WaitCondition, WaitOutcome, WaitPresence, WaitProbe, WaitRequest, WaitResult,
     WaitTextMatch,
 };
@@ -244,30 +243,18 @@ impl PageControl {
         query: &SemanticQuery,
         presence: WaitPresence,
     ) -> Result<WaitProbe> {
-        let request = QueryPageRequest::new(
-            krometrail_core::PageSelection::Target(bound.target_id),
-            query.clone(),
-            None,
-            DEFAULT_SEMANTIC_MATCH_LIMIT,
-        )?;
         let started_at = self.session_time()?;
-        let BrowserOperationResult::QueryPage(result) = self
-            .query_page(transport, bound, request, started_at)
-            .await?
-        else {
-            unreachable!("query_page returns its associated result")
-        };
-        let result = *result;
-        let match_count = u32::try_from(result.matches.len())
-            .unwrap_or(u32::MAX)
-            .saturating_add(result.omitted_match_count);
-        let matched = (presence == WaitPresence::Present)
-            != (result.outcome == SemanticQueryOutcome::NoMatch);
+        let probe = self
+            .probe_semantic_presence(transport, bound, query, started_at)
+            .await?;
+        let match_count = probe.match_count;
+        let matched =
+            (presence == WaitPresence::Present) != (probe.outcome == SemanticQueryOutcome::NoMatch);
         Ok(WaitProbe::Semantic {
             matched,
-            outcome: result.outcome,
+            outcome: probe.outcome,
             match_count,
-            relaxed_match_candidates: result
+            relaxed_match_candidates: probe
                 .relaxed_match_candidates
                 .filter(|_| !matched && presence == WaitPresence::Present),
         })

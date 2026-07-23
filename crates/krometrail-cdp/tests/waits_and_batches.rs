@@ -81,6 +81,24 @@ fn semantic_ax_tree(name: Option<&str>) -> Value {
     })
 }
 
+fn semantic_ax_tree_with_status(status_name: Option<&str>) -> Value {
+    let mut tree = semantic_ax_tree(None);
+    if let Some(status_name) = status_name {
+        tree["nodes"][0]["childIds"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("status"));
+        tree["nodes"].as_array_mut().unwrap().push(json!({
+            "nodeId":"status",
+            "ignored":false,
+            "role":{"value":"status"},
+            "name":{"value":status_name},
+            "backendDOMNodeId":43
+        }));
+    }
+    tree
+}
+
 fn semantic_dom_snapshot() -> Value {
     json!({
         "strings":["main","DIV","BUTTON","#text","Ready"],
@@ -1473,6 +1491,106 @@ async fn scripted_semantic_wait_timeout_carries_relaxed_match_candidates() {
 }
 
 #[tokio::test]
+async fn scripted_semantic_wait_matches_nonactionable_status_role() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        semantic_ax_tree_with_status(Some("Delayed status")),
+    );
+
+    let result = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role("status", None).unwrap(),
+            presence: WaitPresence::Present,
+        },
+    )
+    .await;
+    assert!(matches!(result.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        result.last_probe,
+        Some(WaitProbe::Semantic {
+            matched: true,
+            outcome: SemanticQueryOutcome::Unique,
+            match_count: 1,
+            relaxed_match_candidates: None,
+        })
+    ));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn scripted_semantic_wait_absent_holds_while_status_persists() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        semantic_ax_tree_with_status(Some("Persistent status")),
+    );
+
+    let result = wait_for_with_timeout(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role("status", None).unwrap(),
+            presence: WaitPresence::Absent,
+        },
+        std::time::Duration::from_millis(50),
+    )
+    .await;
+    assert!(matches!(result.outcome, WaitOutcome::TimedOut { .. }));
+    assert!(matches!(
+        result.last_probe,
+        Some(WaitProbe::Semantic {
+            matched: false,
+            outcome: SemanticQueryOutcome::Unique,
+            match_count: 1,
+            relaxed_match_candidates: None,
+        })
+    ));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn scripted_semantic_wait_absent_satisfies_when_status_removed() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response(
+        "Accessibility.getFullAXTree",
+        semantic_ax_tree_with_status(None),
+    );
+
+    let result = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role("status", None).unwrap(),
+            presence: WaitPresence::Absent,
+        },
+    )
+    .await;
+    assert!(matches!(result.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        result.last_probe,
+        Some(WaitProbe::Semantic {
+            matched: true,
+            outcome: SemanticQueryOutcome::NoMatch,
+            match_count: 0,
+            relaxed_match_candidates: None,
+        })
+    ));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn scripted_semantic_wait_continues_after_stale_snapshot_poll() {
     let transport = ScriptedCdp::chrome();
     let session = scripted_session(transport.clone()).await;
@@ -1975,6 +2093,62 @@ async fn opt_in_real_chrome_qualifies_semantic_wait_present_and_absent() {
                 ),
             )
             .unwrap(),
+            presence: WaitPresence::Absent,
+        },
+    )
+    .await;
+    assert!(matches!(absent.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        absent.last_probe,
+        Some(WaitProbe::Semantic {
+            outcome: SemanticQueryOutcome::NoMatch,
+            match_count: 0,
+            relaxed_match_candidates: None,
+            ..
+        })
+    ));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn opt_in_real_chrome_qualifies_nonactionable_semantic_waits() {
+    if !support::chrome::real_browser_tests_enabled() {
+        eprintln!(
+            "skipping real Chrome non-actionable semantic waits; set KROMETRAIL_REAL_CHROME_TESTS=1"
+        );
+        return;
+    }
+    let _lock = support::chrome::real_browser_lock().await;
+    let (session, _root) =
+        launch_real_fixture("waits-and-batches-nonactionable-semantic-waits").await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+
+    click(&session, target, "#start-delays").await;
+    let present = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role("status", None).unwrap(),
+            presence: WaitPresence::Present,
+        },
+    )
+    .await;
+    assert!(matches!(present.outcome, WaitOutcome::Satisfied { .. }));
+    assert!(matches!(
+        present.last_probe,
+        Some(WaitProbe::Semantic {
+            outcome: SemanticQueryOutcome::Unique,
+            match_count: 1,
+            relaxed_match_candidates: None,
+            ..
+        })
+    ));
+
+    let absent = wait_for(
+        &session,
+        target,
+        WaitCondition::Semantic {
+            query: SemanticQuery::role("status", None).unwrap(),
             presence: WaitPresence::Absent,
         },
     )

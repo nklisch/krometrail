@@ -308,16 +308,19 @@ responsible for the paths they supply.
 - wait for elapsed time;
 - wait for text or an element state;
 - wait for a semantic locator match — the same role/name, label, text, and test-id query shapes,
-  matching modes, and normalization as structured queries — to be present or absent;
+  matching modes, and normalization as structured queries — to be present or absent over the full
+  acquired accessibility tree of the selected page's main document, including non-actionable
+  content;
 - wait for navigation;
 - wait for a page condition;
 - wait for network quiet when explicitly requested.
 
-Semantic waits are satisfied by any match for `present` or no match for `absent`. Their result
-reports the observed query outcome and match count but never carries an actionable reference;
-callers follow with `query_page` before acting. Bounded snapshot-acquisition failures fail the
-wait explicitly with narrowing guidance, while a transient stale capture is retried at the next
-poll.
+Semantic waits are satisfied by any match for `present` or no match for `absent` in that full tree.
+Structured queries return actionable references; semantic waits observe the full tree and return
+none. Their result reports the observed query outcome and match count but never carries an
+actionable reference; callers follow with `query_page` before acting. Bounded
+snapshot-acquisition failures fail the wait explicitly with narrowing guidance, while a transient
+stale capture is retried at the next poll.
 
 ### Batching
 

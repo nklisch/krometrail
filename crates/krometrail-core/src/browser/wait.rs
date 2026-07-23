@@ -119,9 +119,12 @@ enum WaitConditionWire {
         case_sensitive: bool,
     },
     Semantic {
-        /// Satisfied when the query matches at least one node (`present`) or none (`absent`).
-        /// Uses the same query language as `query_page`.
-        /// Semantic waits poll no more often than once per 100 milliseconds.
+        /// Uses the same query language as `query_page`, but matches over the full acquired
+        /// accessibility tree of the selected page's main document, including non-actionable
+        /// status, alert, heading, and text nodes; `query_page` returns actionable references only.
+        /// `present` means at least one matching node and `absent` means none; the result reports
+        /// the outcome and match count but never carries a reference. Semantic waits poll no more
+        /// often than once per 100 milliseconds.
         query: SemanticQuery,
         #[serde(default)]
         presence: WaitPresence,

@@ -22,6 +22,7 @@
   <input id="editable" aria-label="Editable target" value="ready">
   <input id="check" aria-label="Check target" type="checkbox">
   <button id="replaceable">Replaceable target</button>
+  <div id="delayed-status" class="hidden" role="status"></div>
   <p id="delayed-text">waiting</p>
   <output id="count">0</output>
   <img id="network-image" alt="network marker">
@@ -33,6 +34,7 @@
         finiteRequestsScheduled: 0,
       };
       const dynamic = document.querySelector('#dynamic-button');
+      const status = document.querySelector('#delayed-status');
       const text = document.querySelector('#delayed-text');
       const check = document.querySelector('#check');
 
@@ -40,14 +42,22 @@
         state.ready = false;
         dynamic.classList.add('hidden');
         dynamic.disabled = true;
+        status.classList.add('hidden');
+        status.textContent = '';
         text.textContent = 'waiting';
         check.checked = false;
         setTimeout(() => {
           dynamic.classList.remove('hidden');
           dynamic.disabled = false;
           check.checked = true;
+          status.textContent = 'delayed status ready';
+          status.classList.remove('hidden');
           text.textContent = 'delayed text ready';
           state.ready = true;
+          setTimeout(() => {
+            status.textContent = '';
+            status.classList.add('hidden');
+          }, 400);
         }, 400);
       });
 

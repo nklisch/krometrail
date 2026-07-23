@@ -177,10 +177,12 @@ For text waits, omitting `locator` scopes the match to the full document-body te
 `match_mode: "contains"` for an unscoped substring.
 
 For a control identified by role and accessible name, use the semantic wait condition so waiting
-and targeting share the same query language. It is satisfied by any matching node for `present`
-or by no matching nodes for `absent`; it returns observed query evidence but no actionable
-reference, so follow it with `query_page` before acting. Semantic waits poll no more often than
-once per 100 milliseconds. For example:
+and targeting share the same query language. It observes the full acquired accessibility tree, so
+it can also wait on non-actionable content such as toasts, status regions, and alerts. It is
+satisfied by any matching node for `present` or by no matching nodes for `absent`; unlike
+`query_page`, which returns actionable references, it remains reference-free, so follow it with
+`query_page` before acting. Semantic waits poll no more often than once per 100 milliseconds. For
+example:
 
 ```json
 {"condition":"semantic","value":{"query":{"kind":"role","role":"button","name":{"value":"Save","mode":"contains"}},"presence":"present"}}

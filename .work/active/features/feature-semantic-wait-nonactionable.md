@@ -1,7 +1,7 @@
 ---
 id: feature-semantic-wait-nonactionable
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -384,3 +384,14 @@ scripts/check-wire-enum-schemas.sh`, `cargo check/test/clippy --workspace
 - **Cost.** None expected: acquisition is unchanged; matching already
   iterates the bounded snapshot (`MAX_SNAPSHOT_NODES`), the probe merely
   stops skipping non-reference nodes.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the feature is one cohesive CDP/core contract change with a shared snapshot seam and one owning test surface.
+- Review weight: standard default; the item remains at `stage: implementing` per the caller's instruction and was not committed or advanced to review.
+- Files changed: `.work/active/features/feature-semantic-wait-nonactionable.md`, `crates/krometrail-cdp/src/control/snapshot.rs`, `crates/krometrail-cdp/src/control/wait.rs`, `crates/krometrail-cdp/tests/waits_and_batches.rs`, `crates/krometrail-core/src/browser/wait.rs`, `docs/SPEC.md`, `plugin/skills/krometrail/SKILL.md`, `tests/fixtures/browser/waits-and-batches/index.html`.
+- Tests added: registry probe coverage for 0/1/many full-tree outcomes, actionable/query scope divergence, relaxed candidates over non-actionable nodes with cap saturation, DOM-semantic guard, and node-limit parity; scripted present/absent status waits; opt-in real-Chrome delayed status qualification.
+- Simplification: extracted the shared active-snapshot query prelude and removed wait-side `QueryPageRequest`, `DEFAULT_SEMANTIC_MATCH_LIMIT`, retained-match truncation, and result-shape coupling.
+- Discrepancies from design: generated `docs/public/llms-full.txt` was regenerated successfully with `bun run docs:build` and had no content diff; no other deviations.
+- Adjacent issues parked: none.
+- Verification: `cargo fmt --all -- --check`; `bash scripts/check-wire-enum-schemas.sh`; `cargo check --workspace --all-targets --locked`; `cargo test --workspace --all-targets --locked`; and `cargo clippy --workspace --all-targets --locked -- -D warnings` all passed using `CARGO_TARGET_DIR=/tmp/krometrail-target`, serialized build jobs for the disk budget, and approved local transport permissions for the environment-sensitive tests.

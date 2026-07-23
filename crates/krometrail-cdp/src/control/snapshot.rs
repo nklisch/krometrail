@@ -4,9 +4,10 @@ use krometrail_core::{
     AccessibleProperty, AccessibleValue, BrowserOperationResult, CssPoint, CssRect, CssSize,
     CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, ExpectationTargetRole,
     KrometrailError, MAX_SEMANTIC_QUERY_TEXT_BYTES, NodeReference, NodeStateFacts, NonEmptyText,
-    ObservationContext, PageSnapshot, QueryPageRequest, QueryPageResult, ResolvedReferenceGeometry,
-    Result, RetryAdvice, SemanticMatch, SemanticQuery, SnapshotGeneration, SnapshotNode,
-    SnapshotNodeId, SnapshotPageAnchor, SnapshotPageRequest, TargetId,
+    ObservationContext, PageSnapshot, QueryPageRequest, QueryPageResult, RelaxedMatchCandidates,
+    ResolvedReferenceGeometry, Result, RetryAdvice, SemanticMatch, SemanticQuery,
+    SemanticQueryOutcome, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageAnchor,
+    SnapshotPageRequest, TargetId,
 };
 use serde_json::{Value, json};
 
@@ -118,6 +119,13 @@ struct TargetSnapshotRegistry {
 #[derive(Default)]
 pub(crate) struct SnapshotRegistry {
     targets: HashMap<TargetId, TargetSnapshotRegistry>,
+}
+
+#[derive(Debug)]
+pub(super) struct SemanticPresenceProbe {
+    pub outcome: SemanticQueryOutcome,
+    pub match_count: u32,
+    pub relaxed_match_candidates: Option<RelaxedMatchCandidates>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -377,6 +385,27 @@ impl PageControl {
         Ok(BrowserOperationResult::QueryPage(Box::new(result)))
     }
 
+    pub(super) async fn probe_semantic_presence(
+        &mut self,
+        transport: &dyn CdpTransport,
+        bound: &BoundTarget,
+        query: &SemanticQuery,
+        started_at: krometrail_core::SessionTime,
+    ) -> Result<SemanticPresenceProbe> {
+        let snapshot = self
+            .capture_snapshot_for_frame(
+                transport,
+                bound,
+                started_at,
+                query.requires_dom_semantics(),
+                false,
+                None,
+                None,
+            )
+            .await?;
+        self.snapshots.probe_presence(bound, query, &snapshot)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn capture_snapshot_for_frame(
         &mut self,
@@ -573,12 +602,12 @@ impl SnapshotRegistry {
         target.active = Some(active);
     }
 
-    fn query(
+    fn active_for_query(
         &self,
         bound: &BoundTarget,
-        request: &QueryPageRequest,
         snapshot: &PageSnapshot,
-    ) -> Result<QueryPageResult> {
+        requires_dom_semantics: bool,
+    ) -> Result<&ActiveSnapshot> {
         let active = self
             .targets
             .get(&bound.target_id)
@@ -588,7 +617,7 @@ impl SnapshotRegistry {
                     && active.attachment_generation == bound.attachment_generation
             })
             .ok_or_else(|| stale(bound.target_id, "semantic snapshot is no longer active"))?;
-        if request.query.requires_dom_semantics() && !active.dom_semantics_captured {
+        if requires_dom_semantics && !active.dom_semantics_captured {
             return Err(operation_error(
                 ErrorCode::PageObservationFailed,
                 bound.target_id,
@@ -601,6 +630,17 @@ impl SnapshotRegistry {
                 .saturating_add(u64::from(snapshot.omitted_node_count));
             return Err(snapshot_node_limit_error(bound.target_id, actual, true));
         }
+        Ok(active)
+    }
+
+    fn query(
+        &self,
+        bound: &BoundTarget,
+        request: &QueryPageRequest,
+        snapshot: &PageSnapshot,
+    ) -> Result<QueryPageResult> {
+        let active =
+            self.active_for_query(bound, snapshot, request.query.requires_dom_semantics())?;
         if let Some(scope) = request.scope {
             self.active_reference_backend(bound, scope)?;
         }
@@ -685,6 +725,58 @@ impl SnapshotRegistry {
             relaxed_match_candidates,
             uncontained_match_candidates,
         )
+    }
+
+    pub(super) fn probe_presence(
+        &self,
+        bound: &BoundTarget,
+        query: &SemanticQuery,
+        snapshot: &PageSnapshot,
+    ) -> Result<SemanticPresenceProbe> {
+        let active = self.active_for_query(bound, snapshot, query.requires_dom_semantics())?;
+        let evaluate = |query: &SemanticQuery, node: &SnapshotNode| {
+            semantic_query_matches(
+                query,
+                node,
+                active
+                    .semantic
+                    .get(&node.id)
+                    .unwrap_or(&SemanticNodeMetadata::default()),
+                &active.parent_by_node,
+                &active.semantic,
+                &snapshot.nodes,
+            )
+        };
+        let match_count = snapshot
+            .nodes
+            .iter()
+            .filter(|node| evaluate(query, node))
+            .fold(0_u32, |count, _| count.saturating_add(1));
+        let outcome = match match_count {
+            0 => SemanticQueryOutcome::NoMatch,
+            1 => SemanticQueryOutcome::Unique,
+            _ => SemanticQueryOutcome::Ambiguous,
+        };
+        let relaxed_match_candidates = if match_count == 0 {
+            query.relaxed_to_contains().map(|relaxed| {
+                let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
+                let count = snapshot
+                    .nodes
+                    .iter()
+                    .filter(|node| evaluate(&relaxed, node))
+                    .take(limit)
+                    .count();
+                RelaxedMatchCandidates::new(count)
+            })
+        } else {
+            None
+        };
+
+        Ok(SemanticPresenceProbe {
+            outcome,
+            match_count,
+            relaxed_match_candidates,
+        })
     }
 
     pub(crate) fn retain_targets(&mut self, live: impl Iterator<Item = TargetId>) {
@@ -2595,6 +2687,189 @@ mod tests {
             SessionId::from_uuid(uuid::Uuid::from_u128(2)),
             SessionOrigin::new(ObservedTime::from_nanos(0)),
         )
+    }
+
+    fn status_registry_fixture(
+        status_names: &[&str],
+        dom_semantics_captured: bool,
+        omitted_node_count: u32,
+    ) -> (SnapshotRegistry, BoundTarget, PageSnapshot) {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root = SnapshotNodeId::new(1).unwrap();
+        let nodes = std::iter::once(SnapshotNode {
+            id: root,
+            parent: None,
+            depth: 0,
+            role: "document".into(),
+            name: None,
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+            document_rect: None,
+        })
+        .chain(status_names.iter().enumerate().map(|(index, name)| {
+            let id = SnapshotNodeId::new(u32::try_from(index + 2).unwrap()).unwrap();
+            SnapshotNode {
+                id,
+                parent: Some(root),
+                depth: 1,
+                role: "status".into(),
+                name: Some((*name).to_owned()),
+                value: None,
+                description: None,
+                properties: vec![],
+                actionable: false,
+                reference: None,
+                document_rect: None,
+            }
+        }))
+        .collect::<Vec<_>>();
+        let context = ObservationContext::new(
+            krometrail_core::SessionId::from_uuid(uuid::Uuid::from_u128(12)),
+            target(),
+            1,
+            krometrail_core::SessionTime::ZERO,
+            krometrail_core::SessionTime::ZERO,
+        )
+        .unwrap();
+        let snapshot = PageSnapshot::new(context, generation, nodes, omitted_node_count).unwrap();
+        let bound = frame_bound();
+        let mut registry = SnapshotRegistry::default();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: bound.attachment_generation,
+                document: DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                frame: None,
+                bindings: HashMap::new(),
+                node_by_backend: HashMap::new(),
+                semantic: HashMap::new(),
+                parent_by_node: snapshot
+                    .nodes
+                    .iter()
+                    .map(|node| (node.id, node.parent))
+                    .collect(),
+                dom_semantics_captured,
+                next_node_id: u32::try_from(snapshot.nodes.len()).unwrap(),
+            },
+        );
+        (registry, bound, snapshot)
+    }
+
+    fn status_query(name: Option<krometrail_core::SemanticTextMatch>) -> SemanticQuery {
+        SemanticQuery::role("status", name).unwrap()
+    }
+
+    #[test]
+    fn semantic_presence_probe_counts_full_tree_while_query_stays_actionable_only() {
+        for (status_names, expected_outcome, expected_count) in [
+            (vec![], SemanticQueryOutcome::NoMatch, 0),
+            (vec!["Ready"], SemanticQueryOutcome::Unique, 1),
+            (
+                vec!["Ready", "Still ready"],
+                SemanticQueryOutcome::Ambiguous,
+                2,
+            ),
+        ] {
+            let (registry, bound, snapshot) = status_registry_fixture(&status_names, false, 0);
+            let query = status_query(None);
+            let probe = registry.probe_presence(&bound, &query, &snapshot).unwrap();
+            assert_eq!(probe.outcome, expected_outcome);
+            assert_eq!(probe.match_count, expected_count);
+        }
+
+        let (registry, bound, snapshot) = status_registry_fixture(&["Ready"], false, 0);
+        let query = status_query(None);
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query.clone(),
+            None,
+            20,
+        )
+        .unwrap();
+        let result = registry.query(&bound, &request, &snapshot).unwrap();
+        assert_eq!(result.outcome, SemanticQueryOutcome::NoMatch);
+        assert!(result.matches.is_empty());
+        assert_eq!(
+            registry
+                .probe_presence(&bound, &query, &snapshot)
+                .unwrap()
+                .match_count,
+            1
+        );
+    }
+
+    #[test]
+    fn semantic_presence_probe_reports_relaxed_candidates_over_nonactionable_nodes() {
+        let status_names =
+            vec!["Toast ready"; usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES,) + 1];
+        let (registry, bound, snapshot) = status_registry_fixture(&status_names, false, 0);
+        let query = status_query(Some(
+            krometrail_core::SemanticTextMatch::new(
+                "Toast",
+                krometrail_core::SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap(),
+        ));
+        let probe = registry.probe_presence(&bound, &query, &snapshot).unwrap();
+        assert_eq!(probe.outcome, SemanticQueryOutcome::NoMatch);
+        assert_eq!(probe.match_count, 0);
+        assert_eq!(
+            probe.relaxed_match_candidates,
+            Some(RelaxedMatchCandidates {
+                count: krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES,
+                saturated: true,
+            })
+        );
+    }
+
+    #[test]
+    fn semantic_presence_probe_reuses_query_guards() {
+        let (registry, bound, snapshot) = status_registry_fixture(&["Ready"], false, 0);
+        let query = SemanticQuery::Text {
+            text: krometrail_core::SemanticTextMatch::new(
+                "Ready",
+                krometrail_core::SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap(),
+        };
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query.clone(),
+            None,
+            20,
+        )
+        .unwrap();
+        let query_error = registry.query(&bound, &request, &snapshot).unwrap_err();
+        let probe_error = registry
+            .probe_presence(&bound, &query, &snapshot)
+            .unwrap_err();
+        assert_eq!(query_error.code, probe_error.code);
+        assert_eq!(query_error.message, probe_error.message);
+
+        let (registry, bound, snapshot) = status_registry_fixture(&["Ready"], false, 1);
+        let query = status_query(None);
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query.clone(),
+            None,
+            20,
+        )
+        .unwrap();
+        let query_error = registry.query(&bound, &request, &snapshot).unwrap_err();
+        let probe_error = registry
+            .probe_presence(&bound, &query, &snapshot)
+            .unwrap_err();
+        assert_eq!(query_error.code, probe_error.code);
+        assert_eq!(query_error.message, probe_error.message);
     }
 
     fn frame_tree(loader_id: &str) -> Value {
