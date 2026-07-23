@@ -14,8 +14,8 @@ pub use frame::{
 pub use gap::{CaptureGap, CaptureGapReason};
 pub use retention::{
     DEFAULT_ARTIFACT_GRACE, DEFAULT_RETENTION_MAX_AGE, DEFAULT_TRIM_HIGH_WATER_PERCENT, PinChange,
-    RecordingBudgetState, RetainedPoint, RetentionLifecycle, RetentionRange, RetentionStatus,
-    SessionDeletion, StorageUsage,
+    RecordingBudgetState, RecordingTrimState, RetainedPoint, RetentionLifecycle, RetentionRange,
+    RetentionStatus, SessionDeletion, StorageUsage,
 };
 pub use session::{
     CaptureFailure, CaptureFailureStage, CaptureStatistics, CaptureStreamState,

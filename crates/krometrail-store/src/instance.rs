@@ -550,7 +550,7 @@ pub struct InstanceCensus {
     owned_root: PathBuf,
     /// This instance's own claim to be live.
     ///
-    /// The census hardcodes itself into every count — `proved_live` starts at
+    /// The census hardcodes itself into every count — `last_proven_live` starts at
     /// one, the one peer no census can miss. This field is what makes that claim
     /// true rather than merely asserted: holding the lock is exactly what a peer
     /// tests when it asks whether this root is live. Keeping the two together
@@ -565,21 +565,22 @@ pub struct InstanceCensus {
     ///
     /// `None` means the directory could not be opened then — which is the one
     /// state in which this census has no way to learn about peers at all, and
-    /// the reason `proved_live` may start above one.
+    /// the reason `last_proven_live` may start above one.
     handle: Option<InstancesDirectoryHandle>,
-    /// The highest live count this census has ever *proved*.
+    /// The live count this census most recently *proved*.
     ///
     /// Not a cache of the answer — the answer is always recomputed. This is the
-    /// floor a failed count falls back to, and it exists so that failing to
-    /// count can never be more permissive than counting. It only rises, so the
-    /// fallback share only ever narrows.
-    proved_live: AtomicU64,
+    /// fail-closed fallback for a failed count, and it exists so that failing to
+    /// count can never be more permissive than counting. A successful count may
+    /// move it in either direction: proving that a peer departed is just as
+    /// meaningful as proving that one joined.
+    last_proven_live: AtomicU64,
 }
 
 /// Peers assumed live by a census that has never once read the instances
 /// directory.
 ///
-/// The monotonic floor closes every case *after* one successful count, and the
+/// The last-proven floor closes every case *after* one successful count, and the
 /// retained descriptor closes the ordinary causes of losing that ability. What
 /// neither closes is a census whose very first enumeration fails: it has no
 /// evidence at all, and the honest floor of "this instance itself" would hand it
@@ -609,14 +610,14 @@ impl InstanceCensus {
             owned_root,
             _ownership: ownership,
             // This instance itself, which is the one peer no census can miss.
-            proved_live: AtomicU64::new(1),
+            last_proven_live: AtomicU64::new(1),
         };
         // Establish the floor from the first count rather than assuming one.
         // Only a census that cannot enumerate *at construction* fails closed;
         // every other census starts from a number it actually proved.
         if census.count_live().is_none() {
             census
-                .proved_live
+                .last_proven_live
                 .store(ASSUMED_LIVE_INSTANCES_WITHOUT_EVIDENCE, Ordering::Relaxed);
         }
         census
@@ -662,8 +663,9 @@ impl InstanceCensus {
     /// 1. The directory is read through a descriptor opened at construction, so
     ///    a permission change or a path swap after startup does not blind the
     ///    census at all. This is the ordinary case and it stays exact.
-    /// 2. If a read still fails, the count falls back to the highest count this
-    ///    census has already proved. Monotonic, so it only ever narrows.
+    /// 2. If a read still fails, the count falls back to the last count this
+    ///    census successfully proved. That preserves the last real evidence and
+    ///    never widens the share based on an enumeration failure.
     /// 3. If the census never enumerated *even once*, it has no evidence about
     ///    peers and assumes `ASSUMED_LIVE_INSTANCES_WITHOUT_EVIDENCE` of them
     ///    rather than assuming solitude.
@@ -672,9 +674,9 @@ impl InstanceCensus {
     /// least one, and each self-corrects the moment enumeration works.
     pub fn live_instances(&self) -> u64 {
         let Some(live) = self.count_live() else {
-            return self.proved_live.load(Ordering::Relaxed).max(1);
+            return self.last_proven_live.load(Ordering::Relaxed).max(1);
         };
-        self.proved_live.fetch_max(live, Ordering::Relaxed);
+        self.last_proven_live.store(live, Ordering::Relaxed);
         live
     }
 }
@@ -699,6 +701,47 @@ pub fn clear_legacy_flat_store(data_directory: &Path) -> krometrail_core::Result
     let bytes = recording_cache_bytes(data_directory);
     remove_recording_cache(data_directory)?;
     Ok(bytes)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::TempDir;
+
+    #[test]
+    fn last_proven_live_count_descends_before_a_later_enumeration_failure() {
+        if !OWNERSHIP_IS_ENFORCED {
+            return;
+        }
+
+        let data = TempDir::new().expect("temporary data directory");
+        let first = InstanceOwnership::acquire_new(data.path()).expect("first ownership");
+        let second = InstanceOwnership::acquire_new(data.path()).expect("second ownership");
+        let mut census = InstanceCensus::new(data.path(), first);
+
+        assert_eq!(census.live_instances(), 2);
+        drop(second);
+        assert_eq!(census.live_instances(), 1);
+
+        // The retained descriptor normally keeps enumeration working across this
+        // permission change. Remove it only in this private test so the fallback
+        // can be exercised after the lower count has been positively proven.
+        census.handle = None;
+        let instances = data.path().join(INSTANCES_DIRECTORY);
+        let restore = fs::metadata(&instances)
+            .expect("instances directory metadata")
+            .permissions();
+        fs::set_permissions(&instances, fs::Permissions::from_mode(0o111))
+            .expect("make enumeration unreadable");
+        if fs::read_dir(&instances).is_ok() {
+            fs::set_permissions(&instances, restore).expect("restore instances permissions");
+            return;
+        }
+
+        assert_eq!(census.live_instances(), 1);
+        fs::set_permissions(&instances, restore).expect("restore instances permissions");
+    }
 }
 
 fn recording_cache_bytes(root: &Path) -> u64 {

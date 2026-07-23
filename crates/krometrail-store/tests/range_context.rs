@@ -325,15 +325,21 @@ async fn context_derives_exact_capture_quality_gaps_warnings_and_status() {
     assert_eq!(quality.gap_summary.known_missing_frames, 3);
     assert!(quality.gap_summary.has_unknown_missing_estimate);
     assert!(quality.warnings.is_empty());
+    let start = quality.capture_status.at_range_start.as_ref().unwrap();
+    assert_eq!(start.state, CaptureStreamState::Capturing);
+    assert_eq!(start.established_at, SessionTime::from_nanos(0));
+    assert_eq!(start.attachment_generation, 1);
+    let end = quality.capture_status.at_range_end.as_ref().unwrap();
+    assert_eq!(end.state, CaptureStreamState::Suspended);
+    assert_eq!(end.established_at, SessionTime::from_nanos(50));
+    assert_eq!(end.attachment_generation, 2);
+    assert_eq!(quality.capture_status.transitions.len(), 2);
     assert_eq!(
-        quality.capture_status.at_range_start.unwrap().state,
+        quality.capture_status.transitions[0].status.state(),
         CaptureStreamState::Capturing
     );
-    assert_eq!(
-        quality.capture_status.at_range_end.unwrap().state,
-        CaptureStreamState::Suspended
-    );
-    assert_eq!(quality.capture_status.transitions.len(), 2);
+    let bound_wire = serde_json::to_value(&quality.capture_status).unwrap();
+    assert!(bound_wire["at_range_start"].get("status").is_none());
 }
 
 #[tokio::test]

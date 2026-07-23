@@ -42,3 +42,13 @@ does not depend on the grace-ordering story (reads the same latched status).
 - After a grace override, the same responses carry `ArtifactGraceOverridden`.
 - Empty store carries no note. Tone informational; may reference
   `pin_resolved_range` where relevant in plugin/docs text (not the enum).
+
+## Implementation notes
+
+- Added the two boundary-based `RetentionWarning` variants and injected them at
+  the MCP handlers for temporal range resolution, browser-event context, and
+  progressive artifact generation. Empty retained scopes omit the notes; the
+  temporal debug bundle inherits the range warnings.
+- Added `registry::tests::retention_notes_are_boundary_based_and_omitted_without_retained_evidence`.
+- Verification: MCP/core focused tests and generated schema tests passed; the
+  final locked workspace gate passed.

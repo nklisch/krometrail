@@ -479,9 +479,16 @@ pub struct CaptureStatusPoint {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CaptureStatusBound {
+    pub state: CaptureStreamState,
+    pub established_at: SessionTime,
+    pub attachment_generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CaptureStatusEvidence {
-    pub at_range_start: Option<CaptureStatusPoint>,
-    pub at_range_end: Option<CaptureStatusPoint>,
+    pub at_range_start: Option<CaptureStatusBound>,
+    pub at_range_end: Option<CaptureStatusBound>,
     pub transitions: Vec<CaptureStatusPoint>,
 }
 
@@ -1283,7 +1290,9 @@ fn capture_status_evidence(
     let at_range_start = samples
         .at_or_before()
         .map(|event| capture_status_point(event, range))
-        .transpose()?;
+        .transpose()?
+        .as_ref()
+        .map(capture_status_bound);
     let transitions = samples
         .in_range()
         .iter()
@@ -1291,7 +1300,7 @@ fn capture_status_evidence(
         .collect::<Result<Vec<_>>>()?;
     let at_range_end = transitions
         .last()
-        .cloned()
+        .map(capture_status_bound)
         .or_else(|| at_range_start.clone());
     let mut warnings = Vec::new();
     if !unavailable.is_empty() {
@@ -1312,6 +1321,14 @@ fn capture_status_evidence(
         },
         warnings,
     ))
+}
+
+fn capture_status_bound(point: &CaptureStatusPoint) -> CaptureStatusBound {
+    CaptureStatusBound {
+        state: point.state,
+        established_at: point.session_time,
+        attachment_generation: point.attachment_generation,
+    }
 }
 
 fn capture_status_point(event: &BrowserEvent, range: &ResolvedRange) -> Result<CaptureStatusPoint> {

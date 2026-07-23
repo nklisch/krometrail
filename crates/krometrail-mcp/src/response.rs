@@ -10,10 +10,10 @@ use krometrail_core::{
     ObservationPart, PageAssetInventory, PageAssetKind, PageAssetMetadata, PageOperationOutcome,
     PageOperationResult, PageSnapshot, ProfileRef, ProgressiveEvidence, ProgressiveEvidenceContext,
     ProgressiveEvidenceRequest, ProgressiveEvidenceResult, RecordingBudgetState,
-    ResolvedRangeHandleId, RetrieveArtifactRequest, RetryAdvice, ScreenshotMetadata, SessionId,
-    SessionTime, ShutdownQuality, SourceFrameBatch, SourceFrameHandle, TargetId,
-    TemporalDebugBundle, TemporalRangeAnchorKind, TemporalRangeResolution,
-    TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
+    RecordingTrimState, ResolvedRangeHandleId, RetrieveArtifactRequest, RetryAdvice,
+    ScreenshotMetadata, SessionId, SessionTime, ShutdownQuality, SourceFrameBatch,
+    SourceFrameHandle, TargetId, TemporalDebugBundle, TemporalRangeAnchorKind,
+    TemporalRangeResolution, TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
 use rmcp::model::{CallToolResult, Content, RawResource};
@@ -110,8 +110,12 @@ pub(crate) struct ConciseCaptureStatus {
 pub(crate) struct ConciseRetentionStatus {
     pub used_bytes: u64,
     pub configured_bytes: u64,
+    pub effective_bytes: u64,
+    pub live_instances: u64,
     pub pinned_bytes: u64,
     pub budget_state: RecordingBudgetState,
+    pub trim_state: RecordingTrimState,
+    pub grace_override_active: bool,
     pub recording_blocked: bool,
     pub retained_bounds: Option<RetainedBounds>,
 }
@@ -721,8 +725,12 @@ pub(crate) fn map_browser_status(
                     .total_bytes()
                     .map_err(|_| ResponseInvariantError)?,
                 configured_bytes: status.retention.configured_budget.get(),
+                effective_bytes: status.retention.effective_budget.get(),
+                live_instances: status.retention.live_instances,
                 pinned_bytes: status.retention.pinned_usage_bytes,
                 budget_state: status.retention.budget_state,
+                trim_state: status.retention.trim_state,
+                grace_override_active: status.retention.grace_override_active,
                 recording_blocked: status.retention.recording_blocked,
                 retained_bounds: RetainedBounds::project(&status.retention),
             };
@@ -3598,11 +3606,15 @@ mod tests {
     fn pin_retention(pinned_usage_bytes: u64) -> RetentionStatus {
         RetentionStatus::new(
             DiskBudgetBytes::new(10_000).unwrap(),
+            DiskBudgetBytes::new(10_000).unwrap(),
+            1,
             StorageUsage::new(500, 10, 0, 0, 0, 0, 0).unwrap(),
             pinned_usage_bytes,
             None,
             None,
             RecordingBudgetState::Available,
+            RecordingTrimState::Steady,
+            false,
             false,
             false,
             0,

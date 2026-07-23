@@ -578,11 +578,15 @@ mod tests {
         let budget = krometrail_core::DiskBudgetBytes::new(10).unwrap();
         status.retention = RetentionStatus::new(
             budget,
+            budget,
+            1,
             krometrail_core::StorageUsage::new(10, 0, 0, 0, 0, 0, 0).unwrap(),
             10,
             None,
             None,
             krometrail_core::RecordingBudgetState::PausedBudget,
+            krometrail_core::RecordingTrimState::Steady,
+            false,
             true,
             true,
             0,
@@ -613,6 +617,13 @@ mod tests {
         assert_eq!(
             concise.response.result["retention"]["recording_blocked"],
             true
+        );
+        assert_eq!(concise.response.result["retention"]["effective_bytes"], 10);
+        assert_eq!(concise.response.result["retention"]["live_instances"], 1);
+        assert_eq!(concise.response.result["retention"]["trim_state"], "steady");
+        assert_eq!(
+            concise.response.result["retention"]["grace_override_active"],
+            false
         );
         assert!(concise.response.result.get("compatibility").is_none());
 
@@ -2567,11 +2578,15 @@ mod tests {
         let retention = |oldest, newest| {
             RetentionStatus::new(
                 krometrail_core::DiskBudgetBytes::default(),
+                krometrail_core::DiskBudgetBytes::default(),
+                1,
                 krometrail_core::StorageUsage::new(10, 0, 0, 0, 0, 0, 0).unwrap(),
                 0,
                 Some(oldest),
                 Some(newest),
                 krometrail_core::RecordingBudgetState::Available,
+                krometrail_core::RecordingTrimState::Steady,
+                false,
                 false,
                 false,
                 0,

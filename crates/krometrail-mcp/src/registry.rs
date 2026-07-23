@@ -12,11 +12,11 @@ use krometrail_core::{
     BrowserOperationRequest, CancellationSignal, CapabilityId, CurrentReferenceGeometry, ErrorCode,
     KrometrailError, LaunchBrowser, NonEmptyText, OperationExposure, OperationMutability,
     PortFuture, ProgressiveEvidenceContext, ProgressiveEvidenceOperationKind,
-    ProgressiveEvidenceRequest, ResolvedRange, ResolvedRangeHandleId, Result, RetryAdvice,
-    TEMPORAL_CONTEXT_OPERATION_REGISTRY, TEMPORAL_DEBUG_BUNDLE_OPERATION,
-    TEMPORAL_RANGE_RESOLUTION_OPERATION, TEMPORAL_VIDEO_OPERATION, TemporalContextOperationKind,
-    TemporalDebugBundleContext, TemporalDebugBundleRequest, TemporalQueryRequest,
-    TemporalVideoGenerationRequest,
+    ProgressiveEvidenceRequest, ProgressiveEvidenceResult, ResolvedRange, ResolvedRangeHandleId,
+    Result, RetentionStatus, RetentionWarning, RetryAdvice, TEMPORAL_CONTEXT_OPERATION_REGISTRY,
+    TEMPORAL_DEBUG_BUNDLE_OPERATION, TEMPORAL_RANGE_RESOLUTION_OPERATION, TEMPORAL_VIDEO_OPERATION,
+    TemporalContextOperationKind, TemporalDebugBundleContext, TemporalDebugBundleRequest,
+    TemporalQueryRequest, TemporalVideoGenerationRequest,
 };
 use rmcp::{
     handler::server::tool::{ToolCallContext, ToolRoute, ToolRouter},
@@ -599,7 +599,11 @@ async fn call_resolve_temporal_range(
         ))
         .await;
     match result {
-        Ok(result) => {
+        Ok(mut result) => {
+            if let Some(status) = retention_status(sessions).await {
+                append_retention_warnings(&mut result.capture_quality.retention_warnings, &status);
+                append_retention_warnings(&mut result.range.retention_warnings, &status);
+            }
             let handle = match budget
                 .run(dependencies.range_handles.register(result.range.clone()))
                 .await
@@ -687,7 +691,10 @@ async fn call_progressive(
         ))
         .await;
     match result {
-        Ok(result) => {
+        Ok(mut result) => {
+            if let Some(status) = retention_status(sessions).await {
+                append_progressive_retention_warnings(&mut result, &status);
+            }
             let health = capture_health(sessions).await;
             map_progressive_result(
                 name,
@@ -761,7 +768,11 @@ async fn call_context(
         )
         .await;
     match result {
-        Ok(value) => {
+        Ok(mut value) => {
+            if let Some(status) = retention_status(sessions).await {
+                append_retention_warnings(&mut value.capture_quality.retention_warnings, &status);
+                append_retention_warnings(&mut value.range.retention_warnings, &status);
+            }
             let health = capture_health(sessions).await;
             map_temporal_context_result(name, value, preference)
                 .map(|mapped| mapped.with_range_handle(handle))
@@ -1049,6 +1060,31 @@ async fn capture_health(
     sessions.capture_statuses().await.unwrap_or_default()
 }
 
+async fn retention_status(sessions: &BrowserSessionOwner) -> Option<RetentionStatus> {
+    sessions.status().await.ok().map(|status| status.retention)
+}
+
+fn append_retention_warnings(warnings: &mut Vec<RetentionWarning>, status: &RetentionStatus) {
+    let Some(oldest_retained) = status.oldest_retained.map(|point| point.session_time) else {
+        return;
+    };
+    if status.trim_state == krometrail_core::RecordingTrimState::Trimming {
+        warnings.push(RetentionWarning::InSessionTrimmingActive { oldest_retained });
+    }
+    if status.grace_override_active {
+        warnings.push(RetentionWarning::ArtifactGraceOverridden { oldest_retained });
+    }
+}
+
+fn append_progressive_retention_warnings(
+    result: &mut ProgressiveEvidenceResult,
+    status: &RetentionStatus,
+) {
+    if let ProgressiveEvidenceResult::GenerateArtifacts(generation) = result {
+        append_retention_warnings(&mut generation.range.retention_warnings, status);
+    }
+}
+
 fn tagged_request(
     operation: &'static str,
     arguments: Option<rmcp::model::JsonObject>,
@@ -1178,6 +1214,55 @@ mod tests {
         register_route_name(&mut names, "duplicate", "first").unwrap();
         assert!(register_route_name(&mut names, "duplicate", "second").is_err());
         assert!(generated_input_schema(schemars::schema_for!(String)).is_err());
+    }
+
+    #[test]
+    fn retention_notes_are_boundary_based_and_omitted_without_retained_evidence() {
+        let budget = krometrail_core::DiskBudgetBytes::new(100).unwrap();
+        let point = krometrail_core::RetainedPoint {
+            session_id: krometrail_core::SessionId::from_uuid(uuid::Uuid::from_u128(1)),
+            target_id: krometrail_core::TargetId::from_uuid(uuid::Uuid::from_u128(2)),
+            session_time: krometrail_core::SessionTime::from_nanos(42),
+        };
+        let status = krometrail_core::RetentionStatus::new(
+            budget,
+            budget,
+            1,
+            krometrail_core::StorageUsage::default(),
+            0,
+            Some(point),
+            Some(point),
+            krometrail_core::RecordingBudgetState::Available,
+            krometrail_core::RecordingTrimState::Trimming,
+            true,
+            false,
+            false,
+            0,
+            0,
+            0,
+        )
+        .unwrap();
+        let mut warnings = Vec::new();
+        append_retention_warnings(&mut warnings, &status);
+        assert!(matches!(
+            warnings.as_slice(),
+            [
+                krometrail_core::RetentionWarning::InSessionTrimmingActive {
+                    oldest_retained
+                },
+                krometrail_core::RetentionWarning::ArtifactGraceOverridden {
+                    oldest_retained: overridden
+                }
+            ] if *oldest_retained == krometrail_core::SessionTime::from_nanos(42)
+                && *overridden == krometrail_core::SessionTime::from_nanos(42)
+        ));
+
+        let mut empty_warnings = Vec::new();
+        append_retention_warnings(
+            &mut empty_warnings,
+            &krometrail_core::RetentionStatus::empty(budget),
+        );
+        assert!(empty_warnings.is_empty());
     }
 
     #[test]

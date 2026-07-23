@@ -628,11 +628,15 @@ mod tests {
     fn retention(pinned: u64) -> RetentionStatus {
         RetentionStatus::new(
             DiskBudgetBytes::new(10_000).unwrap(),
+            DiskBudgetBytes::new(10_000).unwrap(),
+            1,
             StorageUsage::new(10, 0, 0, 0, 0, 0, 0).unwrap(),
             pinned,
             None,
             None,
             RecordingBudgetState::Available,
+            krometrail_core::RecordingTrimState::Steady,
+            false,
             false,
             false,
             0,

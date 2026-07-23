@@ -43,3 +43,14 @@ Unit 3).
   agent-visible `RetentionWarning::ArtifactGraceOverridden`.
 - Pinned graced segment is never evicted, even in the override path.
 - One reclaim walk preserved; durability/journal path untouched.
+
+## Implementation notes
+
+- Added grace-aware artifact and backing-segment candidate filtering, preserving
+  the unified artifact → segment/event reclaim walk and the existing deletion
+  journal/accumulator barriers. Grace is dropped only for the final pressure
+  fallback; the override is latched for status and retains the existing
+  `retention.artifact_grace_overridden` event.
+- Added `index::retention::tests::artifact_grace_skips_recent_publications_and_keeps_retention_order`.
+- Verification: focused store tests passed, including the new grace-order test;
+  the final locked workspace gate passed.

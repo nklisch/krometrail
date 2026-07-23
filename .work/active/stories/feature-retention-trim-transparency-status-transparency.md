@@ -42,3 +42,18 @@ Units` → Unit 2).
   `retained_bounds`.
 - `bash scripts/check-wire-enum-schemas.sh` clean; schema.rs retention assertions
   updated. Tone informational.
+
+## Implementation notes
+
+- Added the validated `RecordingTrimState` contract and retention fields for
+  effective budget, live-instance count, trim state, and grace override state;
+  `empty()` remains a one-instance steady status.
+- Store status derives the effective share and high-water trim state without
+  taking the mutation gate; concise and full browser status projections expose
+  the same canonical values.
+- Added `retention_status_reports_effective_share_and_trim_state` and extended
+  `concise_status_retains_capture_failure_and_retention_pressure` to pin the
+  wire projection.
+- Verification: `cargo fmt --all -- --check`; `bash scripts/check-wire-enum-schemas.sh`;
+  `cargo check -p krometrail-core -p krometrail-store -p krometrail-mcp --all-targets --locked`;
+  `cargo test -p krometrail-core -p krometrail-store -p krometrail-mcp --all-targets --locked` passed.

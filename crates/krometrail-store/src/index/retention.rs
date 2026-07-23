@@ -374,7 +374,7 @@ impl SqliteIndex {
         &self,
         excluded: Option<ArtifactId>,
     ) -> krometrail_core::Result<Option<ArtifactCandidate>> {
-        self.oldest_reclaimable_artifact(excluded, None)
+        self.oldest_reclaimable_artifact(excluded, None, None)
     }
 
     /// Selects the next evictable artifact, optionally restricted to expired ones.
@@ -385,6 +385,7 @@ impl SqliteIndex {
         &self,
         excluded: Option<ArtifactId>,
         created_before_unix_ms: Option<i64>,
+        artifact_grace_since_unix_ms: Option<i64>,
     ) -> krometrail_core::Result<Option<ArtifactCandidate>> {
         let connection = self.connection()?;
         let raw = connection
@@ -392,10 +393,12 @@ impl SqliteIndex {
                 "SELECT artifact_id, session_id, relative_path, byte_len_be FROM artifacts \
                  WHERE (?1 IS NULL OR artifact_id!=?1) \
                    AND (?2 IS NULL OR created_unix_ms < ?2) \
+                   AND (?3 IS NULL OR created_unix_ms < ?3) \
                  ORDER BY start_time_be ASC, artifact_id ASC LIMIT 1",
                 params![
                     excluded.map(|id| codec::id(id.as_uuid()).to_vec()),
-                    created_before_unix_ms
+                    created_before_unix_ms,
+                    artifact_grace_since_unix_ms,
                 ],
                 |row| {
                     Ok((
@@ -1082,6 +1085,78 @@ mod tests {
         assert_eq!(
             index.oldest_unpinned_segment().unwrap().unwrap().segment_id,
             first.segment_id
+        );
+    }
+
+    #[test]
+    fn artifact_grace_skips_recent_publications_and_keeps_retention_order() {
+        let directory = TempDir::new().unwrap();
+        let index = index(&directory);
+        let session = SessionId::from_uuid(Uuid::from_u128(10));
+        let target = TargetId::from_uuid(Uuid::from_u128(20));
+        let connection = index.connection().unwrap();
+        connection
+            .execute(
+                "INSERT INTO sessions(session_id) VALUES (?1)",
+                rusqlite::params![codec::id(session.as_uuid()).to_vec()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO targets(session_id,target_id) VALUES (?1,?2)",
+                rusqlite::params![
+                    codec::id(session.as_uuid()).to_vec(),
+                    codec::id(target.as_uuid()).to_vec()
+                ],
+            )
+            .unwrap();
+        for (artifact, start, created) in [(1_u128, 1_u64, 110_i64), (2, 2, 90)] {
+            let artifact_id = ArtifactId::from_uuid(Uuid::from_u128(artifact));
+            let bytes = [u8::try_from(artifact).unwrap(); 32];
+            connection
+                .execute(
+                    "INSERT INTO artifacts(
+                        artifact_id,session_id,target_id,state,kind,start_time_be,end_time_be,
+                        manifest_json,manifest_hash,media_type,output_hash,relative_path,byte_len_be,
+                        cache_key,source_fingerprint,parameter_hash,visual_epoch_hash,
+                        cache_schema_version,adapter_version,generator_name,generator_version,created_unix_ms
+                     ) VALUES (?1,?2,?3,'ready','storyboard',?4,?5,'{}',?6,'image/png',?7,?8,?9,?10,?11,?12,?13,1,'adapter','generator','1',?14)",
+                    rusqlite::params![
+                        codec::id(artifact_id.as_uuid()).to_vec(),
+                        codec::id(session.as_uuid()).to_vec(),
+                        codec::id(target.as_uuid()).to_vec(),
+                        codec::u64_blob(start).to_vec(),
+                        codec::u64_blob(start + 1).to_vec(),
+                        bytes.to_vec(),
+                        bytes.to_vec(),
+                        format!("{artifact}.png"),
+                        codec::u64_blob(10).to_vec(),
+                        [artifact as u8; 32].to_vec(),
+                        [artifact as u8 + 10; 32].to_vec(),
+                        [artifact as u8 + 20; 32].to_vec(),
+                        [artifact as u8 + 30; 32].to_vec(),
+                        created,
+                    ],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        assert_eq!(
+            index
+                .oldest_reclaimable_artifact(None, None, None)
+                .unwrap()
+                .unwrap()
+                .artifact_id,
+            ArtifactId::from_uuid(Uuid::from_u128(1))
+        );
+        assert_eq!(
+            index
+                .oldest_reclaimable_artifact(None, None, Some(100))
+                .unwrap()
+                .unwrap()
+                .artifact_id,
+            ArtifactId::from_uuid(Uuid::from_u128(2))
         );
     }
 }

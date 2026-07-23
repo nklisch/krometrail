@@ -2284,11 +2284,15 @@ mod tests {
     fn retention(pinned_usage_bytes: u64) -> RetentionStatus {
         RetentionStatus::new(
             DiskBudgetBytes::new(10_000).unwrap(),
+            DiskBudgetBytes::new(10_000).unwrap(),
+            1,
             StorageUsage::new(500, 10, 0, 0, 0, 0, 0).unwrap(),
             pinned_usage_bytes,
             None,
             None,
             RecordingBudgetState::Available,
+            crate::RecordingTrimState::Steady,
+            false,
             false,
             false,
             0,

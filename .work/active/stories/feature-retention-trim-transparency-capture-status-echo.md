@@ -42,3 +42,15 @@ parent body (`## Architectural choice` → "capture_status echo",
 - A range spanning a mid-session Capturing→Paused transition reports it in
   `transitions` and the correct bound state at each end.
 - `bash scripts/check-wire-enum-schemas.sh` clean; no fabricated stats.
+
+## Implementation notes
+
+- Replaced the counter-bearing range-bound projections with exported
+  `CaptureStatusBound { state, established_at, attachment_generation }` while
+  retaining full `CaptureStatusPoint` transitions. The context fixture pins
+  both bound timestamps/generations and verifies serialized bounds contain no
+  frozen status counters.
+- Test: `range_context::context_derives_exact_capture_quality_gaps_warnings_and_status`.
+- Verification: the E schema checkpoint (`bash scripts/check-wire-enum-schemas.sh`
+  plus generated MCP schema tests) passed, followed by the final locked
+  workspace gate.

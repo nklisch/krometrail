@@ -115,6 +115,13 @@ pub enum RecordingBudgetState {
     PausedBudget,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordingTrimState {
+    Steady,
+    Trimming,
+}
+
 /// Complete retention lifecycle for the managed recording directory.
 ///
 /// Size pressure alone is not a lifecycle: a store that only reclaims at the
@@ -209,11 +216,15 @@ pub struct RetainedPoint {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct RetentionStatus {
     pub configured_budget: DiskBudgetBytes,
+    pub effective_budget: DiskBudgetBytes,
+    pub live_instances: u64,
     pub usage: StorageUsage,
     pub pinned_usage_bytes: u64,
     pub oldest_retained: Option<RetainedPoint>,
     pub newest_retained: Option<RetainedPoint>,
     pub budget_state: RecordingBudgetState,
+    pub trim_state: RecordingTrimState,
+    pub grace_override_active: bool,
     pub eviction_blocked: bool,
     pub recording_blocked: bool,
     pub open_segment_count: u64,
@@ -225,11 +236,15 @@ impl RetentionStatus {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         configured_budget: DiskBudgetBytes,
+        effective_budget: DiskBudgetBytes,
+        live_instances: u64,
         usage: StorageUsage,
         pinned_usage_bytes: u64,
         oldest_retained: Option<RetainedPoint>,
         newest_retained: Option<RetainedPoint>,
         budget_state: RecordingBudgetState,
+        trim_state: RecordingTrimState,
+        grace_override_active: bool,
         eviction_blocked: bool,
         recording_blocked: bool,
         open_segment_count: u64,
@@ -237,6 +252,12 @@ impl RetentionStatus {
         open_segment_overhead_limit_bytes: u64,
     ) -> Result<Self> {
         usage.validate()?;
+        if effective_budget.get() > configured_budget.get() {
+            return Err(invalid("effective budget exceeds configured budget"));
+        }
+        if live_instances == 0 {
+            return Err(invalid("live instance count must be at least one"));
+        }
         let total = usage.total_bytes()?;
         if pinned_usage_bytes > total {
             return Err(invalid("pinned usage exceeds total usage"));
@@ -274,11 +295,15 @@ impl RetentionStatus {
         }
         Ok(Self {
             configured_budget,
+            effective_budget,
+            live_instances,
             usage,
             pinned_usage_bytes,
             oldest_retained,
             newest_retained,
             budget_state,
+            trim_state,
+            grace_override_active,
             eviction_blocked,
             recording_blocked,
             open_segment_count,
@@ -290,11 +315,15 @@ impl RetentionStatus {
     pub fn empty(configured_budget: DiskBudgetBytes) -> Self {
         Self::new(
             configured_budget,
+            configured_budget,
+            1,
             StorageUsage::default(),
             0,
             None,
             None,
             RecordingBudgetState::Available,
+            RecordingTrimState::Steady,
+            false,
             false,
             false,
             0,
@@ -313,11 +342,15 @@ impl<'de> Deserialize<'de> for RetentionStatus {
         #[derive(Deserialize)]
         struct Wire {
             configured_budget: DiskBudgetBytes,
+            effective_budget: DiskBudgetBytes,
+            live_instances: u64,
             usage: StorageUsage,
             pinned_usage_bytes: u64,
             oldest_retained: Option<RetainedPoint>,
             newest_retained: Option<RetainedPoint>,
             budget_state: RecordingBudgetState,
+            trim_state: RecordingTrimState,
+            grace_override_active: bool,
             eviction_blocked: bool,
             recording_blocked: bool,
             open_segment_count: u64,
@@ -327,11 +360,15 @@ impl<'de> Deserialize<'de> for RetentionStatus {
         deserialize_validated(deserializer, |wire: Wire| {
             Self::new(
                 wire.configured_budget,
+                wire.effective_budget,
+                wire.live_instances,
                 wire.usage,
                 wire.pinned_usage_bytes,
                 wire.oldest_retained,
                 wire.newest_retained,
                 wire.budget_state,
+                wire.trim_state,
+                wire.grace_override_active,
                 wire.eviction_blocked,
                 wire.recording_blocked,
                 wire.open_segment_count,
@@ -365,11 +402,15 @@ mod tests {
         assert!(
             RetentionStatus::new(
                 budget,
+                budget,
+                1,
                 usage,
                 0,
                 None,
                 None,
                 RecordingBudgetState::Available,
+                RecordingTrimState::Steady,
+                false,
                 false,
                 false,
                 1,
@@ -381,11 +422,15 @@ mod tests {
         assert!(
             RetentionStatus::new(
                 budget,
+                budget,
+                1,
                 usage,
                 0,
                 None,
                 None,
                 RecordingBudgetState::PausedBudget,
+                RecordingTrimState::Steady,
+                false,
                 false,
                 false,
                 1,
@@ -406,11 +451,15 @@ mod tests {
         };
         let status = RetentionStatus::new(
             budget,
+            budget,
+            1,
             StorageUsage::new(8, 1, 0, 0, 0, 0, 0).unwrap(),
             4,
             Some(point),
             Some(point),
             RecordingBudgetState::Available,
+            RecordingTrimState::Steady,
+            false,
             false,
             false,
             0,

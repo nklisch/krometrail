@@ -19,12 +19,12 @@ use krometrail_core::{
     InteractionEvidenceSink, InteractionId, InteractionRecord, InteractionRecordSource,
     KrometrailError, MonotonicClock, NavigationId, NonEmptyText, ObservedTime,
     PersistenceOperation, PinChange, PinProtectionScope, PinState, PortFuture,
-    ProgressivePinChange, RecordingBudgetState, RecordingSink, ResolvedRange, RetentionLifecycle,
-    RetentionPinRequest, RetentionRange, RetentionStatus, RetentionStore, RetrieveArtifactRequest,
-    RetrieveSourceFrameRequest, RetryAdvice, SessionDeletion, SessionId, SessionRange, SessionTime,
-    Sha256Digest, SourceFrameBatch, SourceFrameHandle, SourceFrameList, SourceFrameRead,
-    SourceFrameSelection, SourceFramesRequest, StorageUsage, StoredArtifact, StoredVideoArtifact,
-    TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
+    ProgressivePinChange, RecordingBudgetState, RecordingSink, RecordingTrimState, ResolvedRange,
+    RetentionLifecycle, RetentionPinRequest, RetentionRange, RetentionStatus, RetentionStore,
+    RetrieveArtifactRequest, RetrieveSourceFrameRequest, RetryAdvice, SessionDeletion, SessionId,
+    SessionRange, SessionTime, Sha256Digest, SourceFrameBatch, SourceFrameHandle, SourceFrameList,
+    SourceFrameRead, SourceFrameSelection, SourceFramesRequest, StorageUsage, StoredArtifact,
+    StoredVideoArtifact, TargetId, TemporalContext, TemporalContextQuery, TemporalContextRequest,
     TemporalContextService, TemporalQuery, TemporalQueryRequest, TemporalQueryService,
     TemporalRangeResolver, TimelineObservation, TimelineStore, VideoArtifactEvidenceHandle,
     VideoArtifactLookup, VideoArtifactPublication, VideoArtifactPublish, VideoArtifactRead,
@@ -177,6 +177,7 @@ pub struct RecordingStore {
     /// Set when a trim walk found nothing to reclaim; cleared by any later
     /// reclamation so trimming resumes once the store can make progress again.
     trim_exhausted: StdMutex<bool>,
+    grace_override_active: StdMutex<bool>,
     /// Live-instance count that divides one total budget across concurrent
     /// instances. Absent when this store is not part of a multi-instance data
     /// directory, in which case the configured budget is enforced directly.
@@ -254,6 +255,7 @@ impl RecordingStore {
             retention,
             budget_state: StdMutex::new(RecordingBudgetState::Available),
             trim_exhausted: StdMutex::new(false),
+            grace_override_active: StdMutex::new(false),
             census,
             availability,
             #[cfg(test)]
@@ -613,13 +615,24 @@ impl RecordingStore {
             snapshot.usage.open_segment_bytes,
             snapshot.usage.accounting_slack_bytes,
         )?;
+        let effective = self.effective_budget();
+        let high_water = self.retention.trim_high_water_bytes(effective);
+        let trim_state = if usage.total_bytes()? >= high_water {
+            RecordingTrimState::Trimming
+        } else {
+            RecordingTrimState::Steady
+        };
         RetentionStatus::new(
             self.retention.budget(),
+            DiskBudgetBytes::new(effective)?,
+            self.live_instances(),
             usage,
             snapshot.pinned_usage_bytes,
             snapshot.oldest_retained,
             snapshot.newest_retained,
             state,
+            trim_state,
+            self.grace_override_active(),
             state == RecordingBudgetState::PausedBudget,
             state == RecordingBudgetState::PausedBudget,
             snapshot.open_segment_count,
@@ -716,13 +729,17 @@ impl RecordingStore {
             Some(cutoff) => self.index.expired_object_count(cutoff)? != 0,
             None => false,
         };
-        if total_bytes < high_water && !expired_pending {
-            return Ok(());
+        if total_bytes < high_water {
+            self.set_grace_override_active(false);
+            if !expired_pending {
+                return Ok(());
+            }
         }
         if self.trim_exhausted() && !expired_pending {
             return Ok(());
         }
         let outcome = self.reclaim(high_water, None).await?;
+        self.record_reclaim_outcome(outcome);
         if outcome.reclaimed_anything() {
             tracing::info!(
                 event = "retention.trimmed",
@@ -752,6 +769,28 @@ impl RecordingStore {
             .trim_exhausted
             .lock()
             .expect("trim exhaustion lock poisoned") = value;
+    }
+
+    fn grace_override_active(&self) -> bool {
+        *self
+            .grace_override_active
+            .lock()
+            .expect("grace override lock poisoned")
+    }
+
+    fn set_grace_override_active(&self, value: bool) {
+        *self
+            .grace_override_active
+            .lock()
+            .expect("grace override lock poisoned") = value;
+    }
+
+    fn record_reclaim_outcome(&self, outcome: ReclaimOutcome) {
+        if outcome.artifact_grace_overridden {
+            self.set_grace_override_active(true);
+        } else if outcome.reclaimed_anything() {
+            self.set_grace_override_active(false);
+        }
     }
 
     async fn enforce_locked(&self) -> krometrail_core::Result<RetentionStatus> {
@@ -799,9 +838,9 @@ impl RecordingStore {
         target_bytes: u64,
         protected_artifact: Option<krometrail_core::ArtifactId>,
     ) -> krometrail_core::Result<()> {
-        self.reclaim(target_bytes, protected_artifact)
-            .await
-            .map(|_| ())
+        let outcome = self.reclaim(target_bytes, protected_artifact).await?;
+        self.record_reclaim_outcome(outcome);
+        Ok(())
     }
 
     /// This instance's byte allowance: an equal share of one total budget.
@@ -926,10 +965,11 @@ impl RecordingStore {
     ) -> krometrail_core::Result<bool> {
         // Derived artifacts go first: they are regenerable, so they are the
         // cheapest evidence to lose.
-        if let Some(artifact) = self
-            .index
-            .oldest_reclaimable_artifact(protected_artifact, filter.created_before_unix_ms)?
-        {
+        if let Some(artifact) = self.index.oldest_reclaimable_artifact(
+            protected_artifact,
+            filter.created_before_unix_ms,
+            filter.artifact_grace_since_unix_ms,
+        )? {
             let (_, _, artifacts, bytes) = self
                 .remove_objects(
                     DeletionKind::Eviction,
@@ -942,27 +982,7 @@ impl RecordingStore {
             return Ok(true);
         }
 
-        let mut segment = self.index.oldest_reclaimable_segment(filter)?;
-        if segment.is_none() && filter.artifact_grace_since_unix_ms.is_some() {
-            // Every remaining segment backs an artifact still inside its grace
-            // window. Liveness wins over the grace promise: stalling capture at a
-            // full store is worse than losing a fresh evidence link, so the grace
-            // is dropped and the override is reported rather than hidden.
-            segment = self
-                .index
-                .oldest_reclaimable_segment(SegmentReclaimFilter {
-                    artifact_grace_since_unix_ms: None,
-                    ..filter
-                })?;
-            if segment.is_some() {
-                tracing::info!(
-                    event = "retention.artifact_grace_overridden",
-                    "budget pressure evicted a segment backing a recently published artifact"
-                );
-                outcome.artifact_grace_overridden = true;
-            }
-        }
-
+        let segment = self.index.oldest_reclaimable_segment(filter)?;
         let event = self.index.oldest_browser_event()?;
         let event_is_older = match (&segment, event) {
             (_, None) => false,
@@ -979,9 +999,59 @@ impl RecordingStore {
             return Ok(removed != 0);
         }
 
-        let Some(segment) = segment else {
-            return Ok(false);
-        };
+        if let Some(segment) = segment {
+            return self.remove_segment(segment, outcome).await;
+        }
+
+        // Grace is an ordering exception, not a reason to stop the unified walk.
+        // Only after the normal artifact, segment, and event candidates are all
+        // absent may pressure drop the grace and select the next oldest object.
+        if under_pressure && filter.artifact_grace_since_unix_ms.is_some() {
+            if let Some(artifact) = self.index.oldest_reclaimable_artifact(
+                protected_artifact,
+                filter.created_before_unix_ms,
+                None,
+            )? {
+                tracing::info!(
+                    event = "retention.artifact_grace_overridden",
+                    "budget pressure evicted a recently published artifact after all other candidates were exhausted"
+                );
+                outcome.artifact_grace_overridden = true;
+                let (_, _, artifacts, bytes) = self
+                    .remove_objects(
+                        DeletionKind::Eviction,
+                        None,
+                        vec![artifact_object(artifact)],
+                    )
+                    .await?;
+                outcome.artifacts = outcome.artifacts.saturating_add(artifacts);
+                outcome.bytes = outcome.bytes.saturating_add(bytes);
+                return Ok(true);
+            }
+            if let Some(segment) = self
+                .index
+                .oldest_reclaimable_segment(SegmentReclaimFilter {
+                    artifact_grace_since_unix_ms: None,
+                    ..filter
+                })?
+            {
+                tracing::info!(
+                    event = "retention.artifact_grace_overridden",
+                    "budget pressure evicted a segment backing a recently published artifact after all other candidates were exhausted"
+                );
+                outcome.artifact_grace_overridden = true;
+                return self.remove_segment(segment, outcome).await;
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn remove_segment(
+        &self,
+        segment: SegmentCandidate,
+        outcome: &mut ReclaimOutcome,
+    ) -> krometrail_core::Result<bool> {
         let mut objects: Vec<_> = self
             .index
             .artifacts_for_segment(segment.segment_id)?

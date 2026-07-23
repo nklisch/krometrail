@@ -530,3 +530,64 @@ Smallest useful, behavior-pinning. No line-coverage padding.
   lone instance has `effective == configured`; the new `RetentionStatus::new`
   validation must allow equality and only reject `effective > configured`
   (which would signal a census/division bug worth failing closed on).
+
+## Implementation notes
+
+- A complete implementation is in progress in dependency order. Checkpoint A
+  changed `crates/krometrail-store/src/instance.rs` and added a focused census
+  regression; its store checks passed. Stages remain unchanged per the host
+  instruction, and no commit was created.
+- Checkpoint B changed the core retention status contract, store status
+  derivation, MCP status projection, and checkpoint tests. The wire-enum schema
+  check and affected core/store/MCP checks passed; C and D now consume the
+  shared status fields.
+- Checkpoint C changed `crates/krometrail-store/src/index/retention.rs` and
+  `crates/krometrail-store/src/recording.rs`: grace now narrows candidate
+  selection, overrides only after the normal unified walk is empty under
+  pressure, and latches the agent-visible override state. The focused grace
+  ordering test passed.
+- Checkpoint D changed `crates/krometrail-core/src/timeline/range.rs` and
+  `crates/krometrail-mcp/src/registry.rs`: trim/grace notes are injected at
+  the MCP response boundary using the oldest retained session time. The
+  boundary/empty-scope test passed.
+- Checkpoint E changed `crates/krometrail-core/src/timeline/context.rs`,
+  `crates/krometrail-core/src/timeline/mod.rs`, `crates/krometrail-core/src/lib.rs`,
+  and `crates/krometrail-store/tests/range_context.rs`: range bounds now echo
+  only state, establishing time, and attachment generation. Generated MCP
+  schema tests and the no-counter serialization assertion passed.
+
+### Checkpoint file manifest
+
+Implementation files changed per checkpoint (the allowed child-story note
+files are recorded separately below):
+
+- A — `crates/krometrail-store/src/instance.rs`,
+  `crates/krometrail-store/tests/shared_budget.rs`.
+- B — `crates/krometrail-core/src/recording/retention.rs`,
+  `crates/krometrail-core/src/recording/mod.rs`,
+  `crates/krometrail-core/src/lib.rs`,
+  `crates/krometrail-core/src/progressive.rs`,
+  `crates/krometrail-store/src/recording.rs`,
+  `crates/krometrail-store/tests/shared_budget.rs`,
+  `crates/krometrail-mcp/src/response.rs`,
+  `crates/krometrail-mcp/src/server.rs`, `src/progressive/service.rs`.
+- C — `crates/krometrail-store/src/index/retention.rs`,
+  `crates/krometrail-store/src/recording.rs`.
+- D — `crates/krometrail-core/src/timeline/range.rs`,
+  `crates/krometrail-mcp/src/registry.rs`.
+- E — `crates/krometrail-core/src/timeline/context.rs`,
+  `crates/krometrail-core/src/timeline/mod.rs`,
+  `crates/krometrail-core/src/lib.rs`,
+  `crates/krometrail-store/tests/range_context.rs`.
+
+The shared files listed in more than one checkpoint carry changes from each
+listed checkpoint; no standalone generated JSON artifact exists for these
+schemars-derived MCP contracts, so the repository's generated-schema tests
+were run sequentially after B and E.
+
+Final gate: passed with `cargo fmt --all -- --check`,
+`bash scripts/check-wire-enum-schemas.sh`, locked workspace check/tests, and
+locked workspace clippy (`-D warnings`). The first sandbox-only test attempt
+was blocked by loopback permission in four existing CDP tests; the same gate
+passed with the required loopback permission. No commit was created and all
+item stages remain unchanged.

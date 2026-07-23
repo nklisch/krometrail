@@ -9,8 +9,8 @@ use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
 use krometrail_core::{
     CaptureOrdinal, CapturedFrame, DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, FrameId,
-    ImageFormat, ObservedTime, PixelDimensions, RecordingSink, RetentionLifecycle, SessionId,
-    SessionTime, TargetId,
+    ImageFormat, ObservedTime, PixelDimensions, RecordingSink, RecordingTrimState,
+    RetentionLifecycle, RetentionStore, SessionId, SessionTime, TargetId,
 };
 use krometrail_store::{
     IndexStoreConfig, InstanceCensus, InstanceOwnership, OWNERSHIP_IS_ENFORCED, RecordingStore,
@@ -201,6 +201,28 @@ async fn a_lone_instance_gets_the_whole_total() {
         used <= total + ACCOUNTING_SLACK,
         "a lone instance must still stay inside the configured total: used {used} of {total}"
     );
+}
+
+#[tokio::test]
+async fn retention_status_reports_effective_share_and_trim_state() {
+    if !OWNERSHIP_IS_ENFORCED {
+        return;
+    }
+    let total = 4_000_000_u64;
+    let data = TempDir::new().unwrap();
+    let first = open_instance(&data, total, true);
+
+    let steady = first.store.status().await.unwrap();
+    assert_eq!(steady.effective_budget.get(), total);
+    assert_eq!(steady.live_instances, 1);
+    assert_eq!(steady.trim_state, RecordingTrimState::Steady);
+
+    fill(&first, 1, 200, 40_000).await;
+    let _second = open_instance(&data, total, true);
+    let shared = first.store.status().await.unwrap();
+    assert_eq!(shared.effective_budget.get(), total / 2);
+    assert_eq!(shared.live_instances, 2);
+    assert_eq!(shared.trim_state, RecordingTrimState::Trimming);
 }
 
 /// The guarantee: with two live instances each enforces `total / 2` at every
@@ -533,7 +555,7 @@ async fn a_retained_directory_handle_enumerates_after_permissions_change() {
 /// An instance that has *never* seen the instances directory knows nothing about
 /// its peers, and must not conclude it is alone.
 ///
-/// This is the hole a monotonic floor cannot cover. The floor starts at this
+/// This is the hole a last-proven floor cannot cover. The floor starts at this
 /// instance's own `1`, so a census whose very first enumeration fails would hand
 /// out `total / 1` — the whole budget — to every instance that started that way.
 /// Two such instances would jointly hold twice the total. Fail closed instead: no

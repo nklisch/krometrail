@@ -472,6 +472,12 @@ pub enum RetentionWarning {
     EvictedRanges {
         ranges: Vec<SessionRange>,
     },
+    InSessionTrimmingActive {
+        oldest_retained: SessionTime,
+    },
+    ArtifactGraceOverridden {
+        oldest_retained: SessionTime,
+    },
 }
 
 /// Exact semantic anchor chosen by the resolver before retention is applied.

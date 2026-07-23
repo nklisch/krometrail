@@ -38,3 +38,12 @@ count in both directions. Failure branch and the never-enumerated assumption sta
   with the peer still present still reports 2; `a_census_that_never_enumerated…`
   unchanged).
 - Field/module comments updated to the descend-on-proof semantics. No wire change.
+
+## Implementation notes
+
+- Changed `InstanceCensus` to retain the last successfully proven live count and
+  fall back to it after enumeration failure; the equal budget split and
+  never-enumerated conservative assumption remain unchanged.
+- Added `instance::tests::last_proven_live_count_descends_before_a_later_enumeration_failure`.
+- Verification: `cargo fmt --all -- --check`; `cargo check -p krometrail-store --all-targets --locked`;
+  `cargo test -p krometrail-store --test shared_budget --lib --locked` (45 unit tests and 11 shared-budget tests passed).
