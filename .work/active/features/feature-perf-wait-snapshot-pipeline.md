@@ -5,7 +5,7 @@ stage: done
 tags: [perf]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.6.0
 gate_origin: perf-design
 created: 2026-07-23
 updated: 2026-07-23
