@@ -1,7 +1,7 @@
 ---
 id: feature-perf-wait-snapshot-pipeline
 kind: feature
-stage: implementing
+stage: review
 tags: [perf]
 parent: null
 depends_on: []
