@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-video-qualification
 kind: feature
-stage: implementing
+stage: review
 tags: [temporal]
 parent: null
 depends_on: []
