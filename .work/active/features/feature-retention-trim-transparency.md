@@ -1,7 +1,7 @@
 ---
 id: feature-retention-trim-transparency
 kind: feature
-stage: implementing
+stage: review
 tags: [store]
 parent: null
 depends_on: []
