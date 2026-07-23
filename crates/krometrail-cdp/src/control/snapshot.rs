@@ -14,8 +14,12 @@ use serde_json::{Value, json};
 use super::{BoundTarget, PageControl, malformed, operation_error, transport_error};
 use crate::transport::{CdpTransport, CommandScope, TransportError};
 
-const MAX_SNAPSHOT_NODES: usize = 5_000;
-const MAX_SNAPSHOT_TEXT_BYTES: usize = 1 << 20;
+// These bounds cover dense real-world documents (roughly 10k–50k DOM nodes) at an
+// estimated ~350 bytes/node of structural state, while keeping the worst-case
+// retained snapshot near 34 MiB with two 8 MiB text pools and still fail-closing
+// on pathological trees.
+const MAX_SNAPSHOT_NODES: usize = 50_000;
+const MAX_SNAPSHOT_TEXT_BYTES: usize = 1 << 23;
 const MAX_ACCESSIBLE_PROPERTY_COUNT: usize = 32;
 
 const ACCESSIBLE_PROPERTIES: &[&str] = &[
@@ -643,7 +647,7 @@ impl SnapshotRegistry {
             let actual = u64::try_from(snapshot.nodes.len())
                 .unwrap_or(u64::MAX)
                 .saturating_add(u64::from(snapshot.omitted_node_count));
-            return Err(snapshot_node_limit_error(bound.target_id, actual, true));
+            return Err(snapshot_node_limit_error(bound.target_id, actual));
         }
         Ok(active)
     }
@@ -1083,13 +1087,7 @@ fn decode_dom_snapshot(
 fn snapshot_node_limit_error(
     target_id: TargetId,
     actual: impl std::fmt::Display,
-    query_exists: bool,
 ) -> KrometrailError {
-    let recovery = if query_exists {
-        "narrow the semantic query to a smaller document"
-    } else {
-        "request a smaller document snapshot or use viewport-scoped geometry"
-    };
     KrometrailError::limit_exceeded(
         ErrorCode::PageObservationFailed,
         "accessibility nodes",
@@ -1102,7 +1100,12 @@ fn snapshot_node_limit_error(
         ..ErrorContext::default()
     })
     .with_retry(RetryAdvice::Never)
-    .with_recovery(NonEmptyText::new(recovery).expect("snapshot limit recovery is non-empty"))
+    .with_recovery(
+        NonEmptyText::new(
+            "target a single frame with the `document` scope, or capture the page with `snapshot_page` (which reports omitted nodes explicitly) and act on the returned node references directly",
+        )
+        .expect("snapshot limit recovery is non-empty"),
+    )
 }
 
 fn decode_dom_snapshot_with_geometry(
@@ -1175,11 +1178,7 @@ fn decode_dom_snapshot_with_geometry(
                 geometry_omitted: true,
             });
         }
-        return Err(snapshot_node_limit_error(
-            target_id,
-            backend_ids.len(),
-            false,
-        ));
+        return Err(snapshot_node_limit_error(target_id, backend_ids.len()));
     }
     let mut text_bytes = 0_usize;
     let mut decoded = Vec::with_capacity(node_count);
@@ -2942,6 +2941,60 @@ mod tests {
         ]})
     }
 
+    fn ax_tree_with_node_count(node_count: usize) -> Value {
+        assert!(node_count >= 2);
+        let mut child_ids = vec![json!("button")];
+        child_ids.extend((2..node_count).map(|index| json!(format!("filler-{index}"))));
+        let mut nodes = vec![
+            json!({
+                "nodeId": "root",
+                "ignored": false,
+                "role": {"value": "document"},
+                "childIds": child_ids
+            }),
+            json!({
+                "nodeId": "button",
+                "ignored": false,
+                "role": {"value": "button"},
+                "name": {"value": "Save"},
+                "backendDOMNodeId": 1,
+                "properties": [{"name": "focusable", "value": {"value": true}}]
+            }),
+        ];
+        nodes.extend((2..node_count).map(|index| {
+            json!({
+                "nodeId": format!("filler-{index}"),
+                "ignored": false,
+                "role": {"value": "generic"},
+                "backendDOMNodeId": index + 1
+            })
+        }));
+        json!({"nodes": nodes})
+    }
+
+    fn ax_tree_with_name(name: String) -> Value {
+        json!({"nodes":[
+            {"nodeId":"root","ignored":false,"role":{"value":"document"},"childIds":["button"]},
+            {"nodeId":"button","ignored":false,"role":{"value":"button"},"name":{"value":name},"backendDOMNodeId":1,"properties":[{"name":"focusable","value":{"value":true}}]}
+        ]})
+    }
+
+    fn dom_snapshot_with_text(text: String) -> Value {
+        json!({
+            "strings": ["main", "DIV", "#text", text],
+            "documents": [{
+                "frameId": 0,
+                "nodes": {
+                    "parentIndex": [-1, 0],
+                    "nodeName": [1, 2],
+                    "backendNodeId": [1, 2],
+                    "attributes": [[], []]
+                },
+                "layout": {"nodeIndex": [1], "text": [3]}
+            }]
+        })
+    }
+
     fn multi_document_snapshot() -> Value {
         let strings = vec!["main", "child", "DIV", "H1", "#text", "Nested heading"];
         let document = |frame_id, backend_offset| {
@@ -3410,29 +3463,169 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn query_and_presence_accept_node_counts_between_previous_and_current_bounds() {
+        let node_count = 8_000;
+        let transport = SnapshotTransport::default();
+        transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        transport.push(
+            "Accessibility.getFullAXTree",
+            ax_tree_with_node_count(node_count),
+        );
+        let mut control = page_control();
+        let bound = frame_bound();
+        let query = SemanticQuery::role(
+            "button",
+            Some(
+                krometrail_core::SemanticTextMatch::new(
+                    "Save",
+                    krometrail_core::SemanticTextMatchMode::Exact,
+                    false,
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query.clone(),
+            None,
+            10,
+        )
+        .unwrap();
+        let BrowserOperationResult::QueryPage(result) = control
+            .query_page(
+                &transport,
+                &bound,
+                request,
+                krometrail_core::SessionTime::ZERO,
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected query result");
+        };
+        assert_eq!(result.outcome, SemanticQueryOutcome::Unique);
+        assert_eq!(result.matches.len(), 1);
+
+        transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        transport.push(
+            "Accessibility.getFullAXTree",
+            ax_tree_with_node_count(node_count),
+        );
+        let probe = control
+            .probe_semantic_presence(
+                &transport,
+                &bound,
+                &query,
+                krometrail_core::SessionTime::ZERO,
+            )
+            .await
+            .unwrap();
+        assert_eq!(probe.outcome, SemanticQueryOutcome::Unique);
+        assert_eq!(probe.match_count, 1);
+    }
+
     #[test]
-    fn node_limit_errors_name_actual_limit_and_scope_specific_recovery() {
-        let query_error = snapshot_node_limit_error(target(), 5_001, true);
-        assert!(query_error.message.as_str().contains("5001"));
-        assert!(query_error.message.as_str().contains("5000"));
+    fn raised_text_cap_allows_large_accessible_text_but_overflow_fails_closed() {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let accepted_text = "x".repeat(MAX_SNAPSHOT_TEXT_BYTES - 64);
+        let (accepted_nodes, _, accepted_omitted) =
+            decode_ax_tree(&ax_tree_with_name(accepted_text), target(), generation).unwrap();
+        assert_eq!(accepted_omitted, 0);
+        assert_eq!(accepted_nodes.len(), 2);
+
+        let overflow_text = "x".repeat(MAX_SNAPSHOT_TEXT_BYTES + 1);
+        let (_, _, overflow_omitted) =
+            decode_ax_tree(&ax_tree_with_name(overflow_text), target(), generation).unwrap();
+        assert_eq!(overflow_omitted, 1);
+
+        let (registry, bound, snapshot) = status_registry_fixture(&["Ready"], false, 1);
+        let query = status_query(None);
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query.clone(),
+            None,
+            20,
+        )
+        .unwrap();
+        let query_error = registry.query(&bound, &request, &snapshot).unwrap_err();
+        let probe_error = registry
+            .probe_presence(&bound, &query, &snapshot)
+            .unwrap_err();
+        assert_eq!(query_error.code, ErrorCode::PageObservationFailed);
+        assert_eq!(probe_error.code, ErrorCode::PageObservationFailed);
+        assert_eq!(query_error.message, probe_error.message);
+    }
+
+    #[test]
+    fn raised_text_cap_allows_large_dom_text_but_preserves_overflow_guard() {
+        let document = DocumentFingerprint {
+            frame_id: "main".into(),
+            loader_id: "loader".into(),
+        };
+        let accepted = decode_dom_snapshot(
+            &dom_snapshot_with_text("x".repeat(MAX_SNAPSHOT_TEXT_BYTES - 1_024)),
+            &document,
+            target(),
+        )
+        .unwrap();
+        assert!(!accepted.is_empty());
+
+        let Err(error) = decode_dom_snapshot(
+            &dom_snapshot_with_text("x".repeat(MAX_SNAPSHOT_TEXT_BYTES + 1)),
+            &document,
+            target(),
+        ) else {
+            panic!("DOM text over the cap must fail");
+        };
+        assert_eq!(error.code, ErrorCode::PageObservationFailed);
+        assert!(error.message.as_str().contains("semantic text limit"));
+    }
+
+    #[test]
+    fn node_limit_errors_use_unified_recovery_for_ax_and_dom_refusals() {
+        let limit = MAX_SNAPSHOT_NODES.to_string();
+        let unified = snapshot_node_limit_error(target(), MAX_SNAPSHOT_NODES + 1);
         assert!(
-            query_error
-                .recovery
-                .as_ref()
-                .unwrap()
+            unified
+                .message
                 .as_str()
-                .contains("semantic query")
+                .contains(&(MAX_SNAPSHOT_NODES + 1).to_string())
         );
-        let geometry_error = snapshot_node_limit_error(target(), 5_001, false);
-        assert!(
-            geometry_error
-                .recovery
-                .as_ref()
-                .unwrap()
-                .as_str()
-                .contains("smaller document snapshot")
-        );
-        assert_eq!(geometry_error.retry, RetryAdvice::Never);
+        assert!(unified.message.as_str().contains(&limit));
+        let recovery = unified.recovery.as_ref().unwrap().as_str();
+        assert!(recovery.contains("`document`"));
+        assert!(recovery.contains("`snapshot_page`"));
+        assert!(recovery.contains("node references"));
+        assert!(!recovery.contains("narrow the semantic query"));
+        assert!(!recovery.contains("geometry"));
+        assert_eq!(unified.retry, RetryAdvice::Never);
+
+        let (registry, bound, snapshot) = status_registry_fixture(&["Ready"], false, 1);
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            status_query(None),
+            None,
+            20,
+        )
+        .unwrap();
+        let ax_error = registry.query(&bound, &request, &snapshot).unwrap_err();
+        assert_eq!(ax_error.recovery, unified.recovery);
+
+        let Err(dom_error) = decode_dom_snapshot_with_geometry(
+            &large_viewport_dom_snapshot(MAX_SNAPSHOT_NODES + 1),
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+            false,
+            None,
+        ) else {
+            panic!("DOM node count over the cap must refuse semantic acquisition");
+        };
+        assert_eq!(dom_error.recovery, unified.recovery);
     }
 
     #[tokio::test]
@@ -3852,7 +4045,7 @@ mod tests {
     fn over_cap_viewport_decode_accounts_for_selection_truncation() {
         let viewport = CssRect::new(
             CssPoint::new(0.0, 0.0).unwrap(),
-            CssSize::new(10_000.0, 100.0).unwrap(),
+            CssSize::new((MAX_SNAPSHOT_NODES + 1) as f64, 100.0).unwrap(),
         )
         .unwrap();
         let decoded = decode_dom_snapshot_with_geometry(

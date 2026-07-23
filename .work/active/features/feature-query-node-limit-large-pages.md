@@ -316,3 +316,28 @@ raised bound and the corrected refusal automatically — no separate change.
 - **Transient acquisition payload.** `getFullAXTree` + `captureSnapshot` transient
   JSON at 50k nodes is tens of MB per capture (freed after decode). Bounded, but
   worth watching under memory pressure alongside the retained figure.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the feature had one cohesive Rust
+  ownership surface and the requested tests live beside the decoder.
+- Review weight: standard default; feature-stage transition/review was not run
+  because the caller explicitly required leaving the stage unchanged.
+- Files changed: `crates/krometrail-cdp/src/control/snapshot.rs` and this feature
+  item.
+- Tests added: an 8,000-node query/presence regression; AX and DOM text-cap
+  boundary regressions; and unified AX/DOM refusal-recovery wording coverage.
+  The viewport truncation fixture was rebased to cover the raised symbol-sized
+  bound.
+- Simplification: removed `query_exists` and the dead geometry recovery branch
+  from `snapshot_node_limit_error`; both refusal callers now share one honest
+  recovery path.
+- Discrepancies from design: none in behavior or selected values. The existing
+  viewport regression needed its fixed viewport width raised from 10,000px so it
+  continued to select more than the new 50,000-node cap.
+- Gate results: `cargo fmt --all -- --check`,
+  `bash scripts/check-wire-enum-schemas.sh`,
+  `cargo check --workspace --all-targets --locked`,
+  `cargo test --workspace --all-targets --locked`, and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` all passed.
+- Adjacent issues parked: none.
