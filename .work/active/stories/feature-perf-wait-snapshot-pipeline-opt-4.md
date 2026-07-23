@@ -1,7 +1,7 @@
 ---
 id: feature-perf-wait-snapshot-pipeline-opt-4
 kind: story
-stage: implementing
+stage: done
 tags: [perf]
 parent: feature-perf-wait-snapshot-pipeline
 depends_on: [feature-perf-wait-snapshot-pipeline-opt-3]
