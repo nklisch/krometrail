@@ -185,7 +185,7 @@ impl ArtifactStore for FakeArtifacts {
                     .lock()
                     .unwrap()
                     .insert(*artifact.manifest.artifact_id(), artifact.clone());
-                Ok(ArtifactPublish::Published(artifact))
+                Ok(ArtifactPublish::Published(artifact, false))
             }
         };
         Box::pin(std::future::ready(result))

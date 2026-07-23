@@ -854,6 +854,10 @@ pub struct ArtifactGenerationResult {
     pub range: ResolvedRange,
     pub epochs: Vec<VisualEpoch>,
     pub outcomes: Vec<ArtifactOutcome>,
+    /// True when this generation request's publication walk overrode artifact
+    /// grace. This is operation provenance, not retained-artifact metadata.
+    #[serde(skip)]
+    pub artifact_grace_overridden: bool,
 }
 
 #[derive(Clone, Default)]

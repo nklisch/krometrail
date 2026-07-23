@@ -1166,6 +1166,7 @@ mod tests {
                             device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
                         }],
                         outcomes: vec![],
+                        artifact_grace_overridden: false,
                     })
                 })
             }

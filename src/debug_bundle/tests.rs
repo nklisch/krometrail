@@ -135,6 +135,7 @@ fn generation_result(range: &ResolvedRange) -> ArtifactGenerationResult {
             device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
         }],
         outcomes: vec![storyboard_outcome(0)],
+        artifact_grace_overridden: false,
     }
 }
 

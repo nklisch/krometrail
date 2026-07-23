@@ -61,6 +61,7 @@ type AnalysisCohortKey = (usize, Vec<u8>, u16, Vec<(FrameId, usize)>);
 struct Available {
     artifact: FlightArtifact,
     disposition: ArtifactCacheDisposition,
+    grace_overridden: bool,
 }
 
 impl TemporalVisionArtifactService {
@@ -235,6 +236,7 @@ impl TemporalVisionArtifactService {
         }
 
         let mut missing = Vec::new();
+        let mut artifact_grace_overridden = false;
         for (slot_index, slot) in &slots {
             match controlled(
                 self.artifacts
@@ -248,6 +250,7 @@ impl TemporalVisionArtifactService {
                     result_slots[*slot_index] = Some(Ok(Available {
                         artifact: (*artifact).into(),
                         disposition: ArtifactCacheDisposition::Hit,
+                        grace_overridden: false,
                     }))
                 }
                 ArtifactLookup::Miss => missing.push((*slot_index, WorkSlot(slot.clone()), false)),
@@ -285,6 +288,7 @@ impl TemporalVisionArtifactService {
                     Ok(value) => {
                         result_slots[slot_index] = Some(Ok(Available {
                             artifact: value.artifact,
+                            grace_overridden: value.grace_overridden,
                             disposition: if value.generated {
                                 if invalidated {
                                     ArtifactCacheDisposition::RegeneratedAfterInvalidation
@@ -309,6 +313,11 @@ impl TemporalVisionArtifactService {
             }
         }
 
+        for result in &result_slots {
+            if let Some(Ok(available)) = result {
+                artifact_grace_overridden |= available.grace_overridden;
+            }
+        }
         let outcomes = result_slots
             .into_iter()
             .zip(slot_metadata)
@@ -333,6 +342,7 @@ impl TemporalVisionArtifactService {
             range: request.range().clone(),
             epochs: plans.iter().map(|plan| plan.descriptor.clone()).collect(),
             outcomes,
+            artifact_grace_overridden,
         })
     }
 
@@ -358,6 +368,7 @@ impl TemporalVisionArtifactService {
                         Ok(FlightValue {
                             artifact: (*artifact).into(),
                             generated: false,
+                            grace_overridden: false,
                         }),
                     );
                 }
@@ -679,12 +690,13 @@ impl TemporalVisionArtifactService {
                 )?
                 .with_cancellation(Arc::new(cancellation.clone()));
                 match self.artifacts.publish_artifact(publication).await {
-                    Ok(ArtifactPublish::Published(artifact)) => {
+                    Ok(ArtifactPublish::Published(artifact, grace_overridden)) => {
                         result.insert(
                             slot.0.cache.cache_key,
                             Ok(FlightValue {
                                 artifact: artifact.into(),
                                 generated: true,
+                                grace_overridden,
                             }),
                         );
                     }
@@ -694,6 +706,7 @@ impl TemporalVisionArtifactService {
                             Ok(FlightValue {
                                 artifact: artifact.into(),
                                 generated: false,
+                                grace_overridden: false,
                             }),
                         );
                     }

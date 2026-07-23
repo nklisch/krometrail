@@ -255,7 +255,7 @@ async fn publication_lookup_corruption_and_usage_share_one_authority() {
             .publish_artifact(publication.clone())
             .await
             .unwrap(),
-        ArtifactPublish::Published(_)
+        ArtifactPublish::Published(..)
     ));
     let hit = fixture
         .store
@@ -289,7 +289,7 @@ async fn publication_lookup_corruption_and_usage_share_one_authority() {
     assert!(!path.exists());
     assert!(matches!(
         fixture.store.publish_artifact(publication).await.unwrap(),
-        ArtifactPublish::Published(_)
+        ArtifactPublish::Published(..)
     ));
 }
 
@@ -531,7 +531,7 @@ async fn equal_cache_key_publications_have_one_ready_winner() {
     assert_eq!(
         outcomes
             .iter()
-            .filter(|value| matches!(value, ArtifactPublish::Published(_)))
+            .filter(|value| matches!(value, ArtifactPublish::Published(..)))
             .count(),
         1
     );

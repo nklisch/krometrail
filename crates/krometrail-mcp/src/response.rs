@@ -3514,6 +3514,7 @@ mod tests {
                 generator_index: 0,
                 artifact: Box::new(artifact),
             }],
+            artifact_grace_overridden: false,
         }
     }
 

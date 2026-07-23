@@ -591,3 +591,12 @@ locked workspace clippy (`-D warnings`). The first sandbox-only test attempt
 was blocked by loopback permission in four existing CDP tests; the same gate
 passed with the required loopback permission. No commit was created and all
 item stages remain unchanged.
+
+## Review fixes
+
+- Retention warning boundaries now require the retained point's session and target to match the response scope; mismatched boundaries are omitted. The same scoped injection is applied to temporal debug bundles. Coverage includes the MCP retention-note boundary test and the full workspace suite.
+- Artifact grace overrides are returned from the publication reclaim walk through `ArtifactPublish` and `ArtifactGenerationResult`, so generate-artifacts warnings use operation provenance rather than the global status latch. The store-level `pinned_grace_override_is_reported_by_the_publishing_operation` regression pins this outcome.
+- Retention status derives live instances, effective budget, and trim high-water from one census snapshot. Shared-budget status and workspace tests pass.
+- `docs/SPEC.md` now documents fallback to the last successfully proven count, including that a later proven departure can lower it, while enumeration failure remains fail-closed.
+- Added store-level grace-ordering coverage: a fresh artifact's oldest backing segment is skipped while newer reclaimable segments are evicted; pinned grace is overridden only when it is the remaining candidate and reports through the publication; and pinned trim exhaustion short-circuits repeated walks without hanging.
+- Verification passed: `cargo fmt --all -- --check`, `bash scripts/check-wire-enum-schemas.sh`, locked workspace check, locked workspace tests, and locked workspace clippy with `-D warnings`.

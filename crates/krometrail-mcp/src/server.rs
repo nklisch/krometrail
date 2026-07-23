@@ -1335,6 +1335,7 @@ mod tests {
                         ),
                     },
                 ],
+                artifact_grace_overridden: false,
             }),
             BundleContextEvidence::Unavailable {
                 error: KrometrailError::new(

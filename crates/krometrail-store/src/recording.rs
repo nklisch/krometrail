@@ -144,6 +144,13 @@ struct ReclaimOutcome {
     artifact_grace_overridden: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BudgetSnapshot {
+    effective_budget: u64,
+    live_instances: u64,
+    trim_high_water: u64,
+}
+
 impl ReclaimOutcome {
     const fn reclaimed_anything(self) -> bool {
         self.segments != 0 || self.artifacts != 0 || self.browser_events != 0
@@ -615,17 +622,16 @@ impl RecordingStore {
             snapshot.usage.open_segment_bytes,
             snapshot.usage.accounting_slack_bytes,
         )?;
-        let effective = self.effective_budget();
-        let high_water = self.retention.trim_high_water_bytes(effective);
-        let trim_state = if usage.total_bytes()? >= high_water {
+        let budget = self.budget_snapshot();
+        let trim_state = if usage.total_bytes()? >= budget.trim_high_water {
             RecordingTrimState::Trimming
         } else {
             RecordingTrimState::Steady
         };
         RetentionStatus::new(
             self.retention.budget(),
-            DiskBudgetBytes::new(effective)?,
-            self.live_instances(),
+            DiskBudgetBytes::new(budget.effective_budget)?,
+            budget.live_instances,
             usage,
             snapshot.pinned_usage_bytes,
             snapshot.oldest_retained,
@@ -691,7 +697,8 @@ impl RecordingStore {
             return Ok(());
         }
         self.flush_all().await?;
-        self.cleanup_to(effective.saturating_sub(required), None)
+        let _ = self
+            .cleanup_to(effective.saturating_sub(required), None)
             .await?;
         let total = self.budget_total_bytes()?;
         if total
@@ -803,7 +810,7 @@ impl RecordingStore {
             );
         }
         self.flush_all().await?;
-        self.cleanup_to(self.effective_budget(), None).await?;
+        let _ = self.cleanup_to(self.effective_budget(), None).await?;
         total = self.budget_total_bytes()?;
         let state = if self.usage_is_within_budget(total)? {
             RecordingBudgetState::Available
@@ -837,10 +844,10 @@ impl RecordingStore {
         &self,
         target_bytes: u64,
         protected_artifact: Option<krometrail_core::ArtifactId>,
-    ) -> krometrail_core::Result<()> {
+    ) -> krometrail_core::Result<ReclaimOutcome> {
         let outcome = self.reclaim(target_bytes, protected_artifact).await?;
         self.record_reclaim_outcome(outcome);
-        Ok(())
+        Ok(outcome)
     }
 
     /// This instance's byte allowance: an equal share of one total budget.
@@ -865,10 +872,21 @@ impl RecordingStore {
     /// ownership — this is the configured budget, which is what a lone instance
     /// gets anyway.
     fn effective_budget(&self) -> u64 {
+        self.budget_snapshot().effective_budget
+    }
+
+    fn budget_snapshot(&self) -> BudgetSnapshot {
         let configured = self.retention.budget().get();
-        self.census.as_ref().map_or(configured, |census| {
-            configured / census.live_instances().max(1)
-        })
+        let live_instances = self.live_instances();
+        let effective_budget = self
+            .census
+            .as_ref()
+            .map_or(configured, |_| configured / live_instances.max(1));
+        BudgetSnapshot {
+            effective_budget,
+            live_instances,
+            trim_high_water: self.retention.trim_high_water_bytes(effective_budget),
+        }
     }
 
     /// Live instances currently dividing the total budget with this store.
@@ -1071,16 +1089,33 @@ impl RecordingStore {
     async fn ensure_staged_artifact_capacity(
         &self,
         row: &ArtifactRow,
-    ) -> krometrail_core::Result<()> {
-        self.reconcile_accumulator()?;
-        self.cleanup_to(self.effective_budget(), Some(row.artifact_id))
-            .await?;
+    ) -> krometrail_core::Result<bool> {
+        let outcome = self.reclaim_staged_artifact_capacity(row).await?;
         if self.budget_total_bytes()? <= self.effective_budget() {
             self.set_budget_state(RecordingBudgetState::Available);
-            return Ok(());
+            return Ok(outcome.artifact_grace_overridden);
         }
         self.set_budget_state(RecordingBudgetState::PausedBudget);
         Err(budget_error(row.session_id, row.target_id))
+    }
+
+    async fn reclaim_staged_artifact_capacity(
+        &self,
+        row: &ArtifactRow,
+    ) -> krometrail_core::Result<ReclaimOutcome> {
+        self.reconcile_accumulator()?;
+        self.cleanup_to(self.effective_budget(), Some(row.artifact_id))
+            .await
+    }
+
+    async fn reclaim_staged_artifact_capacity_best_effort(
+        &self,
+        row: &ArtifactRow,
+    ) -> krometrail_core::Result<bool> {
+        Ok(self
+            .reclaim_staged_artifact_capacity(row)
+            .await?
+            .artifact_grace_overridden)
     }
 
     async fn remove_objects(
@@ -1684,6 +1719,12 @@ impl ArtifactStore for RecordingStore {
                 }
             };
 
+            let mut grace_overridden = {
+                let _mutation = self.mutations.lock().await;
+                self.reclaim_staged_artifact_capacity_best_effort(&row)
+                    .await?
+            };
+
             if let Err(error) = self
                 .artifact_files
                 .publish(
@@ -1702,6 +1743,9 @@ impl ArtifactStore for RecordingStore {
 
             let finalized = {
                 let _mutation = self.mutations.lock().await;
+                grace_overridden |= self
+                    .reclaim_staged_artifact_capacity_best_effort(&row)
+                    .await?;
                 if publication_guard.is_cancelled()
                     || publication
                         .cancellation()
@@ -1742,7 +1786,7 @@ impl ArtifactStore for RecordingStore {
                     "published image resolved to a temporal video artifact",
                 ));
             };
-            Ok(ArtifactPublish::Published(*stored))
+            Ok(ArtifactPublish::Published(*stored, grace_overridden))
         })
     }
 

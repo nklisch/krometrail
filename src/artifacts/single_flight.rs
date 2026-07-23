@@ -20,6 +20,7 @@ use super::{
 pub(crate) struct FlightValue {
     pub artifact: FlightArtifact,
     pub generated: bool,
+    pub grace_overridden: bool,
 }
 
 #[derive(Clone)]

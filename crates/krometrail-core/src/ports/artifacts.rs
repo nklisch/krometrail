@@ -139,7 +139,10 @@ pub enum ArtifactLookup {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArtifactPublish {
-    Published(StoredArtifact),
+    /// A newly published artifact and the reclaim fact causally bound to this
+    /// publication. The flag is not a property of the artifact; it reports
+    /// only the capacity walk performed for this operation.
+    Published(StoredArtifact, bool),
     Existing(StoredArtifact),
 }
 

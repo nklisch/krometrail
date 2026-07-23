@@ -504,6 +504,7 @@ mod tests {
                 device_scale_factor: DeviceScaleFactor::new(1.0).unwrap(),
             }],
             outcomes: vec![storyboard_outcome(1, manifest)],
+            artifact_grace_overridden: false,
         };
         let focus = extract_focus_times(&result.outcomes);
         assert!(focus.contains(&SessionTime::from_nanos(700)));
