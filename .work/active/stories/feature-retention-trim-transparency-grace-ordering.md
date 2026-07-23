@@ -1,7 +1,7 @@
 ---
 id: feature-retention-trim-transparency-grace-ordering
 kind: story
-stage: implementing
+stage: done
 tags: [store]
 parent: feature-retention-trim-transparency
 depends_on: [feature-retention-trim-transparency-status-transparency]

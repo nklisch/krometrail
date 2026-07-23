@@ -1,7 +1,7 @@
 ---
 id: feature-retention-trim-transparency-capture-status-echo
 kind: story
-stage: implementing
+stage: done
 tags: [store]
 parent: feature-retention-trim-transparency
 depends_on: []

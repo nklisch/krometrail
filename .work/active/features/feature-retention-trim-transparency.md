@@ -1,7 +1,7 @@
 ---
 id: feature-retention-trim-transparency
 kind: feature
-stage: review
+stage: done
 tags: [store]
 parent: null
 depends_on: []
@@ -600,3 +600,19 @@ item stages remain unchanged.
 - `docs/SPEC.md` now documents fallback to the last successfully proven count, including that a later proven departure can lower it, while enumeration failure remains fail-closed.
 - Added store-level grace-ordering coverage: a fresh artifact's oldest backing segment is skipped while newer reclaimable segments are evicted; pinned grace is overridden only when it is the remaining candidate and reports through the publication; and pinned trim exhaustion short-circuits repeated walks without hanging.
 - Verification passed: `cargo fmt --all -- --check`, `bash scripts/check-wire-enum-schemas.sh`, locked workspace check, locked workspace tests, and locked workspace clippy with `-D warnings`.
+
+## Review
+
+Cross-model static review (gpt-5.6-sol): five material findings and one
+coverage gap, all accepted and fixed in-cycle — trim-note temporal boundaries
+now scoped to the response's session/target (cross-session times omitted),
+temporal_debug_bundle carries the same retention notes, the grace-override
+warning is causally bound to the operation that forced it rather than a global
+latch read, one census observation derives live_instances, effective_budget,
+and the trim threshold together, SPEC updated to the last-proven census
+fallback with the residual restated, and store-level end-to-end reclaim
+regressions added (grace skip-ordering, emergency override reporting,
+trim-exhausted latch). Reviewer confirmed the low-level deletion mechanics —
+pins, unified walk, durability barriers, set-based eviction, accumulator
+reconciliation — intact. Full workspace gate re-verified green by the host
+after the fixes (75 suites, 0 failures).
