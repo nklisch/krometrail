@@ -2764,8 +2764,10 @@ pub(crate) async fn map_progressive_result(
                 "omitted_frame_count": omitted_frame_count,
                 "next_offset": list.next_offset,
             }));
-            for frame in &list.frames {
-                add_source_frame_resource(&mut projection, frame)?;
+            if response.detail != ResponseDetail::Concise {
+                for frame in &list.frames {
+                    add_source_frame_resource(&mut projection, frame)?;
+                }
             }
             projection
         }
@@ -5395,9 +5397,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concise_source_frame_listing_is_small_and_keeps_only_drilldown_fields() {
-        let list = source_frame_list(64);
-        let mapped = map_progressive_result(
+    async fn source_frame_listing_projects_rows_and_resources_by_detail() {
+        let mut list = source_frame_list(64);
+        list.omitted_frame_count = 7;
+        list.next_offset = Some(64);
+
+        let concise = map_progressive_result(
             "list_source_frames",
             ProgressiveEvidenceResult::ListSourceFrames(Box::new(list.clone())),
             &UnusedProgressive,
@@ -5407,10 +5412,10 @@ mod tests {
         )
         .await
         .expect("projection succeeds");
-        let resource_count = mapped.response.resources.len();
-        let concise = mapped.response.result;
-        assert!(serde_json::to_vec(&concise).unwrap().len() < 16 * 1024);
-        let row = &concise["frames"][0];
+        assert_eq!(concise.response.resources.len(), 0);
+        assert!(serde_json::to_vec(&concise.response.result).unwrap().len() < 16 * 1024);
+        let concise_result = concise.response.result;
+        let row = &concise_result["frames"][0];
         assert_eq!(
             row.as_object().unwrap().keys().collect::<Vec<_>>(),
             vec![
@@ -5424,11 +5429,10 @@ mod tests {
         assert!(row.get("provenance").is_none());
         assert!(row.get("content_sha256").is_none());
         assert!(row.get("request_position").is_none());
-        assert_eq!(resource_count, 64);
 
         let expanded = map_progressive_result(
             "list_source_frames",
-            ProgressiveEvidenceResult::ListSourceFrames(Box::new(list)),
+            ProgressiveEvidenceResult::ListSourceFrames(Box::new(list.clone())),
             &UnusedProgressive,
             Instant::now() + Duration::from_secs(1),
             test_cancellation(),
@@ -5438,11 +5442,54 @@ mod tests {
             },
         )
         .await
-        .expect("expanded projection succeeds")
-        .response
-        .result;
-        assert!(expanded["frames"][0].get("provenance").is_some());
-        assert!(expanded["frames"][0].get("content_sha256").is_some());
+        .expect("expanded projection succeeds");
+        assert_eq!(expanded.response.resources.len(), 64);
+        let expanded_result = expanded.response.result;
+        assert!(expanded_result["frames"][0].get("provenance").is_some());
+        assert!(expanded_result["frames"][0].get("content_sha256").is_some());
+
+        let expected_rows = serde_json::to_value(
+            list.frames
+                .iter()
+                .map(compact_source_frame_row)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("compact rows project"),
+        )
+        .unwrap();
+        assert_eq!(concise_result["frames"], expected_rows);
+        assert_eq!(concise_result["frames"].as_array().unwrap().len(), 64);
+        assert_eq!(
+            concise_result["next_offset"],
+            expanded_result["next_offset"]
+        );
+        assert_eq!(
+            concise_result["omitted_frame_count"],
+            expanded_result["omitted_frame_count"]
+        );
+
+        let expanded_rows = expanded_result["frames"].as_array().unwrap();
+        assert_eq!(expanded_rows.len(), expected_rows.as_array().unwrap().len());
+        for (compact, expanded) in expected_rows.as_array().unwrap().iter().zip(expanded_rows) {
+            for field in [
+                "encoded_byte_len",
+                "frame_id",
+                "media_type",
+                "resolved_position",
+            ] {
+                assert_eq!(compact[field], expanded[field]);
+            }
+            assert_eq!(
+                compact["session_time"],
+                expanded["provenance"]["session_time"]
+            );
+        }
+
+        /*
+         * The concise projection is intentionally smaller because it omits
+         * expanded provenance and resource links, not because it acquired a
+         * different page.
+         */
+        assert!(serde_json::to_vec(&concise_result).unwrap().len() < 16 * 1024);
     }
 
     #[test]

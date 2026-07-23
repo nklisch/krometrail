@@ -44,3 +44,18 @@ acquisition, preserve outcomes and drill-down authority):
       shape declaration changes.
 - [ ] A test pins the concise projection (no per-frame resources) and the
       expanded projection (resources present) for the same acquired page.
+
+## Implementation notes
+
+- Changed `crates/krometrail-mcp/src/response.rs` so concise
+  `list_source_frames` projects rows without per-frame response resources;
+  expanded and full retain the resource links.
+- Added `response::tests::source_frame_listing_projects_rows_and_resources_by_detail`,
+  which compares the same page's compact row fields, continuation offset, and
+  omission count across concise and expanded projections.
+- No response-shape declaration changed, so no schema regeneration was needed.
+- Full gate passed: `cargo fmt --all -- --check`,
+  `bash scripts/check-wire-enum-schemas.sh`, locked workspace check/test, and
+  clippy with `-D warnings`. The test gate required the permission-enabled
+  rerun because four CDP tests need local networking/process permissions in this
+  environment.
