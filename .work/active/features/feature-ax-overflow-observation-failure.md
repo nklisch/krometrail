@@ -1,7 +1,7 @@
 ---
 id: feature-ax-overflow-observation-failure
 kind: feature
-stage: implementing
+stage: review
 tags: [browser-control]
 parent: null
 depends_on: []
@@ -433,5 +433,16 @@ emitted fields.
 - **Correlation depends on the enclosing span.** Outside an `mcp.request` span
   (e.g. a direct crate-level call in a test) the event has no `correlation_id`;
   this matches how `mcp.response.failed`/`degraded` already behave and is
-  acceptable — correlation is a property of the MCP request boundary, not the CDP
-  seam.
+ acceptable — correlation is a property of the MCP request boundary, not the CDP
+ seam.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the feature is one cohesive CDP seam with deterministic scripted-transport coverage.
+- Review weight: standard, from the project default.
+- Files changed: `crates/krometrail-cdp/src/transport/error.rs`, `crates/krometrail-cdp/src/control/snapshot.rs`, and `crates/krometrail-cdp/tests/page_observation.rs`.
+- Tests added: AX snapshot-page classification, AX query-page classification, command-failed/timeout/protocol category coverage, disconnect regression, DOM serialization classification, and post-action degraded observation propagation. The existing malformed-success response regression remains green.
+- Simplification: one shared snapshot recovery constant now serves node-limit and serialization-failure paths; no MCP edits, failure cache, transport payload, or compatibility path was added.
+- Discrepancies from design: none. The disconnect check borrows the transport error during matching so the bounded category accessor remains available for non-disconnect failures.
+- Adjacent issues parked: none.
+- Verification: `cargo fmt --all -- --check`, `bash scripts/check-wire-enum-schemas.sh`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` all passed. The full test gate required escalated loopback permission; the initial sandbox-only run had four socket-permission failures.
