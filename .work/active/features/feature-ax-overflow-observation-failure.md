@@ -1,7 +1,7 @@
 ---
 id: feature-ax-overflow-observation-failure
 kind: feature
-stage: review
+stage: done
 tags: [browser-control]
 parent: null
 depends_on: []
@@ -446,3 +446,16 @@ emitted fields.
 - Discrepancies from design: none. The disconnect check borrows the transport error during matching so the bounded category accessor remains available for non-disconnect failures.
 - Adjacent issues parked: none.
 - Verification: `cargo fmt --all -- --check`, `bash scripts/check-wire-enum-schemas.sh`, `cargo check --workspace --all-targets --locked`, `cargo test --workspace --all-targets --locked`, and `cargo clippy --workspace --all-targets --locked -- -D warnings` all passed. The full test gate required escalated loopback permission; the initial sandbox-only run had four socket-permission failures.
+
+## Review
+
+Cross-model static review (gpt-5.6-sol): approved, no material blockers.
+Verified: narrow classification at both serialization commands, shared recovery
+const reused by the node-limit path, disconnect boundary preserved, single
+bounded diagnostics event per failed command with no log storm under semantic
+wait polling (first serialization error exits the poll loop), screenshot /
+layout / fingerprint / partial-frame / malformed paths untouched. Three minors
+fixed in-cycle: stale recovery doc comment, disconnect-boundary test coverage
+extended to Closed/SubscriptionClosed, malformed-response test now pins the
+retry contract and non-classification. Full workspace gate re-run green after
+the fixes.
