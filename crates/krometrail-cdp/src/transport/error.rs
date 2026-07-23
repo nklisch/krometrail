@@ -31,6 +31,21 @@ pub enum TransportError {
 }
 
 impl TransportError {
+    /// Stable, bounded category name for diagnostics. Carries no CDP code,
+    /// message, or page content — only the fixed transport category.
+    pub const fn category(&self) -> &'static str {
+        match self {
+            Self::InvalidInput => "invalid_input",
+            Self::ConnectFailed => "connect_failed",
+            Self::CommandFailed => "command_failed",
+            Self::Protocol => "protocol",
+            Self::Timeout => "timeout",
+            Self::Disconnected => "disconnected",
+            Self::SubscriptionClosed => "subscription_closed",
+            Self::Closed => "closed",
+        }
+    }
+
     pub const fn is_retryable(&self) -> bool {
         matches!(
             self,

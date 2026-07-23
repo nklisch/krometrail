@@ -23,6 +23,16 @@ const MAX_SNAPSHOT_NODES: usize = 50_000;
 const MAX_SNAPSHOT_TEXT_BYTES: usize = 1 << 23;
 const MAX_ACCESSIBLE_PROPERTY_COUNT: usize = 32;
 
+/// Unified recovery guidance shared by the node-limit and serialization-failure observation
+/// paths: frame-scoped `document` targeting, `snapshot_page` alternatives, and `take_screenshot`
+/// for pixels.
+const SNAPSHOT_SCOPE_RECOVERY: &str = "for queries, target a single frame with the `document` scope; for waits, poll a frame-scoped `query_page` instead, or capture the page with `snapshot_page` (which reports omitted nodes explicitly) and act on the returned node references directly";
+
+/// Stable diagnostics event emitted at the CDP boundary when a whole-page serialization command
+/// fails, so the log can attribute the observation failure without page content, URLs, or raw CDP
+/// traffic.
+const OBSERVATION_SERIALIZATION_EVENT: &str = "observation.serialization.failed";
+
 const ACCESSIBLE_PROPERTIES: &[&str] = &[
     "disabled",
     "editable",
@@ -453,7 +463,11 @@ impl PageControl {
             .send_raw(&scope, "Accessibility.getFullAXTree", ax_params)
             .await
             .map_err(|error| {
-                transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
+                observation_serialization_error(
+                    error,
+                    bound.target_id,
+                    SerializationCommand::AccessibilityTree,
+                )
             })?;
         let dom_response = if include_dom_semantics || include_document_geometry {
             Some(
@@ -471,7 +485,11 @@ impl PageControl {
                     )
                     .await
                     .map_err(|error| {
-                        transport_error(error, ErrorCode::PageObservationFailed, bound.target_id)
+                        observation_serialization_error(
+                            error,
+                            bound.target_id,
+                            SerializationCommand::DomSnapshot,
+                        )
                     })?,
             )
         } else {
@@ -1484,10 +1502,78 @@ fn snapshot_node_limit_error(
     })
     .with_retry(RetryAdvice::Never)
     .with_recovery(
-        NonEmptyText::new(
-            "for queries, target a single frame with the `document` scope; for waits, poll a frame-scoped `query_page` instead, or capture the page with `snapshot_page` (which reports omitted nodes explicitly) and act on the returned node references directly",
-        )
-        .expect("snapshot limit recovery is non-empty"),
+        NonEmptyText::new(SNAPSHOT_SCOPE_RECOVERY).expect("snapshot scope recovery is non-empty"),
+    )
+}
+
+#[derive(Clone, Copy)]
+enum SerializationCommand {
+    AccessibilityTree,
+    DomSnapshot,
+}
+
+impl SerializationCommand {
+    const fn command(self) -> &'static str {
+        match self {
+            Self::AccessibilityTree => "Accessibility.getFullAXTree",
+            Self::DomSnapshot => "DOMSnapshot.captureSnapshot",
+        }
+    }
+
+    const fn stage(self) -> &'static str {
+        match self {
+            Self::AccessibilityTree => "accessibility_serialization",
+            Self::DomSnapshot => "dom_serialization",
+        }
+    }
+
+    const fn explanation(self) -> &'static str {
+        match self {
+            Self::AccessibilityTree => {
+                "the browser could not serialize this page's accessibility tree in one observation; a page this large commonly exceeds what the browser returns, so a full-page snapshot cannot complete"
+            }
+            Self::DomSnapshot => {
+                "the browser could not serialize this page's DOM snapshot in one observation; a page this large commonly exceeds what the browser returns, so a full-page snapshot cannot complete"
+            }
+        }
+    }
+}
+
+/// Classify a failed whole-page serialization command. Transport disconnects keep the existing
+/// disconnect boundary; every other failure becomes a non-retryable page-observation error whose
+/// recovery routes to frame-scoped queries and screenshots instead of a blind retry, and emits one
+/// bounded diagnostics event correlated by the enclosing `mcp.request` span.
+fn observation_serialization_error(
+    error: TransportError,
+    target_id: TargetId,
+    command: SerializationCommand,
+) -> KrometrailError {
+    if matches!(
+        &error,
+        TransportError::Disconnected | TransportError::Closed | TransportError::SubscriptionClosed
+    ) {
+        return transport_error(error, ErrorCode::PageObservationFailed, target_id);
+    }
+    tracing::warn!(
+        event = OBSERVATION_SERIALIZATION_EVENT,
+        error_code = ErrorCode::PageObservationFailed.as_str(),
+        failure_stage = command.stage(),
+        command = command.command(),
+        transport_category = error.category(),
+        "page serialization command failed"
+    );
+    KrometrailError::new(
+        ErrorCode::PageObservationFailed,
+        NonEmptyText::new(command.explanation())
+            .expect("serialization failure explanation is non-empty"),
+    )
+    .with_context(ErrorContext {
+        target_id: Some(target_id),
+        ..ErrorContext::default()
+    })
+    .with_retry(RetryAdvice::Never)
+    .with_recovery(
+        NonEmptyText::new(SNAPSHOT_SCOPE_RECOVERY).expect("snapshot scope recovery is non-empty"),
     )
 }
 

@@ -10,12 +10,15 @@ use krometrail_cdp::{
 };
 use krometrail_core::{
     BrowserConnectRequest, BrowserConnector, BrowserOperationRequest, BrowserOperationResult,
-    CoordinateSpace, CssPoint, CssRect, CssSize, ElementLocator, ImageFormat, InspectPageRequest,
-    LiveObservationRequest, ObservationPart, ReadOnlyEvaluationRequest, ScreenshotRequest,
-    ScreenshotTarget, SnapshotPageRequest,
+    CoordinateSpace, CssPoint, CssRect, CssSize, ElementLocator, ErrorCode, ImageFormat,
+    InspectPageRequest, KrometrailError, LiveObservationRequest, ObservationPart, PageSelection,
+    QueryPageRequest, ReadOnlyEvaluationRequest, RetryAdvice, ScreenshotRequest, ScreenshotTarget,
+    SemanticQuery, SnapshotPageAnchor, SnapshotPageRequest,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
+
+const SNAPSHOT_SCOPE_RECOVERY: &str = "for queries, target a single frame with the `document` scope; for waits, poll a frame-scoped `query_page` instead, or capture the page with `snapshot_page` (which reports omitted nodes explicitly) and act on the returned node references directly";
 
 #[derive(Clone)]
 struct ScriptedFactory(ScriptedCdp);
@@ -105,6 +108,174 @@ fn script_page_observation(transport: &ScriptedCdp) {
         "Page.captureScreenshot",
         json!({"data":png_base64(100, 50)}),
     );
+}
+
+async fn connect_minimal_observation_session(
+    transport: &ScriptedCdp,
+) -> (
+    Arc<dyn krometrail_core::BrowserSessionPort>,
+    krometrail_core::TargetId,
+) {
+    transport.hold_events_open();
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"number","value":2}}),
+    );
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"string","value":"visible"}}),
+    );
+    transport.push_response("Accessibility.getFullAXTree", json!({}));
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        Arc::new(ScriptedFactory(transport.clone())),
+    );
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            krometrail_core::AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/scripted")
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let target_id = session.status().await.unwrap().pages[0].target.target.id();
+    (session, target_id)
+}
+
+fn assert_serialization_failure(error: &KrometrailError, message_fragment: &str) {
+    assert_eq!(error.code, ErrorCode::PageObservationFailed);
+    assert_eq!(error.retry, RetryAdvice::Never);
+    assert_eq!(
+        error.recovery.as_ref().map(|recovery| recovery.as_str()),
+        Some(SNAPSHOT_SCOPE_RECOVERY)
+    );
+    assert!(error.message.as_str().contains(message_fragment));
+    assert!(
+        !error
+            .message
+            .as_str()
+            .contains("browser rejected or could not complete")
+    );
+}
+
+async fn ax_serialization_failure(error: TransportError) -> KrometrailError {
+    let transport = ScriptedCdp::chrome();
+    let (session, target_id) = connect_minimal_observation_session(&transport).await;
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_failure("Accessibility.getFullAXTree", error);
+    let error = session
+        .execute(
+            BrowserOperationRequest::SnapshotPage(SnapshotPageRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    session.stop().await.unwrap();
+    error
+}
+
+#[tokio::test]
+async fn ax_serialization_failure_is_classified_for_snapshot_page() {
+    let error = ax_serialization_failure(TransportError::CommandFailed).await;
+    assert_serialization_failure(&error, "serialize");
+    assert!(error.message.as_str().contains("accessibility"));
+}
+
+#[tokio::test]
+async fn ax_serialization_failure_is_classified_for_query_page() {
+    let transport = ScriptedCdp::chrome();
+    let (session, target_id) = connect_minimal_observation_session(&transport).await;
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_failure("Accessibility.getFullAXTree", TransportError::CommandFailed);
+    let request = QueryPageRequest::new(
+        PageSelection::Target(target_id),
+        SemanticQuery::role("button", None).unwrap(),
+        None,
+        20,
+    )
+    .unwrap();
+    let error = session
+        .execute(
+            BrowserOperationRequest::QueryPage(request),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_serialization_failure(&error, "serialize");
+    assert!(error.message.as_str().contains("accessibility"));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn ax_serialization_failure_categories_have_the_same_classification() {
+    for transport_error in [
+        TransportError::CommandFailed,
+        TransportError::Timeout,
+        TransportError::Protocol,
+    ] {
+        let error = ax_serialization_failure(transport_error).await;
+        assert_serialization_failure(&error, "serialize");
+        assert!(error.message.as_str().contains("accessibility"));
+    }
+}
+
+#[tokio::test]
+async fn ax_serialization_disconnect_preserves_browser_disconnected_boundary() {
+    let error = ax_serialization_failure(TransportError::Disconnected).await;
+    assert_eq!(error.code, ErrorCode::BrowserDisconnected);
+    assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+}
+
+#[tokio::test]
+async fn dom_serialization_failure_is_classified_with_dom_explanation() {
+    let transport = ScriptedCdp::chrome();
+    let (session, target_id) = connect_minimal_observation_session(&transport).await;
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_response("Accessibility.getFullAXTree", ax_tree());
+    transport.push_failure("DOMSnapshot.captureSnapshot", TransportError::CommandFailed);
+    let mut request = SnapshotPageRequest::new(target_id);
+    request.anchor = SnapshotPageAnchor::Viewport;
+    let error = session
+        .execute(
+            BrowserOperationRequest::SnapshotPage(request),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_serialization_failure(&error, "serialize");
+    assert!(error.message.as_str().contains("DOM snapshot"));
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn post_action_live_observation_preserves_ax_serialization_classification() {
+    let transport = ScriptedCdp::chrome();
+    let (session, target_id) = connect_minimal_observation_session(&transport).await;
+    transport.push_response("Runtime.evaluate", identity());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"type":"number","value":1.0}}),
+    );
+    transport.push_response("Page.getFrameTree", frame_tree());
+    transport.push_failure("Accessibility.getFullAXTree", TransportError::CommandFailed);
+    let result = session
+        .execute(
+            BrowserOperationRequest::ObserveLive(LiveObservationRequest::new(target_id)),
+            krometrail_core::BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::ObserveLive(live) = result else {
+        panic!("live result")
+    };
+    let ObservationPart::Unavailable(error) = live.snapshot else {
+        panic!("snapshot must be degraded")
+    };
+    assert_serialization_failure(&error, "serialize");
+    assert!(error.message.as_str().contains("accessibility"));
+    session.stop().await.unwrap();
 }
 
 #[tokio::test]
