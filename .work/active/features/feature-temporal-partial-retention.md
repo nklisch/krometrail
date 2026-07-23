@@ -1,9 +1,19 @@
 ---
-id: idea-temporal-partial-retention-gaps
+id: feature-temporal-partial-retention
+kind: feature
+stage: drafting
+tags: [temporal]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-22
 updated: 2026-07-22
-tags: [temporal, bug]
 ---
+
+# allow_partial resolves honestly for every anchor kind
+
+## Brief
 
 Two related gaps in allow_partial temporal resolution, both repro'd in the
 v1.5.0 shakedown:
@@ -32,3 +42,10 @@ v1.5.0 shakedown:
 Also worth a look while here: an idle page tail (no visual change → no
 frames) surfaces as `partially_captured`, which reads as capture loss to a
 caller even though the page simply stopped changing.
+
+## Simplification opportunity
+
+If clamping generalizes across anchor kinds, the interaction-only special
+case (`clamp_natural_interaction_range`) collapses into one uniform
+allow_partial rule, and the "extends beyond captured source-frame bounds"
+refusal shrinks to the cases where nothing intersects retention at all.
