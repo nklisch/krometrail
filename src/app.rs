@@ -198,10 +198,13 @@ pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
     });
     let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
     let data_directory = data_directory();
+    let wall_clock: Arc<dyn WallClock> = Arc::new(SystemWallClock);
+    let disk_budget = configured_disk_budget()?;
     let storage = open_storage_with_budget(
         &data_directory,
-        configured_disk_budget()?,
+        disk_budget,
         Arc::clone(&clock),
+        Arc::clone(&wall_clock),
     )?;
     let range_handles: Arc<dyn ResolvedRangeHandles> = Arc::new(ProcessResolvedRangeHandles::new(
         Arc::clone(&ids),
@@ -260,12 +263,18 @@ pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
             Arc::clone(&storage.browser_event_sink),
             browser_event_config,
         )
+        .with_session_catalog(
+            Arc::clone(&storage.catalog),
+            Arc::clone(&wall_clock),
+            disk_budget,
+            mcp_config.enabled_capabilities().to_vec(),
+        )
         .with_managed_download_root(data_directory.join("browser-downloads"))
         .with_interaction_evidence(Arc::clone(&storage.store) as Arc<dyn InteractionEvidenceSink>),
     );
     Ok(Runtime::new(RuntimeDependencies {
         clock,
-        wall_clock: Arc::new(SystemWallClock),
+        wall_clock,
         ids,
         browser,
         recording: storage.recording,
@@ -363,6 +372,7 @@ fn open_storage_with_budget(
     data_directory: &std::path::Path,
     budget: DiskBudgetBytes,
     clock: Arc<dyn MonotonicClock>,
+    wall_clock: Arc<dyn WallClock>,
 ) -> Result<StorageDependencies> {
     // Claim an exclusive instance root before touching any retained data. Every
     // destructive startup path below — legacy clearing, incompatible-cache
@@ -417,6 +427,14 @@ fn open_storage_with_budget(
         frames_removed = recovery.frames_removed,
         "recording store recovery complete"
     );
+    let ended_sessions = index.end_dangling_sessions(wall_clock.now())?;
+    if ended_sessions != 0 {
+        tracing::info!(
+            event = "recording.session.dangling_ended",
+            ended_sessions,
+            "ended recording sessions left by an earlier process"
+        );
+    }
     let segments = Arc::new(SegmentWriter::open(SegmentStoreConfig {
         directory: segments_directory,
         rotation: RotationConfig::suggested(),
@@ -684,6 +702,7 @@ mod tests {
             &recording_directory,
             DiskBudgetBytes::default(),
             test_process_clock(),
+            Arc::new(SystemWallClock),
         )
         .unwrap();
         let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
@@ -767,9 +786,13 @@ mod tests {
     #[tokio::test]
     async fn storage_composition_shares_lossless_gap_metadata_and_fails_before_runtime() {
         let root = std::env::temp_dir().join(format!("krometrail-storage-test-{}", Uuid::new_v4()));
-        let storage =
-            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
-                .unwrap();
+        let storage = open_storage_with_budget(
+            &root,
+            DiskBudgetBytes::default(),
+            test_process_clock(),
+            Arc::new(SystemWallClock),
+        )
+        .unwrap();
         let concrete = Arc::as_ptr(&storage.store) as *const ();
         assert_eq!(
             concrete,
@@ -844,8 +867,13 @@ mod tests {
             std::env::temp_dir().join(format!("krometrail-storage-file-{}", Uuid::new_v4()));
         std::fs::write(&occupied, b"not a data directory").unwrap();
         assert!(
-            open_storage_with_budget(&occupied, DiskBudgetBytes::default(), test_process_clock())
-                .is_err()
+            open_storage_with_budget(
+                &occupied,
+                DiskBudgetBytes::default(),
+                test_process_clock(),
+                Arc::new(SystemWallClock),
+            )
+            .is_err()
         );
         std::fs::remove_file(occupied).unwrap();
     }
@@ -901,9 +929,13 @@ mod tests {
     fn one_startup_result_controls_video_capability_and_service_construction() {
         let root =
             std::env::temp_dir().join(format!("krometrail-video-composition-{}", Uuid::new_v4()));
-        let storage =
-            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
-                .unwrap();
+        let storage = open_storage_with_budget(
+            &root,
+            DiskBudgetBytes::default(),
+            test_process_clock(),
+            Arc::new(SystemWallClock),
+        )
+        .unwrap();
         let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
         let artifact_generation: Arc<dyn ArtifactGeneration> = Arc::new(
             TemporalVisionArtifactService::new(
@@ -1022,9 +1054,13 @@ mod tests {
     async fn bundle_composition_shares_one_store_and_one_artifact_service() {
         let root =
             std::env::temp_dir().join(format!("krometrail-bundle-composition-{}", Uuid::new_v4()));
-        let storage =
-            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
-                .unwrap();
+        let storage = open_storage_with_budget(
+            &root,
+            DiskBudgetBytes::default(),
+            test_process_clock(),
+            Arc::new(SystemWallClock),
+        )
+        .unwrap();
         let concrete = Arc::as_ptr(&storage.store) as *const ();
         // Every store projection the bundle service receives points at the one
         // concrete RecordingStore.
@@ -1095,9 +1131,13 @@ mod tests {
         use tokio::sync::Notify;
 
         let root = std::env::temp_dir().join(format!("krometrail-bundle-gate-{}", Uuid::new_v4()));
-        let storage =
-            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
-                .unwrap();
+        let storage = open_storage_with_budget(
+            &root,
+            DiskBudgetBytes::default(),
+            test_process_clock(),
+            Arc::new(SystemWallClock),
+        )
+        .unwrap();
         let session = krometrail_core::SessionId::from_uuid(Uuid::from_u128(1));
         let target = krometrail_core::TargetId::from_uuid(Uuid::from_u128(2));
 

@@ -323,11 +323,11 @@ pub(super) async fn perform_shutdown(
     }
 }
 
-pub(super) fn finish_state(shared: &Arc<SessionShared>, state: &mut SupervisorState) {
+pub(super) fn finish_state(shared: &Arc<SessionShared>, state: &mut SupervisorState) -> bool {
     // Several shutdown inputs can race with transport/process teardown. The first terminal
     // transition owns the single Ended publication and channel closure; later inputs are no-ops.
     if state.session_state == BrowserSessionState::Ended {
-        return;
+        return false;
     }
     let previous = state.session_state;
     state.session_state = BrowserSessionState::Ended;
@@ -344,4 +344,55 @@ pub(super) fn finish_state(shared: &Arc<SessionShared>, state: &mut SupervisorSt
         .publish(BrowserSessionEvent::SessionStateChanged {
             state: BrowserSessionState::Ended,
         });
+    true
+}
+
+pub(super) async fn finish_state_and_persist(
+    shared: &Arc<SessionShared>,
+    state: &mut SupervisorState,
+) {
+    if !finish_state(shared, state) {
+        return;
+    }
+    let Some(assembly) = shared.session_catalog.as_ref() else {
+        return;
+    };
+    let Some(recording_session) = shared.recording_session.as_ref() else {
+        return;
+    };
+    let record = {
+        let mut record = recording_session.lock().expect("recording session lock");
+        if record.lifecycle() == SessionLifecycle::Ended {
+            return;
+        }
+        if record.lifecycle() != SessionLifecycle::Stopping {
+            if let Err(error) = record.transition(SessionLifecycle::Stopping, None) {
+                tracing::warn!(
+                    event = "recording.session.ended_transition_failed",
+                    error_code = error.code.as_str(),
+                    "could not transition recording session to stopping"
+                );
+                return;
+            }
+        }
+        let ended_at = assembly.wall_clock.now().max(record.started_at());
+        if let Err(error) = record.transition(SessionLifecycle::Ended, Some(ended_at)) {
+            tracing::warn!(
+                event = "recording.session.ended_transition_failed",
+                error_code = error.code.as_str(),
+                "could not transition recording session to ended"
+            );
+            return;
+        }
+        let record_value = record.clone();
+        *record = record_value.clone();
+        record_value
+    };
+    if let Err(error) = assembly.catalog.put_session(record).await {
+        tracing::warn!(
+            event = "recording.session.ended_persist_failed",
+            error_code = error.code.as_str(),
+            "could not persist ended recording session"
+        );
+    }
 }

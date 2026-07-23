@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-partial-retention
 kind: feature
-stage: implementing
+stage: review
 tags: [temporal]
 parent: null
 depends_on: []
@@ -460,3 +460,35 @@ untouched.
   per-target capture-state evidence lands later, a provable
   absence-of-change refinement can be designed then; nothing in this feature
   forecloses it.
+
+## Implementation notes
+
+- Execution capability: inline, direct-read implementation; the feature has one cohesive ownership
+  bundle with ordered core, store, CDP, and documentation seams.
+- Review weight: standard by default; the requested stage remains `implementing` and no review or commit
+  transition was performed.
+- Files changed: `crates/krometrail-core/src/timeline/range.rs`; `crates/krometrail-store/src/index/catalog.rs`,
+  `crates/krometrail-store/tests/range_resolution.rs`, and `crates/krometrail-store/tests/temporal_queries.rs`;
+  `crates/krometrail-cdp/src/session/{mod,reconnect,runtime,shutdown}.rs` and
+  `crates/krometrail-cdp/tests/session_supervision.rs`; `src/app.rs` and
+  `src/app/live_evaluation.rs`; `docs/SPEC.md`, `docs/ARCHITECTURE.md`, and
+  `docs/VISUAL-EVIDENCE.md`. `docs/public/llms-full.txt` was regenerated with `bun run docs:build`.
+- Tests added/updated: core `clamp_partial_range_is_anchor_kind_agnostic_and_intersects`,
+  `classify_retention_clamps_session_time_candidates_with_full_warning_set`, and
+  `classify_retention_refuses_disjoint_and_require_complete_overshoot`; store
+  `session_time_tail_overshoot_resolves_partial_with_not_yet_elapsed`,
+  `wall_clock_tail_overshoot_resolves_partial`,
+  `navigation_and_marker_windows_clamp_like_interactions`,
+  `disjoint_and_require_complete_requests_still_refuse`,
+  `absent_session_record_omits_not_yet_elapsed_refinement`,
+  `end_dangling_sessions_marks_prior_boot_sessions_ended`, and
+  `live_elapsed_idle_tail_keeps_partially_captured_without_refinement`; CDP
+  `connect_persists_recording_session_and_shutdown_ends_it` plus the connect-write failure regression.
+  Existing explicit-range refusal assertions were updated to the current partial-retention contract.
+- Simplification: replaced the anchor-kind-matched, seeded, `Result`-wrapped interaction clamp with one
+  eight-line intersection policy; no wire, schema, port, or compatibility path was added.
+- Discrepancies from design: `docs/ARCHITECTURE.md` was updated alongside the named SPEC and visual-evidence
+  docs because it still asserted interaction-only clamping; `temporal_queries.rs` had one stale allow-partial
+  explicit-range refusal assertion and was updated in place. The qualification composition path also receives
+  the same catalog assembly so every production connector composition persists session metadata.
+- Adjacent issues parked: none.

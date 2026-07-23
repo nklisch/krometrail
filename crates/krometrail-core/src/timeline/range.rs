@@ -1583,7 +1583,7 @@ fn classify_retention(
         )
     })?;
     let resolved = if retained.start() > candidate.start() || retained.end() < candidate.end() {
-        clamp_natural_interaction_range(seed, candidate, retained, options)?.ok_or_else(|| {
+        clamp_partial_range(candidate, retained, options).ok_or_else(|| {
             range_not_found(
                 if has_evictions {
                     "requested interval includes uncaptured evidence beyond an evicted edge"
@@ -1657,26 +1657,16 @@ fn classify_retention(
     Ok((resolved, warnings))
 }
 
-fn clamp_natural_interaction_range(
-    seed: &RangeSeed,
-    requested: SessionRange,
+fn clamp_partial_range(
+    candidate: SessionRange,
     retained: SessionRange,
     options: RangeResolutionOptions,
-) -> Result<Option<SessionRange>> {
-    if options.retention != RetentionPolicy::AllowPartial
-        || !matches!(
-            seed.anchor_kind,
-            TemporalRangeAnchorKind::Interaction | TemporalRangeAnchorKind::LatestInteraction
-        )
-        || !ranges_intersect(requested, retained)
+) -> Option<SessionRange> {
+    if options.retention != RetentionPolicy::AllowPartial || !ranges_intersect(candidate, retained)
     {
-        return Ok(None);
+        return None;
     }
-    SessionRange::new(
-        requested.start().max(retained.start()),
-        requested.end().min(retained.end()),
-    )
-    .map(Some)
+    Some(intersection(candidate, retained))
 }
 
 fn ranges_intersect(left: SessionRange, right: SessionRange) -> bool {
@@ -1834,7 +1824,9 @@ impl ErrorContextInteraction for ErrorContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CaptureGapReason, InteractionTiming, IntervalAnchorScope};
+    use crate::{
+        CaptureGapReason, CaptureOrdinal, InteractionTiming, IntervalAnchorScope, ObservedTime,
+    };
     use std::num::NonZeroU64;
     fn ids() -> (
         SessionId,
@@ -1853,6 +1845,41 @@ mod tests {
             NavigationId::from_uuid(id),
             MarkerId::from_uuid(id),
         )
+    }
+
+    fn test_frame(at: u64, ordinal: u64) -> CapturedFrame {
+        let (session, target, frame, _, _, _) = ids();
+        CapturedFrame::new(
+            FrameId::from_uuid(uuid::Uuid::from_u128(
+                frame.as_uuid().as_u128() + ordinal as u128,
+            )),
+            session,
+            target,
+            CaptureOrdinal::new(ordinal).unwrap(),
+            None,
+            ObservedTime::from_nanos(at),
+            SessionTime::from_nanos(at),
+            crate::ImageFormat::Jpeg,
+            crate::PixelDimensions::new(2, 2).unwrap(),
+            crate::PixelDimensions::new(2, 2).unwrap(),
+            crate::DeviceScaleFactor::new(1.0).unwrap(),
+            vec![],
+        )
+        .unwrap()
+    }
+
+    fn range_seed(requested_range: SessionRange) -> RangeSeed {
+        let (session_id, target_id, _, _, _, _) = ids();
+        RangeSeed {
+            session_id,
+            target_id,
+            requested_range,
+            anchor_kind: TemporalRangeAnchorKind::SessionTime,
+            anchor_reference: ResolvedAnchorReference::Interval,
+            requested_anchor_time: range_midpoint(requested_range),
+            applied_interaction_window: None,
+            preloaded_frames: None,
+        }
     }
     fn resolved(
         requested: SessionRange,
@@ -2001,6 +2028,173 @@ mod tests {
         let mut invalid_wire = serde_json::to_value(valid).unwrap();
         invalid_wire["anchor_kind"] = serde_json::json!("latest_interaction");
         assert!(serde_json::from_value::<ResolvedRange>(invalid_wire).is_err());
+    }
+
+    #[test]
+    fn clamp_partial_range_is_anchor_kind_agnostic_and_intersects() {
+        let retained =
+            SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap();
+        let allow_partial = RangeResolutionOptions {
+            retention: RetentionPolicy::AllowPartial,
+            ..RangeResolutionOptions::DEFAULT
+        };
+        assert_eq!(
+            clamp_partial_range(
+                SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(5)).unwrap(),
+                retained,
+                allow_partial,
+            ),
+            Some(
+                SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(5)).unwrap()
+            )
+        );
+        assert_eq!(
+            clamp_partial_range(
+                SessionRange::new(SessionTime::from_nanos(5), SessionTime::from_nanos(11)).unwrap(),
+                retained,
+                allow_partial,
+            ),
+            Some(
+                SessionRange::new(SessionTime::from_nanos(5), SessionTime::from_nanos(10)).unwrap()
+            )
+        );
+        assert_eq!(
+            clamp_partial_range(
+                SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(11)).unwrap(),
+                retained,
+                allow_partial,
+            ),
+            Some(retained)
+        );
+        assert_eq!(
+            clamp_partial_range(
+                SessionRange::new(SessionTime::from_nanos(20), SessionTime::from_nanos(30))
+                    .unwrap(),
+                retained,
+                allow_partial,
+            ),
+            None
+        );
+        assert_eq!(
+            clamp_partial_range(
+                SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(11)).unwrap(),
+                retained,
+                RangeResolutionOptions::DEFAULT,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_retention_clamps_session_time_candidates_with_full_warning_set() {
+        let requested =
+            SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30)).unwrap();
+        let retained =
+            SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap();
+        let seed = range_seed(requested);
+        let frames = vec![test_frame(1, 1), test_frame(10, 2)];
+        let availability = FrameAvailability {
+            retained_bounds: Some(retained),
+            evicted_ranges: vec![],
+        };
+        let options = RangeResolutionOptions {
+            retention: RetentionPolicy::AllowPartial,
+            ..RangeResolutionOptions::DEFAULT
+        };
+        let (resolved, warnings) = classify_retention(
+            &seed,
+            &frames,
+            &availability,
+            options,
+            Some(SessionTime::from_nanos(12)),
+        )
+        .unwrap();
+        assert_eq!(resolved, retained);
+        assert!(warnings.iter().any(|warning| matches!(
+            warning,
+            RetentionWarning::RequestedEndAfterNewestRetained {
+                requested: end,
+                newest_retained,
+            } if *end == requested.end() && *newest_retained == retained.end()
+        )));
+        assert!(warnings.iter().any(|warning| matches!(
+            warning,
+            RetentionWarning::RequestedEndNotYetElapsed {
+                requested: end,
+                newest_retained,
+                session_now,
+            } if *end == requested.end()
+                && *newest_retained == retained.end()
+                && *session_now == SessionTime::from_nanos(12)
+        )));
+        assert!(warnings.iter().any(|warning| matches!(
+            warning,
+            RetentionWarning::PartiallyCaptured {
+                requested: original,
+                retained: resolved,
+            } if *original == requested && *resolved == retained
+        )));
+
+        let (_, warnings_without_session_now) =
+            classify_retention(&seed, &frames, &availability, options, None).unwrap();
+        assert!(
+            !warnings_without_session_now.iter().any(|warning| matches!(
+                warning,
+                RetentionWarning::RequestedEndNotYetElapsed { .. }
+            ))
+        );
+    }
+
+    #[test]
+    fn classify_retention_refuses_disjoint_and_require_complete_overshoot() {
+        let retained =
+            SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap();
+        let availability = FrameAvailability {
+            retained_bounds: Some(retained),
+            evicted_ranges: vec![],
+        };
+        let frames = vec![test_frame(1, 1), test_frame(10, 2)];
+
+        let disjoint = range_seed(
+            SessionRange::new(SessionTime::from_nanos(20), SessionTime::from_nanos(30)).unwrap(),
+        );
+        let error = classify_retention(
+            &disjoint,
+            &frames,
+            &availability,
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(
+            error.message.as_str(),
+            "requested interval extends beyond captured source-frame bounds"
+        );
+        assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+        assert!(error.recovery.is_some());
+
+        let overshoot = range_seed(
+            SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30)).unwrap(),
+        );
+        let error = classify_retention(
+            &overshoot,
+            &frames,
+            &availability,
+            RangeResolutionOptions::DEFAULT,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(
+            error.message.as_str(),
+            "requested interval extends beyond captured source-frame bounds"
+        );
+        assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+        assert!(error.recovery.is_some());
     }
 
     #[test]

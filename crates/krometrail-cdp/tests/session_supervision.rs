@@ -6,7 +6,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use krometrail_cdp::{
@@ -16,9 +16,10 @@ use krometrail_cdp::{
 };
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserSessionEvent,
-    BrowserSessionState, ByteOffset, CaptureGapReason, EncodedFrame, EveryNthFrame, FrameAddress,
-    IdSource, IdValue, ImageFormat, MonotonicClock, ObservedTime, PortFuture, RecordingSink,
-    SegmentId, SessionId, TargetLifecycle,
+    BrowserSessionState, ByteOffset, CapabilityId, CaptureGapReason, DiskBudgetBytes, EncodedFrame,
+    EveryNthFrame, FrameAddress, IdSource, IdValue, ImageFormat, MonotonicClock, ObservedTime,
+    PageTarget, PortFuture, RecordingCatalog, RecordingSession, RecordingSink, SegmentId,
+    SessionId, TargetId, TargetLifecycle, WallClock,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -63,6 +64,79 @@ struct CaptureTestIds {
     next: AtomicU64,
 }
 
+#[derive(Clone, Debug)]
+struct SessionCatalogProbe {
+    records: Arc<Mutex<Vec<RecordingSession>>>,
+    fail_put: bool,
+}
+
+impl SessionCatalogProbe {
+    fn new(fail_put: bool) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(Vec::new())),
+            fail_put,
+        }
+    }
+}
+
+impl RecordingCatalog for SessionCatalogProbe {
+    fn put_session(
+        &self,
+        session: RecordingSession,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        if self.fail_put {
+            return Box::pin(std::future::ready(Err(
+                krometrail_core::KrometrailError::new(
+                    krometrail_core::ErrorCode::PersistenceFailed,
+                    krometrail_core::NonEmptyText::new("catalog write failed").unwrap(),
+                ),
+            )));
+        }
+        self.records.lock().unwrap().push(session);
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn put_target(
+        &self,
+        _session_id: SessionId,
+        _target: PageTarget,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn session(
+        &self,
+        session_id: SessionId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<RecordingSession>>> {
+        let record = self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|record| record.id() == session_id)
+            .cloned();
+        Box::pin(std::future::ready(Ok(record)))
+    }
+
+    fn target(
+        &self,
+        _session_id: SessionId,
+        _target_id: TargetId,
+    ) -> PortFuture<'_, krometrail_core::Result<Option<PageTarget>>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+}
+
+#[derive(Debug)]
+struct FixedWallClock(SystemTime);
+
+impl WallClock for FixedWallClock {
+    fn now(&self) -> SystemTime {
+        self.0
+    }
+}
+
 impl IdSource for CaptureTestIds {
     fn next(&self) -> IdValue {
         IdValue::from_uuid(Uuid::from_u128(
@@ -88,6 +162,113 @@ fn reconnect_policy_is_finite_and_fixture_is_static() {
         reconnect_attach_concurrency: 2,
     };
     assert_eq!(config.subscriber_capacity, 2);
+}
+
+#[tokio::test]
+async fn connect_persists_recording_session_and_shutdown_ends_it() {
+    let initial = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    initial.hold_events_open();
+    initial.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "probe-session"}),
+    );
+    initial.push_response("Target.attachToTarget", json!({"sessionId": "session-a"}));
+    let factory = Arc::new(support::scripted_cdp::ScriptedCdpFactory::new([
+        Arc::clone(&initial),
+    ]));
+    let catalog = SessionCatalogProbe::new(false);
+    let stride = EveryNthFrame::new(3).unwrap();
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        factory,
+    )
+    .with_capture(
+        Arc::new(CaptureTestClock),
+        Arc::new(CaptureTestIds::default()),
+        Arc::new(CaptureTestSink),
+        Arc::new(support::retention::AlwaysAvailableRetention),
+        CaptureConfig::default(),
+    )
+    .with_session_catalog(
+        Arc::new(catalog.clone()),
+        Arc::new(FixedWallClock(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+        )),
+        DiskBudgetBytes::new(1024).unwrap(),
+        vec![CapabilityId::Control],
+    )
+    .with_config(SupervisorConfig {
+        reconnect: ReconnectPolicy {
+            delays: vec![Duration::ZERO].into_boxed_slice(),
+            attempt_timeout: Duration::from_secs(1),
+        },
+        subscriber_capacity: 64,
+        reconnect_target_limit: 8,
+        reconnect_attach_concurrency: 2,
+    });
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake")
+                .unwrap()
+                .with_every_nth_frame(stride),
+        ))
+        .await
+        .unwrap();
+    let records = catalog.records.lock().unwrap().clone();
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].lifecycle(),
+        krometrail_core::SessionLifecycle::Recording
+    );
+    assert_eq!(records[0].origin(), ObservedTime::from_nanos(0));
+    assert_eq!(records[0].every_nth_frame(), stride);
+    assert!(records[0].ended_at().is_none());
+
+    session.stop().await.unwrap();
+    let records = catalog.records.lock().unwrap().clone();
+    assert_eq!(records.len(), 2);
+    let ended = records.last().unwrap();
+    assert_eq!(ended.id(), records[0].id());
+    assert_eq!(ended.lifecycle(), krometrail_core::SessionLifecycle::Ended);
+    assert!(ended.ended_at().unwrap() >= ended.started_at());
+}
+
+#[tokio::test]
+async fn connect_session_catalog_failure_fails_connect() {
+    let initial = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    initial.hold_events_open();
+    initial.push_response(
+        "Target.attachToTarget",
+        json!({"sessionId": "probe-session"}),
+    );
+    initial.push_response("Target.attachToTarget", json!({"sessionId": "session-a"}));
+    let factory = Arc::new(support::scripted_cdp::ScriptedCdpFactory::new([
+        Arc::clone(&initial),
+    ]));
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        factory,
+    )
+    .with_session_catalog(
+        Arc::new(SessionCatalogProbe::new(true)),
+        Arc::new(FixedWallClock(SystemTime::UNIX_EPOCH)),
+        DiskBudgetBytes::new(1024).unwrap(),
+        vec![CapabilityId::Control],
+    );
+    let error = match connector
+        .connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake").unwrap(),
+        ))
+        .await
+    {
+        Ok(_) => panic!("a failed catalog write must fail browser connect"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, krometrail_core::ErrorCode::PersistenceFailed);
 }
 
 #[tokio::test]

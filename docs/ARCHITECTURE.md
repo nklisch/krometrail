@@ -487,10 +487,10 @@ ResolvedRange
 ```
 
 Artifact generation consumes only resolved ranges. This prevents each artifact implementation from interpreting natural anchors differently.
-Retention classification may intersect only interaction/latest-interaction natural ranges with retained
-capture bounds under `allow_partial`. It preserves the requested range and exact anchor reference while
-publishing a distinct captured-bound warning; explicit ranges, complete-retention policy, disjoint ranges,
-and internal eviction holes never enter that clamp path.
+Retention classification may intersect any requested range with retained capture bounds under
+`allow_partial`, regardless of anchor kind. It preserves the requested range and exact anchor reference
+while publishing a distinct captured-bound warning; complete-retention policy, disjoint ranges, and
+internal eviction holes never enter that clamp path.
 
 After validating and partitioning exact source frames, the artifact service applies the caller's epoch selection before output counting, cache lookup, decoding, or generation. Generic artifact requests select all plans. The temporal debug-bundle service instead supplies its effective anchor by default, or all plans when the request explicitly asks for every epoch; selected plans retain their original descriptors and the result retains the full resolved-range authority.
 

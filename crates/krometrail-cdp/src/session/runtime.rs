@@ -710,7 +710,7 @@ pub(super) async fn run_supervisor(
                                 },
                             )
                             .await;
-                            finish_state(&shared, &mut state);
+                            finish_state_and_persist(&shared, &mut state).await;
                             break;
                         }
                     }
@@ -841,7 +841,7 @@ pub(super) async fn run_supervisor(
                         };
                         *shared.stop_result.lock().expect("stop result lock") =
                             Some(outcome.clone());
-                        finish_state(&shared, &mut state);
+                        finish_state_and_persist(&shared, &mut state).await;
                         let _ = sender.send(outcome);
                     }
                     Err(error) => {

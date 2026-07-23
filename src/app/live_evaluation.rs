@@ -21,7 +21,7 @@ use krometrail_cdp::{LauncherConfig, ProductionBrowserConnector, SystemChromeLau
 use krometrail_core::{
     BrowserConnectRequest, BrowserConnector, BrowserInstallation, BrowserProduct, DiskBudgetBytes,
     ErrorCode, IdSource, KrometrailError, LaunchBrowser, ManagedProfile, MonotonicClock,
-    NonEmptyText, Result,
+    NonEmptyText, Result, WallClock,
 };
 use krometrail_store::RecordingStore;
 use temporal_evaluation::{
@@ -399,10 +399,12 @@ pub fn build_qualification_runtime(
     let clock: Arc<dyn MonotonicClock> = Arc::new(super::ProcessMonotonicClock {
         origin: Instant::now(),
     });
+    let wall_clock: Arc<dyn WallClock> = Arc::new(SystemWallClock);
     let storage = open_storage_with_budget(
         &config.data_root(),
         config.retention_budget,
         Arc::clone(&clock),
+        Arc::clone(&wall_clock),
     )?;
     let ids: Arc<dyn IdSource> = Arc::new(super::ProcessIdSource);
     let mcp_config = McpConfig::default();
@@ -451,6 +453,12 @@ pub fn build_qualification_runtime(
             Arc::clone(&storage.browser_event_sink),
             browser_event_config(&mcp_config),
         )
+        .with_session_catalog(
+            Arc::clone(&storage.catalog),
+            Arc::clone(&wall_clock),
+            config.retention_budget,
+            mcp_config.enabled_capabilities().to_vec(),
+        )
         .with_interaction_evidence(
             Arc::clone(&storage.store) as Arc<dyn krometrail_core::InteractionEvidenceSink>
         ),
@@ -458,7 +466,7 @@ pub fn build_qualification_runtime(
     Ok(QualificationRuntime {
         dependencies: RuntimeDependencies {
             clock,
-            wall_clock: Arc::new(SystemWallClock),
+            wall_clock,
             ids,
             browser,
             recording: storage.recording,

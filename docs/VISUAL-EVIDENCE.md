@@ -360,6 +360,13 @@ The capture path receives a CDP frame, immediately acknowledges it, and only the
 
 A pending capture-geometry refresh is metadata uncertainty, not missing visual evidence. Frames remain retained with the last established viewport and a `viewport_metadata_incomplete` warning until refresh completes; no capture gap is declared solely for beginning or completing that refresh.
 
+`partially_captured` means that retained frames do not cover the full requested interval. It is an
+evidence-coverage statement, not a claim that capture loss occurred: a requested tail may simply extend
+past the newest retained frame while the session is still live. When guarded session-time evidence proves
+that the requested end has not yet elapsed, `requested_end_not_yet_elapsed` refines that live tail. An
+elapsed idle tail keeps `partially_captured`, because durable retained evidence cannot distinguish a page
+that stopped changing from a capture stream that has not yet declared a gap.
+
 Artifacts never interpolate across an undeclared capture gap.
 
 A gap appears:

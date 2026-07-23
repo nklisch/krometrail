@@ -58,7 +58,7 @@ async fn finish_interrupted_reconnect(
         *shared.stop_result.lock().expect("stop result lock") = Some(outcome.clone());
         let _ = sender.send(outcome);
     }
-    finish_state(shared, state);
+    finish_state_and_persist(shared, state).await;
     result.map(|_| ())
 }
 
@@ -834,7 +834,7 @@ pub(super) async fn reconnect_loop_transactional(
             },
         )
         .await;
-        finish_state(shared, state);
+        finish_state_and_persist(shared, state).await;
     }
     true
 }

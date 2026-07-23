@@ -21,12 +21,14 @@ use krometrail_core::{
     BrowserEventSink, BrowserInstallation, BrowserOperationContext, BrowserOperationRequest,
     BrowserOperationResult, BrowserOperationScope, BrowserOwnership, BrowserSessionEvent,
     BrowserSessionEvents, BrowserSessionPort, BrowserSessionState, BrowserStatus,
-    BrowserStopOutcome, CancellationSignal, CurrentReferenceGeometryRequest, ErrorCode,
-    EveryNthFrame, IdSource, IdValue, InteractionAnchor, InteractionTiming, KrometrailError,
-    MonotonicClock, NonEmptyText, ObservationPart, PageChange, PageOperationOutcome,
-    PageOperationResult, PageSelection, PageStatus, PersistenceRecoverability, PortFuture,
-    ProfileRef, ResolvedReferenceGeometry, Result, SessionId, SessionOrigin, ShutdownFailurePhase,
-    ShutdownQuality, TargetCaptureStatus, TargetVisibility, ViewportOperationResult,
+    BrowserStopOutcome, CancellationSignal, CapabilityId, CurrentReferenceGeometryRequest,
+    DiskBudgetBytes, ErrorCode, EveryNthFrame, IdSource, IdValue, InteractionAnchor,
+    InteractionTiming, KrometrailError, MonotonicClock, NonEmptyText, ObservationPart, PageChange,
+    PageOperationOutcome, PageOperationResult, PageSelection, PageStatus,
+    PersistenceRecoverability, PortFuture, ProfileRef, RecordingCatalog, RecordingSession,
+    ResolvedReferenceGeometry, Result, SessionId, SessionLifecycle, SessionOrigin,
+    ShutdownFailurePhase, ShutdownQuality, TargetCaptureStatus, TargetVisibility,
+    ViewportOperationResult, WallClock,
 };
 use serde_json::Value;
 use tokio::{
@@ -86,7 +88,9 @@ use runtime::{
 use runtime::{TargetEventKind, parse_event, refresh_capture_geometry, restore_session_domains};
 #[cfg(test)]
 use shutdown::{ShutdownBudgetSource, ShutdownPhase};
-use shutdown::{ShutdownDeadline, ShutdownPlan, finish_state, perform_shutdown, stop_outcome};
+use shutdown::{
+    ShutdownDeadline, ShutdownPlan, finish_state_and_persist, perform_shutdown, stop_outcome,
+};
 
 struct AdapterMonotonicClock {
     origin: Instant,
@@ -118,6 +122,7 @@ pub struct ProductionBrowserConnector {
     ids: Arc<dyn IdSource>,
     capture: Option<CaptureAssembly>,
     browser_events: Option<BrowserEventAssembly>,
+    session_catalog: Option<SessionCatalogAssembly>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
     managed_download_root: PathBuf,
 }
@@ -139,6 +144,14 @@ struct CaptureAssembly {
     config: CaptureConfig,
 }
 
+#[derive(Clone)]
+struct SessionCatalogAssembly {
+    catalog: Arc<dyn RecordingCatalog>,
+    wall_clock: Arc<dyn WallClock>,
+    disk_budget: DiskBudgetBytes,
+    capabilities: Vec<CapabilityId>,
+}
+
 impl ProductionBrowserConnector {
     pub fn new(
         launcher: Arc<dyn ChromeLauncher>,
@@ -154,6 +167,7 @@ impl ProductionBrowserConnector {
             ids: Arc::new(AdapterIdSource),
             capture: None,
             browser_events: None,
+            session_catalog: None,
             interaction_evidence: None,
             managed_download_root: std::env::temp_dir().join("krometrail-downloads"),
         }
@@ -208,6 +222,22 @@ impl ProductionBrowserConnector {
             ids,
             sink,
             config,
+        });
+        self
+    }
+
+    pub fn with_session_catalog(
+        mut self,
+        catalog: Arc<dyn RecordingCatalog>,
+        wall_clock: Arc<dyn WallClock>,
+        disk_budget: DiskBudgetBytes,
+        capabilities: Vec<CapabilityId>,
+    ) -> Self {
+        self.session_catalog = Some(SessionCatalogAssembly {
+            catalog,
+            wall_clock,
+            disk_budget,
+            capabilities,
         });
         self
     }
@@ -276,6 +306,8 @@ impl BrowserConnector for ProductionBrowserConnector {
         let config = self.config.clone();
         let capture_assembly = self.capture.clone();
         let browser_event_assembly = self.browser_events.clone();
+        let session_catalog_assembly = self.session_catalog.clone();
+        let session_catalog = self.session_catalog.clone();
         let interaction_evidence = self.interaction_evidence.clone();
         let control_clock = Arc::clone(&self.clock);
         let ids = Arc::clone(&self.ids);
@@ -442,11 +474,29 @@ impl BrowserConnector for ProductionBrowserConnector {
                 None
             };
             let process_death = Arc::new(ProcessDeathSignal::default());
+            let profile = profile.unwrap_or(ProfileRef::External);
+            let recording_session = if let Some(assembly) = session_catalog_assembly {
+                let mut session = RecordingSession::new(
+                    session_id,
+                    session_origin.observed(),
+                    assembly.wall_clock.now(),
+                    compatibility.version.clone(),
+                    profile.clone(),
+                    assembly.disk_budget,
+                    assembly.capabilities.clone(),
+                    every_nth_frame,
+                )?;
+                session.transition(SessionLifecycle::Recording, None)?;
+                assembly.catalog.put_session(session.clone()).await?;
+                Some(session)
+            } else {
+                None
+            };
             let shared = Arc::new(SessionShared {
                 compatibility,
                 browser_event_support: Mutex::new(connection.browser_event_support),
                 ownership,
-                profile: profile.unwrap_or(ProfileRef::External),
+                profile,
                 state: Mutex::new(state.clone()),
                 subscribers,
                 command_tx,
@@ -457,6 +507,8 @@ impl BrowserConnector for ProductionBrowserConnector {
                 browser_events: Arc::clone(&browser_events),
                 interaction_evidence,
                 downloads,
+                session_catalog,
+                recording_session: recording_session.map(Mutex::new),
                 operation_cancellation: OperationCancellation::default(),
                 stop_result: Mutex::new(None),
             });
@@ -600,6 +652,8 @@ pub(crate) struct SessionShared {
     browser_events: Arc<SessionDomainAuthority>,
     interaction_evidence: Option<Arc<dyn krometrail_core::InteractionEvidenceSink>>,
     downloads: Option<Arc<downloads::ManagedDownloadControl>>,
+    session_catalog: Option<SessionCatalogAssembly>,
+    recording_session: Option<Mutex<RecordingSession>>,
     pub(crate) operation_cancellation: OperationCancellation,
     stop_result: Mutex<Option<Result<BrowserStopOutcome>>>,
 }
@@ -1261,6 +1315,8 @@ mod tests {
             capture: None,
             interaction_evidence: None,
             downloads: None,
+            session_catalog: None,
+            recording_session: None,
             operation_cancellation: OperationCancellation::default(),
             browser_events: Arc::new(
                 SessionDomainAuthority::new(
@@ -2309,6 +2365,8 @@ mod tests {
             browser_events,
             interaction_evidence: None,
             downloads: None,
+            session_catalog: None,
+            recording_session: None,
             operation_cancellation: OperationCancellation::default(),
             stop_result: Mutex::new(None),
         });

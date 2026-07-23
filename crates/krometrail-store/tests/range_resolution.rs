@@ -7,8 +7,8 @@ use krometrail_core::{
     DeviceScaleFactor, DiskBudgetBytes, EncodedFrame, ErrorCode, FrameId, ImageFormat,
     IntervalAnchorScope, MarkerId, ObservationKind, ObservationPayloadRef, ObservedTime,
     PageTarget, ProfileIdentity, ProfileRef, RangeResolutionOptions, RecordingCatalog,
-    RecordingSession, RecordingSink, SessionId, SessionRange, SessionTime, TargetId,
-    TemporalRangeAnchor, TemporalRangeResolver, TimelineObservation, TimelineStore,
+    RecordingSession, RecordingSink, SessionId, SessionLifecycle, SessionRange, SessionTime,
+    TargetId, TemporalRangeAnchor, TemporalRangeResolver, TimelineObservation, TimelineStore,
 };
 use krometrail_store::{
     IndexStoreConfig, RecordingStore, RotationConfig, SegmentStoreConfig, SegmentWriter,
@@ -36,6 +36,14 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::new_with_session_record(true).await
+    }
+
+    async fn without_session_record() -> Self {
+        Self::new_with_session_record(false).await
+    }
+
+    async fn new_with_session_record(include_session_record: bool) -> Self {
         let directory = TempDir::new().unwrap();
         let segments = directory.path().join("segments");
         let index = Arc::new(
@@ -100,7 +108,9 @@ impl Fixture {
             krometrail_core::EveryNthFrame::default(),
         )
         .unwrap();
-        index.put_session(session_record).await.unwrap();
+        if include_session_record {
+            index.put_session(session_record).await.unwrap();
+        }
         index
             .put_target(
                 session,
@@ -299,7 +309,7 @@ async fn marker_navigation_and_gap_policies_use_generic_timeline_rows() {
 }
 
 #[tokio::test]
-async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_not_partial_eviction() {
+async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_partial_capture() {
     use krometrail_core::{
         BrowserOperationKind, InteractionAnchor, InteractionEvidenceSink, InteractionTiming,
     };
@@ -487,7 +497,7 @@ async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_not_partia
 
     let mut partial = RangeResolutionOptions::DEFAULT;
     partial.retention = krometrail_core::RetentionPolicy::AllowPartial;
-    let error = fixture
+    let partial = fixture
         .resolver()
         .resolve(
             TemporalRangeAnchor::SessionTime {
@@ -497,8 +507,330 @@ async fn durable_interaction_anchors_resolve_and_uncaptured_edges_are_not_partia
             partial,
         )
         .await
+        .unwrap();
+    assert_eq!(
+        partial.resolved_range,
+        SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap()
+    );
+    assert!(partial.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        krometrail_core::RetentionWarning::PartiallyCaptured { requested, retained }
+            if *requested == partial.requested_range && *retained == partial.resolved_range
+    )));
+}
+
+#[tokio::test]
+async fn session_time_tail_overshoot_resolves_partial_with_not_yet_elapsed() {
+    use krometrail_core::{RetentionPolicy, RetentionWarning};
+
+    let fixture = Fixture::new().await;
+    let resolved = fixture
+        .resolver_at(12)
+        .resolve(
+            TemporalRangeAnchor::SessionTime {
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
+                range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30))
+                    .unwrap(),
+            },
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved.requested_range,
+        SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30)).unwrap()
+    );
+    assert_eq!(
+        resolved.resolved_range,
+        SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap()
+    );
+    assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        RetentionWarning::RequestedEndAfterNewestRetained { .. }
+    )));
+    assert!(
+        resolved
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::PartiallyCaptured { .. }))
+    );
+    assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        RetentionWarning::RequestedEndNotYetElapsed {
+            session_now,
+            ..
+        } if *session_now == SessionTime::from_nanos(12)
+    )));
+}
+
+#[tokio::test]
+async fn wall_clock_tail_overshoot_resolves_partial() {
+    use krometrail_core::{RetentionPolicy, RetentionWarning};
+
+    let fixture = Fixture::new().await;
+    let resolved = fixture
+        .resolver_at(12)
+        .resolve(
+            TemporalRangeAnchor::WallClock {
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
+                start: SystemTime::UNIX_EPOCH + Duration::from_nanos(1),
+                end: SystemTime::UNIX_EPOCH + Duration::from_nanos(30),
+            },
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved.resolved_range,
+        SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap()
+    );
+    assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        RetentionWarning::RequestedEndAfterNewestRetained { .. }
+    )));
+    assert!(
+        resolved
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::PartiallyCaptured { .. }))
+    );
+}
+
+#[tokio::test]
+async fn navigation_and_marker_windows_clamp_like_interactions() {
+    use krometrail_core::{InteractionWindow, RetentionPolicy, RetentionWarning};
+
+    let fixture = Fixture::new().await;
+    let navigation = krometrail_core::NavigationId::from_uuid(Uuid::from_u128(60));
+    let marker = MarkerId::from_uuid(Uuid::from_u128(61));
+    fixture
+        .observation(
+            5,
+            ObservationPayloadRef::Navigation(navigation),
+            ObservationKind::Navigation,
+        )
+        .await;
+    fixture
+        .observation(
+            5,
+            ObservationPayloadRef::Marker(marker),
+            ObservationKind::Marker,
+        )
+        .await;
+    let window =
+        InteractionWindow::new(Duration::from_millis(10), Duration::from_millis(15)).unwrap();
+    let options = RangeResolutionOptions {
+        retention: RetentionPolicy::AllowPartial,
+        ..RangeResolutionOptions::DEFAULT
+    };
+    for anchor in [
+        TemporalRangeAnchor::Navigation {
+            scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
+            navigation_id: navigation,
+            window: Some(window),
+        },
+        TemporalRangeAnchor::Marker {
+            scope: AnchorScope::new(Some(fixture.session), Some(fixture.target)),
+            marker_id: marker,
+            window: Some(window),
+        },
+    ] {
+        let resolved = fixture.resolver().resolve(anchor, options).await.unwrap();
+        assert_eq!(
+            resolved.resolved_range,
+            SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap()
+        );
+        assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+            warning,
+            RetentionWarning::RequestedStartBeforeOldestRetained { .. }
+        )));
+        assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+            warning,
+            RetentionWarning::RequestedEndAfterNewestRetained { .. }
+        )));
+    }
+}
+
+#[tokio::test]
+async fn disjoint_and_require_complete_requests_still_refuse() {
+    use krometrail_core::RetentionPolicy;
+
+    let fixture = Fixture::new().await;
+    let disjoint = fixture
+        .resolver()
+        .resolve(
+            TemporalRangeAnchor::SessionTime {
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
+                range: SessionRange::new(SessionTime::from_nanos(20), SessionTime::from_nanos(30))
+                    .unwrap(),
+            },
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .await
         .unwrap_err();
-    assert_eq!(error.code, ErrorCode::NotFound);
+    assert_eq!(disjoint.code, ErrorCode::NotFound);
+
+    let complete = fixture
+        .resolver()
+        .resolve(
+            TemporalRangeAnchor::SessionTime {
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
+                range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30))
+                    .unwrap(),
+            },
+            RangeResolutionOptions::DEFAULT,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(complete.code, ErrorCode::NotFound);
+    assert!(complete.recovery.is_some());
+}
+
+#[tokio::test]
+async fn absent_session_record_omits_not_yet_elapsed_refinement() {
+    use krometrail_core::{RetentionPolicy, RetentionWarning};
+
+    let fixture = Fixture::without_session_record().await;
+    let resolved = fixture
+        .resolver_at(12)
+        .resolve(
+            TemporalRangeAnchor::SessionTime {
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
+                range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30))
+                    .unwrap(),
+            },
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .await
+        .unwrap();
+    assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        RetentionWarning::RequestedEndAfterNewestRetained { .. }
+    )));
+    assert!(
+        resolved
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::PartiallyCaptured { .. }))
+    );
+    assert!(
+        !resolved
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::RequestedEndNotYetElapsed { .. }))
+    );
+}
+
+#[tokio::test]
+async fn end_dangling_sessions_marks_prior_boot_sessions_ended() {
+    use krometrail_core::RetentionPolicy;
+
+    let fixture = Fixture::new().await;
+    let mut recording = fixture
+        .index
+        .session(fixture.session)
+        .await
+        .unwrap()
+        .unwrap();
+    recording
+        .transition(SessionLifecycle::Recording, None)
+        .unwrap();
+    fixture.index.put_session(recording).await.unwrap();
+
+    let ended = fixture
+        .index
+        .end_dangling_sessions(SystemTime::UNIX_EPOCH + Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(ended, 1);
+    let persisted = fixture
+        .index
+        .session(fixture.session)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted.lifecycle(), SessionLifecycle::Ended);
+    assert!(persisted.ended_at().unwrap() >= persisted.started_at());
+    assert_eq!(
+        fixture
+            .index
+            .end_dangling_sessions(SystemTime::UNIX_EPOCH + Duration::from_secs(6))
+            .unwrap(),
+        0
+    );
+
+    let resolved = fixture
+        .resolver_at(12)
+        .resolve(
+            TemporalRangeAnchor::SessionTime {
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
+                range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(30))
+                    .unwrap(),
+            },
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        krometrail_core::RetentionWarning::RequestedEndNotYetElapsed { .. }
+    )));
+}
+
+#[tokio::test]
+async fn live_elapsed_idle_tail_keeps_partially_captured_without_refinement() {
+    use krometrail_core::{RetentionPolicy, RetentionWarning};
+
+    let fixture = Fixture::new().await;
+    let resolved = fixture
+        .resolver_at(12)
+        .resolve(
+            TemporalRangeAnchor::SessionTime {
+                scope: IntervalAnchorScope::new(fixture.session, fixture.target),
+                range: SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(12))
+                    .unwrap(),
+            },
+            RangeResolutionOptions {
+                retention: RetentionPolicy::AllowPartial,
+                ..RangeResolutionOptions::DEFAULT
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resolved.resolved_range,
+        SessionRange::new(SessionTime::from_nanos(1), SessionTime::from_nanos(10)).unwrap()
+    );
+    assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        RetentionWarning::RequestedEndAfterNewestRetained { .. }
+    )));
+    assert!(
+        resolved
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::PartiallyCaptured { .. }))
+    );
+    assert!(
+        !resolved
+            .retention_warnings
+            .iter()
+            .any(|warning| matches!(warning, RetentionWarning::RequestedEndNotYetElapsed { .. }))
+    );
 }
 
 #[tokio::test]

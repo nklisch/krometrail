@@ -628,7 +628,7 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
 
     let never = Fixture::new().await;
     let requested = SessionRange::new(at(700), at(1_000)).unwrap();
-    let error = never
+    let resolved = never
         .store
         .resolve_range(
             TemporalQueryRequest::new(
@@ -642,16 +642,17 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
             .unwrap(),
         )
         .await
-        .unwrap_err();
-    assert_eq!(error.code, krometrail_core::ErrorCode::NotFound);
-    assert_eq!(error.context.session_id, Some(never.session));
-    assert_eq!(error.context.target_id, Some(never.target));
-    assert_eq!(error.context.range, Some(requested));
-    assert_eq!(error.retry, krometrail_core::RetryAdvice::AfterRecovery);
+        .unwrap();
+    assert_eq!(resolved.requested_range, requested);
     assert_eq!(
-        error.recovery.unwrap().as_str(),
-        "retry with a range contained by captured bounds: start_session_nanos=0, end_session_nanos=800000000"
+        resolved.resolved_range,
+        SessionRange::new(at(700), at(800)).unwrap()
     );
+    assert!(resolved.retention_warnings.iter().any(|warning| matches!(
+        warning,
+        krometrail_core::RetentionWarning::PartiallyCaptured { requested, retained }
+            if *requested == resolved.requested_range && *retained == resolved.resolved_range
+    )));
 }
 
 #[tokio::test]
