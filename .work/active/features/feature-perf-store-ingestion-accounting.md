@@ -618,9 +618,10 @@ write transactions/frame 3 → 1.
 ## Implementation notes
 
 - Implemented Opt 1–4 in dependency order. Metadata remains WAL-backed with
-  `synchronous=NORMAL`; the writer uses a 2,000-mutation checkpoint counter plus
-  unconditional seal/rotation and flush/stop barriers. Segment payload durability
-  was not weakened: recovery still re-derives both frame rows and frame timeline
+  `synchronous=NORMAL`; the writer probes the WAL sidecar and performs a
+  best-effort checkpoint above a 2,000-page bound, plus unconditional
+  seal/rotation and flush/stop barriers. Segment payload durability was not
+  weakened: recovery still re-derives both frame rows and frame timeline
   observations from surviving segment records.
 - Added the derived `UsageAccumulator`, startup/seal/reclaim reconciliation and
   drift assertion, segment/artifact deltas, segment-first retained-bound seeks,
@@ -652,3 +653,43 @@ write transactions/frame 3 → 1.
   workspace check, tests, and clippy with `-D warnings` all pass. The v12 schema
   assertions were rebased to v13 while preserving cache-reset and preservation
   behavior. No item stage fields were changed.
+
+## Review fixes
+
+- **Deletion staging durability:** Chose the smaller direct fix. After the
+  deletion-batch journal commits, the store now forces a WAL checkpoint before
+  any segment or artifact is renamed into `.trash` (including the blocking
+  startup/recovery path). A power loss therefore leaves either the durable
+  prepared journal for startup resume or no staged deletion; unknown orphan
+  `.trash` batches do not become the accounting authority.
+- **Pins, terminal catalog, and accepted-loss accounting:** Pin and unpin
+  transactions now use a post-commit checkpoint barrier. The terminal ended
+  session catalog rewrite does the same, so it is no longer placed after the
+  stop flush's durability boundary. Direct catalog session/target writes and
+  direct capture-gap writes now use the same shared WAL-page checkpoint owner as
+  the other index-only writers. The corrected crash statement is: a process
+  crash replays the WAL with zero loss; a power/OS loss can lose only accepted
+  best-effort index-only writes since the last successful periodic checkpoint
+  (catalog setup, gaps, interactions, browser events, and generic timeline
+  evidence), while segment-backed frames are recovered from durable segments.
+  Pin/unpin changes, terminal catalog state, prepared deletion journals, and
+  flush/stop/seal barriers are outside that accepted-loss window. A periodic
+  checkpoint that is busy or otherwise unavailable is retried on later
+  mutations and never turns an already-committed append into a failure.
+- **Artifact accounting gate:** Image and video staging now applies the usage
+  delta while the staging mutation guard is still held. If applying the delta
+  fails, SQL truth is reconciled immediately before returning the error.
+- **Availability snapshot:** Earliest-frame, latest-frame, and evicted-range
+  reads now share one deferred read transaction, so all availability fields come
+  from one SQLite snapshot.
+- **Checkpoint busy handling:** Periodic checkpoints perform one non-blocking
+  attempt and skip busy snapshots. Required seal/flush/pin barriers retry busy
+  checkpoints briefly; frame append checkpoint housekeeping is explicitly
+  non-fatal after the frame/index commit.
+- **Performance probes:** The eviction probe now reopens the populated store
+  with a budget that forces reclaim. The read-under-ingest probe runs appends in
+  a dedicated thread while sampled reads execute concurrently.
+- **Highest-risk acceptance tests:** Added a non-flushing DB-copy recovery test
+  that reconstructs frames, frame timeline observations, and segment usage rows
+  from the segment tail, plus a sustained no-seal mutation test that bounds the
+  WAL against the 2,000-page checkpoint policy.

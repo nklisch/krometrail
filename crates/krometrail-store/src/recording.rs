@@ -45,6 +45,7 @@ use crate::{
         },
         deletion::{DeletionKind, DeletionObject, DeletionObjectKind, DeletionState},
         frames::{FrameReadSnapshot, index_frame_tx},
+        maintenance::WAL_CHECKPOINT_PAGE_LIMIT,
         retention::{ArtifactCandidate, SegmentCandidate, SegmentReclaimFilter},
         segments::{SegmentUsageDelta, register_segment_tx},
     },
@@ -53,7 +54,6 @@ use crate::{
 };
 
 const RECORD_ENVELOPE_ALLOWANCE: u64 = 4096;
-const WAL_CHECKPOINT_MUTATION_INTERVAL: u64 = 2_000;
 
 /// Derived bytes outside SQLite's live-page measurement.
 ///
@@ -374,6 +374,9 @@ impl RecordingStore {
         objects: Vec<DeletionObject>,
     ) -> krometrail_core::Result<()> {
         let batch = self.index.prepare_deletion(kind, session_id, objects)?;
+        // The prepared journal must survive before any live file is renamed into
+        // .trash; startup can then resume staging after a power loss.
+        self.index.checkpoint_truncate()?;
         self.removal.stage_blocking(batch.clone())?;
         self.index.remove_deletion_metadata(&batch)?;
         let mut committed = batch.clone();
@@ -1022,6 +1025,9 @@ impl RecordingStore {
                 .ok_or_else(|| persistence_error("deleted byte count overflow"))
         })?;
         let batch = self.index.prepare_deletion(kind, session_id, objects)?;
+        // The prepared journal must survive before any live file is renamed into
+        // .trash; startup can then resume staging after a power loss.
+        self.index.checkpoint_truncate()?;
         self.removal.stage(batch.clone()).await?;
         let (segments, frames, artifacts) = self.index.remove_deletion_metadata(&batch)?;
         self.set_trim_exhausted(false);
@@ -1573,13 +1579,17 @@ impl ArtifactStore for RecordingStore {
                 if publication_guard.is_cancelled() {
                     return Err(cancelled_publication_error());
                 }
-                self.index.stage_artifact(&publication)?
+                let staged = self.index.stage_artifact(&publication)?;
+                if let StageArtifact::Staged(row) = &staged
+                    && let Err(error) = self.usage_accumulator.apply_delta(0, row.byte_len)
+                {
+                    self.reconcile_accumulator()?;
+                    return Err(error);
+                }
+                staged
             };
             let row = match staged {
-                StageArtifact::Staged(row) => {
-                    self.usage_accumulator.apply_delta(0, row.byte_len)?;
-                    row
-                }
+                StageArtifact::Staged(row) => row,
                 StageArtifact::Existing(existing) if existing.state == ArtifactState::Ready => {
                     let snapshot = {
                         let _mutation = self.mutations.lock().await;
@@ -1819,13 +1829,17 @@ impl ArtifactStore for RecordingStore {
                 if publication_guard.is_cancelled() {
                     return Err(cancelled_publication_error());
                 }
-                self.index.stage_video_artifact(&publication)?
+                let staged = self.index.stage_video_artifact(&publication)?;
+                if let StageArtifact::Staged(row) = &staged
+                    && let Err(error) = self.usage_accumulator.apply_delta(0, row.byte_len)
+                {
+                    self.reconcile_accumulator()?;
+                    return Err(error);
+                }
+                staged
             };
             let row = match staged {
-                StageArtifact::Staged(row) => {
-                    self.usage_accumulator.apply_delta(0, row.byte_len)?;
-                    row
-                }
+                StageArtifact::Staged(row) => row,
                 StageArtifact::Existing(existing) if existing.state == ArtifactState::Ready => {
                     let snapshot = {
                         let _mutation = self.mutations.lock().await;
@@ -2006,7 +2020,7 @@ impl BrowserEventSink for RecordingStore {
             self.index
                 .append_browser_event_batch(batch, self.effective_budget(), managed_usage)?;
             self.index
-                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)?;
+                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_PAGE_LIMIT)?;
             Ok(())
         })
     }
@@ -2117,15 +2131,18 @@ impl RecordingSink for RecordingStore {
                 .apply_delta(usage_delta.removed, usage_delta.added)
                 .map_err(|error| classify_sink_failure(PersistenceOperation::FrameIndex, error))?;
             if commit.sealed_segment.is_some() {
-                self.index.checkpoint_truncate().map_err(|error| {
-                    classify_sink_failure(PersistenceOperation::FrameIndex, error)
-                })?;
+                if let Err(error) = self.index.checkpoint_truncate() {
+                    tracing::warn!(
+                        error = %error.message,
+                        "metadata WAL seal checkpoint deferred after frame commit"
+                    );
+                }
                 self.reconcile_accumulator().map_err(|error| {
                     classify_sink_failure(PersistenceOperation::FrameIndex, error)
                 })?;
             } else {
                 self.index
-                    .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)
+                    .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_PAGE_LIMIT)
                     .map_err(|error| {
                         classify_sink_failure(PersistenceOperation::FrameIndex, error)
                     })?;
@@ -2140,9 +2157,6 @@ impl RecordingSink for RecordingStore {
             self.reject_deleted(gap.session_id())?;
             CaptureGapStore::append_gap(self.index.as_ref(), gap)
                 .await
-                .map_err(|error| classify_sink_failure(PersistenceOperation::GapIndex, error))?;
-            self.index
-                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)
                 .map_err(|error| classify_sink_failure(PersistenceOperation::GapIndex, error))?;
             Ok(())
         })
@@ -2195,7 +2209,7 @@ impl InteractionEvidenceSink for RecordingStore {
                 navigation_id,
             )?;
             self.index
-                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)?;
+                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_PAGE_LIMIT)?;
             Ok(())
         })
     }
@@ -2211,7 +2225,7 @@ impl TimelineStore for RecordingStore {
             self.reject_deleted(observation.session_id())?;
             TimelineStore::append(self.index.as_ref(), observation).await?;
             self.index
-                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_MUTATION_INTERVAL)?;
+                .checkpoint_if_wal_exceeds(WAL_CHECKPOINT_PAGE_LIMIT)?;
             Ok(())
         })
     }

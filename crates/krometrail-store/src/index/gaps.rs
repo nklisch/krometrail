@@ -6,7 +6,10 @@ use krometrail_core::{
 };
 use rusqlite::params;
 
-use super::{SqliteIndex, codec, ensure_identity, timeline::append_observation_tx};
+use super::{
+    SqliteIndex, codec, ensure_identity, maintenance::WAL_CHECKPOINT_PAGE_LIMIT,
+    timeline::append_observation_tx,
+};
 use crate::persistence_error;
 
 impl CaptureGapStore for SqliteIndex {
@@ -50,7 +53,10 @@ impl CaptureGapStore for SqliteIndex {
             append_observation_tx(&transaction, &observation, None)?;
             transaction
                 .commit()
-                .map_err(|_| persistence_error("could not commit capture-gap metadata"))
+                .map_err(|_| persistence_error("could not commit capture-gap metadata"))?;
+            drop(connection);
+            self.checkpoint_if_wal_exceeds(WAL_CHECKPOINT_PAGE_LIMIT)?;
+            Ok(())
         })
     }
 

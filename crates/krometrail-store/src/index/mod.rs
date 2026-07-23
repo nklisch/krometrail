@@ -20,7 +20,7 @@ use std::{
     path::PathBuf,
     sync::{
         Mutex, MutexGuard,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -42,7 +42,7 @@ pub struct SqliteIndex {
     connection: Mutex<Connection>,
     read_pool: Vec<Mutex<Connection>>,
     next_read_connection: AtomicUsize,
-    pending_checkpoint_mutations: AtomicU64,
+    wal_page_size: u64,
     /// Read-path terminal authority for the narrow case where an ended session cannot be durably
     /// rewritten. Normal reads remain backed by SQLite; this overlay only prevents a failed
     /// terminal write from making an ended session appear live in the current process.
@@ -118,6 +118,12 @@ impl SqliteIndex {
                 "metadata database safety settings were not retained",
             ));
         }
+        let wal_page_size: u64 = connection
+            .pragma_query_value(None, "page_size", |row| row.get(0))
+            .map_err(|_| persistence_error("could not read metadata page size"))?;
+        if wal_page_size == 0 {
+            return Err(persistence_error("metadata database page size is invalid"));
+        }
         for suffix in ["-wal", "-shm", "-journal"] {
             let sidecar = config.database_path.with_file_name(format!(
                 "{}{}",
@@ -139,7 +145,7 @@ impl SqliteIndex {
             connection: Mutex::new(connection),
             read_pool,
             next_read_connection: AtomicUsize::new(0),
-            pending_checkpoint_mutations: AtomicU64::new(0),
+            wal_page_size,
             terminal_session_overrides: Mutex::new(HashMap::new()),
             database_path: config.database_path,
             segments_directory: config.segments_directory,

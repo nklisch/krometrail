@@ -1,3 +1,5 @@
+use std::{fs, path::PathBuf, thread, time::Duration};
+
 use krometrail_core::{ByteOffset, FrameId, SegmentId, SessionId};
 use rusqlite::{params, params_from_iter};
 
@@ -31,18 +33,22 @@ pub(crate) struct UsageEntry {
     pub byte_len: u64,
 }
 
+pub(crate) const WAL_CHECKPOINT_PAGE_LIMIT: u64 = 2_000;
+const CHECKPOINT_BUSY_RETRIES: usize = 8;
+const WAL_HEADER_BYTES: u64 = 32;
+const WAL_FRAME_HEADER_BYTES: u64 = 24;
+
 impl SqliteIndex {
     pub(crate) fn live_index_page_bytes(&self) -> krometrail_core::Result<u64> {
         let connection = self.read_connection()?;
         sqlite_page_usage(&connection).map(|(live, _)| live)
     }
 
-    /// Checkpoint the metadata WAL after a bounded number of mutations.
-    ///
-    /// The counter is deliberately maintained in memory: checking WAL state
-    /// with a pragma on every frame would recreate the hot-path cost this
-    /// policy replaces. Segment seals and explicit flushes use the unconditional
-    /// barrier below.
+    /// Checkpoint the metadata WAL when its on-disk frame count exceeds the
+    /// bounded policy. The common path performs only a sidecar metadata probe;
+    /// a concurrent reader may make the truncate busy, in which case the next
+    /// mutation retries it. This housekeeping must never fail the mutation that
+    /// already committed.
     pub(crate) fn checkpoint_if_wal_exceeds(
         &self,
         max_wal_pages: u64,
@@ -52,29 +58,46 @@ impl SqliteIndex {
                 "metadata WAL checkpoint threshold must be greater than zero",
             ));
         }
-        let pending = self
-            .pending_checkpoint_mutations
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .saturating_add(1);
-        if pending < max_wal_pages {
+        let wal_pages = match self.wal_frame_count() {
+            Ok(pages) => pages,
+            Err(error) => {
+                tracing::warn!(error = %error.message, "could not inspect metadata WAL for periodic checkpoint");
+                return Ok(0);
+            }
+        };
+        if wal_pages <= max_wal_pages {
             return Ok(0);
         }
-        match self.checkpoint_truncate() {
-            Ok(bytes) => {
-                self.pending_checkpoint_mutations
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                Ok(bytes)
+        match self.try_checkpoint_truncate() {
+            Ok(Some(bytes)) => Ok(bytes),
+            Ok(None) => {
+                tracing::debug!(wal_pages, "metadata WAL checkpoint deferred while busy");
+                Ok(0)
             }
             Err(error) => {
-                self.pending_checkpoint_mutations
-                    .store(max_wal_pages, std::sync::atomic::Ordering::Relaxed);
-                Err(error)
+                tracing::warn!(error = %error.message, "periodic metadata WAL checkpoint deferred");
+                Ok(0)
             }
         }
     }
 
-    /// Force the metadata WAL through SQLite's durability barrier.
+    /// Force the metadata WAL through SQLite's durability barrier. A reader
+    /// snapshot can make TRUNCATE return busy, so required barriers retry briefly
+    /// before reporting that durability could not be completed.
     pub(crate) fn checkpoint_truncate(&self) -> krometrail_core::Result<u64> {
+        for attempt in 0..CHECKPOINT_BUSY_RETRIES {
+            match self.try_checkpoint_truncate()? {
+                Some(bytes) => return Ok(bytes),
+                None if attempt + 1 < CHECKPOINT_BUSY_RETRIES => {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                None => break,
+            }
+        }
+        Err(persistence_error("metadata WAL checkpoint remained busy"))
+    }
+
+    fn try_checkpoint_truncate(&self) -> krometrail_core::Result<Option<u64>> {
         let connection = self.connection()?;
         let (busy, _log_pages, checkpointed_pages): (i64, i64, i64) = connection
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
@@ -82,15 +105,38 @@ impl SqliteIndex {
             })
             .map_err(|_| persistence_error("could not checkpoint metadata WAL"))?;
         if busy != 0 {
-            return Err(persistence_error("metadata WAL checkpoint is busy"));
+            return Ok(None);
         }
-        let page_size: u64 = connection
-            .pragma_query_value(None, "page_size", |row| row.get(0))
-            .map_err(|_| persistence_error("could not read metadata page size"))?;
         u64::try_from(checkpointed_pages)
             .ok()
-            .and_then(|pages| pages.checked_mul(page_size))
+            .and_then(|pages| pages.checked_mul(self.wal_page_size))
             .ok_or_else(|| persistence_error("metadata WAL checkpoint size overflow"))
+            .map(Some)
+    }
+
+    fn wal_frame_count(&self) -> krometrail_core::Result<u64> {
+        let length = match fs::metadata(self.wal_path()) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(_) => return Err(persistence_error("could not inspect metadata WAL")),
+        };
+        if length <= WAL_HEADER_BYTES {
+            return Ok(0);
+        }
+        let frame_bytes = self
+            .wal_page_size
+            .checked_add(WAL_FRAME_HEADER_BYTES)
+            .ok_or_else(|| persistence_error("metadata WAL frame size overflow"))?;
+        Ok((length - WAL_HEADER_BYTES) / frame_bytes)
+    }
+
+    fn wal_path(&self) -> PathBuf {
+        let name = self
+            .database_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("index.sqlite3");
+        self.database_path.with_file_name(format!("{name}-wal"))
     }
 
     pub(crate) fn session_usage_bytes(

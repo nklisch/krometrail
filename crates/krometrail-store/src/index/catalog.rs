@@ -3,7 +3,7 @@ use krometrail_core::{
 };
 use rusqlite::{OptionalExtension, params};
 
-use super::{SqliteIndex, codec, ensure_session};
+use super::{SqliteIndex, codec, ensure_session, maintenance::WAL_CHECKPOINT_PAGE_LIMIT};
 use crate::persistence_error;
 
 impl RecordingCatalog for SqliteIndex {
@@ -12,6 +12,7 @@ impl RecordingCatalog for SqliteIndex {
         session: RecordingSession,
     ) -> PortFuture<'_, krometrail_core::Result<()>> {
         Box::pin(async move {
+            let terminal = session.lifecycle() == krometrail_core::SessionLifecycle::Ended;
             let json = serde_json::to_string(&session)
                 .map_err(|_| persistence_error("could not encode session metadata"))?;
             let connection = self.connection()?;
@@ -22,6 +23,12 @@ impl RecordingCatalog for SqliteIndex {
                     params![codec::id(session.id().as_uuid()), json],
                 )
                 .map_err(|_| persistence_error("could not persist session metadata"))?;
+            drop(connection);
+            if terminal {
+                self.checkpoint_truncate()?;
+            } else {
+                self.checkpoint_if_wal_exceeds(WAL_CHECKPOINT_PAGE_LIMIT)?;
+            }
             self.terminal_session_overrides
                 .lock()
                 .map_err(|_| persistence_error("session terminal authority is unavailable"))?
@@ -132,7 +139,10 @@ impl RecordingCatalog for SqliteIndex {
                 .map_err(|_| persistence_error("could not persist target metadata"))?;
             transaction
                 .commit()
-                .map_err(|_| persistence_error("could not commit target metadata"))
+                .map_err(|_| persistence_error("could not commit target metadata"))?;
+            drop(connection);
+            self.checkpoint_if_wal_exceeds(WAL_CHECKPOINT_PAGE_LIMIT)?;
+            Ok(())
         })
     }
 }

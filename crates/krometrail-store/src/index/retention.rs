@@ -110,6 +110,8 @@ impl SqliteIndex {
         transaction
             .commit()
             .map_err(|_| persistence_error("could not commit resolved range pin"))?;
+        drop(connection);
+        self.checkpoint_truncate()?;
         Ok(changed)
     }
 
@@ -132,6 +134,8 @@ impl SqliteIndex {
         transaction
             .commit()
             .map_err(|_| persistence_error("could not commit exact range unpin"))?;
+        drop(connection);
+        self.checkpoint_truncate()?;
         Ok(changed)
     }
 
@@ -189,6 +193,8 @@ impl SqliteIndex {
         transaction
             .commit()
             .map_err(|_| persistence_error("could not commit range pin transaction"))?;
+        drop(connection);
+        self.checkpoint_truncate()?;
         Ok(PinChange {
             request,
             protected_segments,
@@ -231,6 +237,8 @@ impl SqliteIndex {
         transaction
             .commit()
             .map_err(|_| persistence_error("could not commit range unpin transaction"))?;
+        drop(connection);
+        self.checkpoint_truncate()?;
         Ok(PinChange {
             request,
             protected_segments,

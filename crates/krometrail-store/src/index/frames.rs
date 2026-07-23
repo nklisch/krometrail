@@ -7,7 +7,7 @@ use krometrail_core::{
     SessionId, SessionRange, SourceFrameBatch, SourceFrameList, SourceFrameRead,
     SourceFramesRequest, TargetId, TimelineObservation,
 };
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::{
     FrameWriteCommit, persistence_error,
@@ -525,12 +525,15 @@ impl FrameSource for SqliteIndex {
         target_id: TargetId,
     ) -> PortFuture<'_, krometrail_core::Result<FrameAvailability>> {
         Box::pin(async move {
-            let connection = self.read_connection()?;
+            let mut connection = self.read_connection()?;
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Deferred)
+                .map_err(|_| persistence_error("could not begin frame availability read"))?;
             let values = [
                 codec::id(session_id.as_uuid()).to_vec(),
                 codec::id(target_id.as_uuid()).to_vec(),
             ];
-            let start: Option<Vec<u8>> = connection
+            let start: Option<Vec<u8>> = transaction
                 .query_row(
                     "SELECT session_time_be FROM frames \
                      WHERE session_id=?1 AND target_id=?2 \
@@ -540,7 +543,7 @@ impl FrameSource for SqliteIndex {
                 )
                 .optional()
                 .map_err(|_| persistence_error("could not query earliest frame availability"))?;
-            let end: Option<Vec<u8>> = connection
+            let end: Option<Vec<u8>> = transaction
                 .query_row(
                     "SELECT session_time_be FROM frames \
                      WHERE session_id=?1 AND target_id=?2 \
@@ -561,7 +564,10 @@ impl FrameSource for SqliteIndex {
                 (None, None) => None,
                 _ => return Err(persistence_error("stored frame availability is malformed")),
             };
-            let evicted_ranges = evicted_ranges(&connection, session_id, target_id)?;
+            let evicted_ranges = evicted_ranges(&transaction, session_id, target_id)?;
+            transaction
+                .commit()
+                .map_err(|_| persistence_error("could not commit frame availability read"))?;
             FrameAvailability::new(retained_bounds, evicted_ranges)
                 .map_err(|_| persistence_error("stored frame availability is invalid"))
         })
