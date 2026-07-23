@@ -1,7 +1,7 @@
 ---
 id: feature-semantic-wait-nonactionable
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []

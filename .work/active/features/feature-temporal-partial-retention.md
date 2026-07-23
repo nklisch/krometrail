@@ -1,7 +1,7 @@
 ---
 id: feature-temporal-partial-retention
 kind: feature
-stage: review
+stage: done
 tags: [temporal]
 parent: null
 depends_on: []

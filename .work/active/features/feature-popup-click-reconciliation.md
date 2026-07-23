@@ -1,7 +1,7 @@
 ---
 id: feature-popup-click-reconciliation
 kind: feature
-stage: review
+stage: done
 tags: [browser, side-channel]
 parent: null
 depends_on: []

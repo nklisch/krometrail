@@ -1,7 +1,7 @@
 ---
 id: feature-container-text-generic-ancestors
 kind: feature
-stage: review
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []

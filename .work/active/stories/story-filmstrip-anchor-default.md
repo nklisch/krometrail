@@ -1,7 +1,7 @@
 ---
 id: story-filmstrip-anchor-default
 kind: story
-stage: review
+stage: done
 tags: [temporal, agent-ux]
 parent: null
 depends_on: []
