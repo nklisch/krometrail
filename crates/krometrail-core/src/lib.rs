@@ -102,9 +102,9 @@ pub use browser::{
     NavigationState, NavigationTransition, NetworkFailureKind, NetworkInitiator,
     NetworkInitiatorKind, NetworkRequestFailed, NetworkRequestFinished, NetworkRequestStarted,
     NetworkResourceType, NetworkResponseReceived, NewPageFact, NewPagePostcondition, NodeReference,
-    NodeStateFacts, ObservationContext, ObservationPart, OpenDialogState, OperationEvidence,
-    OperationMutability, PageAssetInventory, PageAssetKind, PageAssetMetadata, PageChange,
-    PageContextInventory, PageContextStatus, PageFrameInventory, PageFrameReference,
+    NodeStateFacts, NormalizedTextNeedle, ObservationContext, ObservationPart, OpenDialogState,
+    OperationEvidence, OperationMutability, PageAssetInventory, PageAssetKind, PageAssetMetadata,
+    PageChange, PageContextInventory, PageContextStatus, PageFrameInventory, PageFrameReference,
     PageFrameStatus, PageLifecycleEvent, PageLifecycleName, PageOperationOutcome,
     PageOperationResult, PagePostcondition, PageSelection, PageSequence, PageSnapshot, PageState,
     PageStatus, PageTarget, PressKeysRequest, ProfileIdentity, ProfileRef, QueryPageRequest,
@@ -122,7 +122,7 @@ pub use browser::{
     ViewportMetrics, ViewportOperationResult, ViewportOverride, ViewportPreset, ViewportState,
     WaitCondition, WaitForDownloadRequest, WaitForPageRequest, WaitForPageResult, WaitOutcome,
     WaitPresence, WaitProbe, WaitRequest, WaitResult, WaitTextMatch, WriteClipboardRequest,
-    collapsed_semantic_text_bytes, viewport_guidance, wait_timeout_error,
+    collapsed_semantic_text_bytes, normalize_semantic_text, viewport_guidance, wait_timeout_error,
 };
 pub use capabilities::{
     CAPABILITY_REGISTRY, CapabilityDefault, CapabilityDefinition, CapabilityId, CapabilitySnapshot,

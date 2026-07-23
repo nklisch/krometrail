@@ -55,3 +55,12 @@ method.
 - [ ] Every existing AX-decode test passes unchanged: frame filtering,
       cross-origin/oopif rejection, caps/omission, actionability, backend-id
       stability, structural web area.
+
+## Implementation notes
+
+Implemented permissive serde AX wire structs over the owned response,
+integer-indexed child assembly, and vector-backed visitation while retaining
+frame filtering, actionability, identity reuse, caps, and omission behavior.
+The release decode benchmark measured approximately 34.1 ms/op versus the
+68.39 ms design baseline; this is just above the scaffold's ≤34 ms target on
+the current host.

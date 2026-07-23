@@ -562,6 +562,19 @@ pub struct SemanticTextMatch {
     pub case_sensitive: bool,
 }
 
+/// A semantic text needle normalized once for repeated candidate comparisons.
+///
+/// Candidates passed to [`Self::matches_prenormalized`] must have been normalized with
+/// case-preserving semantic normalization. Case-insensitive comparisons fold that candidate
+/// during the comparison without allocating for exact matches, or into the supplied scratch
+/// buffer for contains matches.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NormalizedTextNeedle {
+    needle: String,
+    mode: SemanticTextMatchMode,
+    case_sensitive: bool,
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SemanticTextMatchWire {
@@ -617,6 +630,42 @@ impl SemanticTextMatch {
             SemanticTextMatchMode::Contains => candidate.contains(&expected),
         }
     }
+
+    /// Normalize this matcher once for repeated candidate comparisons.
+    pub fn normalized_needle(&self) -> NormalizedTextNeedle {
+        NormalizedTextNeedle {
+            needle: normalize_semantic_text(self.value.as_str(), self.case_sensitive),
+            mode: self.mode,
+            case_sensitive: self.case_sensitive,
+        }
+    }
+}
+
+impl NormalizedTextNeedle {
+    /// Compare a case-preserving normalized candidate without normalizing it again.
+    pub fn matches_prenormalized(&self, candidate: &str, scratch: &mut String) -> bool {
+        if self.needle.is_empty() {
+            return false;
+        }
+        if self.case_sensitive {
+            return match self.mode {
+                SemanticTextMatchMode::Exact => candidate == self.needle,
+                SemanticTextMatchMode::Contains => candidate.contains(&self.needle),
+            };
+        }
+
+        match self.mode {
+            SemanticTextMatchMode::Exact => candidate
+                .chars()
+                .flat_map(char::to_lowercase)
+                .eq(self.needle.chars()),
+            SemanticTextMatchMode::Contains => {
+                scratch.clear();
+                scratch.extend(candidate.chars().flat_map(char::to_lowercase));
+                scratch.contains(&self.needle)
+            }
+        }
+    }
 }
 
 delegate_json_schema!(SemanticTextMatch => SemanticTextMatchWire);
@@ -631,7 +680,7 @@ impl<'de> Deserialize<'de> for SemanticTextMatch {
     }
 }
 
-fn normalize_semantic_text(value: &str, case_sensitive: bool) -> String {
+pub fn normalize_semantic_text(value: &str, case_sensitive: bool) -> String {
     let mut normalized = String::new();
     let mut pending_space = false;
     for character in value.trim().chars() {
@@ -1467,6 +1516,46 @@ mod tests {
 
         let sensitive = SemanticTextMatch::new("Save", SemanticTextMatchMode::Exact, true).unwrap();
         assert!(!sensitive.matches("save"));
+    }
+
+    #[test]
+    fn prenormalized_matching_is_equivalent_to_reference_matching() {
+        let candidates = [
+            "  STRAßE\n  SPEICHERN ",
+            "straße   speichern",
+            "prefix σωσ suffix",
+            "Advanced filters\u{200b}",
+            "Filters \u{e5cf}",
+            "  mixed\t whitespace  ",
+            "\u{e5cf}",
+        ];
+        let needles = [
+            ("STRAẞE SPEICHERN", SemanticTextMatchMode::Exact),
+            ("straße", SemanticTextMatchMode::Contains),
+            ("ΣΩΣ", SemanticTextMatchMode::Contains),
+            ("Advanced filters", SemanticTextMatchMode::Exact),
+            ("Filters", SemanticTextMatchMode::Exact),
+            ("mixed whitespace", SemanticTextMatchMode::Exact),
+            ("icon", SemanticTextMatchMode::Contains),
+        ];
+
+        for &(needle, mode) in &needles {
+            for case_sensitive in [false, true] {
+                let matcher = SemanticTextMatch::new(needle, mode, case_sensitive).unwrap();
+                let normalized = matcher.normalized_needle();
+                let mut scratch = String::new();
+                for candidate in candidates {
+                    assert_eq!(
+                        matcher.matches(candidate),
+                        normalized.matches_prenormalized(
+                            &normalize_semantic_text(candidate, true),
+                            &mut scratch,
+                        ),
+                        "needle={needle:?}, mode={mode:?}, case_sensitive={case_sensitive}, candidate={candidate:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

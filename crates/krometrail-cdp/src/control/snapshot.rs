@@ -4,11 +4,12 @@ use krometrail_core::{
     AccessibleProperty, AccessibleValue, BrowserOperationResult, CssPoint, CssRect, CssSize,
     CurrentReferenceGeometryRequest, ErrorCode, ErrorContext, ExpectationTargetRole,
     KrometrailError, MAX_SEMANTIC_QUERY_TEXT_BYTES, NodeReference, NodeStateFacts, NonEmptyText,
-    ObservationContext, PageSnapshot, QueryPageRequest, QueryPageResult, RelaxedMatchCandidates,
-    ResolvedReferenceGeometry, Result, RetryAdvice, SemanticMatch, SemanticQuery,
-    SemanticQueryOutcome, SnapshotGeneration, SnapshotNode, SnapshotNodeId, SnapshotPageAnchor,
-    SnapshotPageRequest, TargetId,
+    NormalizedTextNeedle, ObservationContext, PageSnapshot, QueryPageRequest, QueryPageResult,
+    RelaxedMatchCandidates, ResolvedReferenceGeometry, Result, RetryAdvice, SemanticMatch,
+    SemanticQuery, SemanticQueryOutcome, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
+    SnapshotPageAnchor, SnapshotPageRequest, TargetId, normalize_semantic_text,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{BoundTarget, PageControl, malformed, operation_error, transport_error};
@@ -96,7 +97,10 @@ struct NodeBinding {
 #[derive(Clone, Debug, Default)]
 struct SemanticNodeMetadata {
     labels: Vec<String>,
+    normalized_labels: Vec<String>,
     rendered_text: String,
+    normalized_match_text: String,
+    normalized_name: String,
     /// The normalized rendered-text length before the agent-facing value was bounded.
     ///
     /// DOM snapshots retain only a bounded prefix for matching and diagnostics, but generic
@@ -479,14 +483,14 @@ impl PageControl {
             &document,
         )?;
         let (nodes, bindings, omitted_node_count) = decode_ax_tree_with_ids(
-            &ax_response,
+            ax_response,
             bound.target_id,
             generation,
             &mut node_by_backend,
             &mut next_node_id,
             Some(document.frame_id.as_str()),
         )?;
-        let (semantic, document_rects, geometry_omitted) = match dom_response {
+        let (mut semantic, document_rects, geometry_omitted) = match dom_response {
             Some(response) => {
                 let dom_snapshot = decode_dom_snapshot_with_geometry(
                     &response,
@@ -528,6 +532,13 @@ impl PageControl {
             None => (HashMap::new(), HashMap::new(), false),
         };
         let mut nodes = nodes;
+        for node in &nodes {
+            let Some(name) = node.name.as_deref() else {
+                continue;
+            };
+            semantic.entry(node.id).or_default().normalized_name =
+                normalize_semantic_text(name, true);
+        }
         if !document_rects.is_empty() {
             let node_indexes = nodes
                 .iter()
@@ -674,69 +685,81 @@ impl SnapshotRegistry {
             .iter()
             .map(|node| (node.id, node))
             .collect::<HashMap<_, _>>();
-        let evaluate = |query: &krometrail_core::SemanticQuery, node: &SnapshotNode| {
-            semantic_query_matches(
-                query,
-                node,
-                active
-                    .semantic
-                    .get(&node.id)
-                    .unwrap_or(&SemanticNodeMetadata::default()),
-                &active.parent_by_node,
-                &active.semantic,
-                &nodes_by_id,
-            )
-        };
+        let mut evaluator =
+            SemanticQueryEvaluator::new(&active.parent_by_node, &active.semantic, &nodes_by_id);
+        let prepared = PreparedSemanticQuery::new(&request.query);
+        let relaxed = request.query.relaxed_to_contains();
+        let prepared_relaxed = relaxed.as_ref().map(PreparedSemanticQuery::new);
+        let stripped = request.query.without_container_text();
+        let prepared_stripped = stripped.as_ref().map(PreparedSemanticQuery::new);
+        let mut primary_container_memo = HashMap::new();
+        let mut relaxed_container_memo = HashMap::new();
+        let mut stripped_container_memo = HashMap::new();
+        let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
+        let mut relaxed_count = 0;
+        let mut uncontained_count = 0;
+        let default_metadata = SemanticNodeMetadata::default();
+        let mut matches = Vec::new();
 
-        let matches: Vec<SemanticMatch> = snapshot
-            .nodes
-            .iter()
-            .filter_map(|node| {
-                let reference = node.reference?;
-                if !in_scope(node) {
-                    return None;
-                }
-                evaluate(&request.query, node).then(|| SemanticMatch {
+        for node in &snapshot.nodes {
+            let Some(reference) = node.reference else {
+                continue;
+            };
+            if !in_scope(node) {
+                continue;
+            }
+            let metadata = active.semantic.get(&node.id).unwrap_or(&default_metadata);
+            if evaluator.matches(
+                &request.query,
+                &prepared,
+                node,
+                metadata,
+                &mut primary_container_memo,
+            ) {
+                matches.push(SemanticMatch {
                     reference,
                     role: node.role.clone(),
                     name: node.name.clone(),
-                })
-            })
-            .collect();
+                });
+                continue;
+            }
+            if let (Some(relaxed), Some(prepared_relaxed)) = (&relaxed, &prepared_relaxed)
+                && relaxed_count < limit
+                && evaluator.matches(
+                    relaxed,
+                    prepared_relaxed,
+                    node,
+                    metadata,
+                    &mut relaxed_container_memo,
+                )
+            {
+                relaxed_count += 1;
+            }
+            if let (Some(stripped), Some(prepared_stripped)) = (&stripped, &prepared_stripped)
+                && uncontained_count < limit
+                && evaluator.matches(
+                    stripped,
+                    prepared_stripped,
+                    node,
+                    metadata,
+                    &mut stripped_container_memo,
+                )
+            {
+                uncontained_count += 1;
+            }
+        }
 
-        // Sites decorate accessible names routinely ("Cargo.toml, (File)"), so an exact-mode
-        // query that finds nothing is usually one relaxation away from the intended node. Report
-        // how many nodes a `contains` retry would reach instead of leaving the caller to guess.
-        // The scan runs only on the empty result, over the same already-bounded snapshot nodes,
-        // and stops at the declared candidate cap.
         let relaxed_match_candidates = if matches.is_empty() {
-            request.query.relaxed_to_contains().map(|relaxed| {
-                let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
-                let count = snapshot
-                    .nodes
-                    .iter()
-                    .filter(|node| node.reference.is_some() && in_scope(node))
-                    .filter(|node| evaluate(&relaxed, node))
-                    .take(limit)
-                    .count();
-                krometrail_core::RelaxedMatchCandidates::new(count)
-            })
+            relaxed
+                .as_ref()
+                .map(|_| krometrail_core::RelaxedMatchCandidates::new(relaxed_count))
         } else {
             None
         };
-
         let uncontained_match_candidates = if matches.is_empty() {
-            request.query.without_container_text().map(|stripped| {
-                let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
-                let count = snapshot
-                    .nodes
-                    .iter()
-                    .filter(|node| node.reference.is_some() && in_scope(node))
-                    .filter(|node| evaluate(&stripped, node))
-                    .take(limit)
-                    .count();
-                krometrail_core::RelaxedMatchCandidates::new(count)
-            })
+            stripped
+                .as_ref()
+                .map(|_| krometrail_core::RelaxedMatchCandidates::new(uncontained_count))
         } else {
             None
         };
@@ -763,40 +786,47 @@ impl SnapshotRegistry {
             .iter()
             .map(|node| (node.id, node))
             .collect::<HashMap<_, _>>();
-        let evaluate = |query: &SemanticQuery, node: &SnapshotNode| {
-            semantic_query_matches(
+        let mut evaluator =
+            SemanticQueryEvaluator::new(&active.parent_by_node, &active.semantic, &nodes_by_id);
+        let prepared = PreparedSemanticQuery::new(query);
+        let relaxed = query.relaxed_to_contains();
+        let prepared_relaxed = relaxed.as_ref().map(PreparedSemanticQuery::new);
+        let mut primary_container_memo = HashMap::new();
+        let mut relaxed_container_memo = HashMap::new();
+        let mut relaxed_count = 0;
+        let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
+        let default_metadata = SemanticNodeMetadata::default();
+        let mut match_count = 0_u32;
+        for node in &snapshot.nodes {
+            let metadata = active.semantic.get(&node.id).unwrap_or(&default_metadata);
+            if evaluator.matches(
                 query,
+                &prepared,
                 node,
-                active
-                    .semantic
-                    .get(&node.id)
-                    .unwrap_or(&SemanticNodeMetadata::default()),
-                &active.parent_by_node,
-                &active.semantic,
-                &nodes_by_id,
-            )
-        };
-        let match_count = snapshot
-            .nodes
-            .iter()
-            .filter(|node| evaluate(query, node))
-            .fold(0_u32, |count, _| count.saturating_add(1));
+                metadata,
+                &mut primary_container_memo,
+            ) {
+                match_count = match_count.saturating_add(1);
+            } else if let (Some(relaxed), Some(prepared_relaxed)) = (&relaxed, &prepared_relaxed)
+                && relaxed_count < limit
+                && evaluator.matches(
+                    relaxed,
+                    prepared_relaxed,
+                    node,
+                    metadata,
+                    &mut relaxed_container_memo,
+                )
+            {
+                relaxed_count += 1;
+            }
+        }
         let outcome = match match_count {
             0 => SemanticQueryOutcome::NoMatch,
             1 => SemanticQueryOutcome::Unique,
             _ => SemanticQueryOutcome::Ambiguous,
         };
         let relaxed_match_candidates = if match_count == 0 {
-            query.relaxed_to_contains().map(|relaxed| {
-                let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
-                let count = snapshot
-                    .nodes
-                    .iter()
-                    .filter(|node| evaluate(&relaxed, node))
-                    .take(limit)
-                    .count();
-                RelaxedMatchCandidates::new(count)
-            })
+            relaxed.map(|_| RelaxedMatchCandidates::new(relaxed_count))
         } else {
             None
         };
@@ -973,45 +1003,154 @@ impl SnapshotRegistry {
     }
 }
 
-fn semantic_query_matches(
-    query: &SemanticQuery,
-    node: &SnapshotNode,
-    metadata: &SemanticNodeMetadata,
-    parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
-    semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
-    nodes_by_id: &HashMap<SnapshotNodeId, &SnapshotNode>,
-) -> bool {
-    match query {
-        SemanticQuery::Role {
-            role,
-            name,
-            container_text,
-        } => {
-            node.role == role.as_str()
-                && name.as_ref().is_none_or(|name| {
-                    node.name
-                        .as_deref()
-                        .is_some_and(|value| name.matches(value))
-                })
-                && container_text.as_ref().is_none_or(|expected| {
-                    nearest_container_text_matches(
-                        node.id,
-                        expected,
-                        parents,
-                        semantic,
-                        nodes_by_id,
-                    )
-                })
+struct PreparedSemanticQuery {
+    name: Option<NormalizedTextNeedle>,
+    container_text: Option<NormalizedTextNeedle>,
+    label: Option<NormalizedTextNeedle>,
+    text: Option<NormalizedTextNeedle>,
+}
+
+impl PreparedSemanticQuery {
+    fn new(query: &SemanticQuery) -> Self {
+        match query {
+            SemanticQuery::Role {
+                name,
+                container_text,
+                ..
+            } => Self {
+                name: name.as_ref().map(|value| value.normalized_needle()),
+                container_text: container_text
+                    .as_ref()
+                    .map(|value| value.normalized_needle()),
+                label: None,
+                text: None,
+            },
+            SemanticQuery::Label { text } => Self {
+                name: None,
+                container_text: None,
+                label: Some(text.normalized_needle()),
+                text: None,
+            },
+            SemanticQuery::Text { text } => Self {
+                name: None,
+                container_text: None,
+                label: None,
+                text: Some(text.normalized_needle()),
+            },
+            SemanticQuery::TestId { .. } => Self {
+                name: None,
+                container_text: None,
+                label: None,
+                text: None,
+            },
         }
-        SemanticQuery::Label { text } => metadata.labels.iter().any(|label| text.matches(label)),
-        SemanticQuery::Text { text } => text.matches(&metadata.rendered_text),
-        SemanticQuery::TestId { value } => metadata
-            .test_id
-            .as_deref()
-            .is_some_and(|candidate| candidate == value.as_str()),
     }
 }
 
+struct SemanticQueryEvaluator<'a> {
+    parents: &'a HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
+    semantic: &'a HashMap<SnapshotNodeId, SemanticNodeMetadata>,
+    nodes_by_id: &'a HashMap<SnapshotNodeId, &'a SnapshotNode>,
+    scratch: String,
+}
+
+impl<'a> SemanticQueryEvaluator<'a> {
+    fn new(
+        parents: &'a HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
+        semantic: &'a HashMap<SnapshotNodeId, SemanticNodeMetadata>,
+        nodes_by_id: &'a HashMap<SnapshotNodeId, &'a SnapshotNode>,
+    ) -> Self {
+        Self {
+            parents,
+            semantic,
+            nodes_by_id,
+            scratch: String::new(),
+        }
+    }
+
+    fn matches(
+        &mut self,
+        query: &SemanticQuery,
+        prepared: &PreparedSemanticQuery,
+        node: &SnapshotNode,
+        metadata: &SemanticNodeMetadata,
+        container_memo: &mut HashMap<SnapshotNodeId, bool>,
+    ) -> bool {
+        match query {
+            SemanticQuery::Role {
+                role,
+                name,
+                container_text,
+            } => {
+                node.role == role.as_str()
+                    && name.as_ref().is_none_or(|_| {
+                        let Some(needle) = prepared.name.as_ref() else {
+                            return false;
+                        };
+                        let Some(value) = node.name.as_deref() else {
+                            return false;
+                        };
+                        let candidate = precomputed_candidate(value, &metadata.normalized_name);
+                        needle.matches_prenormalized(&candidate, &mut self.scratch)
+                    })
+                    && container_text.as_ref().is_none_or(|_| {
+                        let Some(needle) = prepared.container_text.as_ref() else {
+                            return false;
+                        };
+                        nearest_container_text_matches_prenormalized(
+                            node.id,
+                            needle,
+                            self.parents,
+                            self.semantic,
+                            self.nodes_by_id,
+                            container_memo,
+                            &mut self.scratch,
+                        )
+                    })
+            }
+            SemanticQuery::Label { .. } => {
+                let Some(needle) = prepared.label.as_ref() else {
+                    return false;
+                };
+                metadata.labels.iter().enumerate().any(|(index, label)| {
+                    let normalized = metadata
+                        .normalized_labels
+                        .get(index)
+                        .filter(|candidate| !candidate.is_empty())
+                        .map_or_else(
+                            || precomputed_candidate(label, ""),
+                            |candidate| std::borrow::Cow::Borrowed(candidate.as_str()),
+                        );
+                    needle.matches_prenormalized(&normalized, &mut self.scratch)
+                })
+            }
+            SemanticQuery::Text { .. } => {
+                let Some(needle) = prepared.text.as_ref() else {
+                    return false;
+                };
+                let candidate =
+                    precomputed_candidate(&metadata.rendered_text, &metadata.normalized_match_text);
+                needle.matches_prenormalized(&candidate, &mut self.scratch)
+            }
+            SemanticQuery::TestId { value } => metadata
+                .test_id
+                .as_deref()
+                .is_some_and(|candidate| candidate == value.as_str()),
+        }
+    }
+}
+
+fn precomputed_candidate<'a>(raw: &'a str, normalized: &'a str) -> std::borrow::Cow<'a, str> {
+    if !normalized.is_empty() || raw.is_empty() {
+        std::borrow::Cow::Borrowed(normalized)
+    } else {
+        // Hand-built registry fixtures predate the decode-time key. Production metadata always
+        // takes the borrowed branch, while the fallback keeps those internal fixtures semantic.
+        std::borrow::Cow::Owned(normalize_semantic_text(raw, true))
+    }
+}
+
+#[cfg(test)]
 fn nearest_container_text_matches(
     node: SnapshotNodeId,
     expected: &krometrail_core::SemanticTextMatch,
@@ -1019,32 +1158,104 @@ fn nearest_container_text_matches(
     semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
     nodes_by_id: &HashMap<SnapshotNodeId, &SnapshotNode>,
 ) -> bool {
-    let mut current = parents.get(&node).copied().flatten();
-    while let Some(ancestor) = current {
-        let Some(ancestor_node) = nodes_by_id.get(&ancestor) else {
-            return false;
-        };
-        if is_local_container_role(&ancestor_node.role) {
-            // A semantic container declares an identity boundary: the nearest one is the sole
-            // authority for the query, exactly as before.
-            return semantic
-                .get(&ancestor)
-                .is_some_and(|metadata| expected.matches(&metadata.rendered_text));
-        }
-        if is_generic_container_role(&ancestor_node.role)
-            && let Some(metadata) = semantic.get(&ancestor)
-            && metadata.true_collapsed_text_bytes()
-                <= krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES
-            && expected.matches(&metadata.rendered_text)
-        {
-            // Styling divs do not declare identity boundaries, so a bounded generic ancestor
-            // qualifies opportunistically and a non-matching one stays transparent. Rendered
-            // text only grows upward, so page-scale wrappers can never qualify a control.
-            return true;
-        }
-        current = parents.get(&ancestor).copied().flatten();
+    let needle = expected.normalized_needle();
+    let mut memo = HashMap::new();
+    let mut scratch = String::new();
+    nearest_container_text_matches_prenormalized(
+        node,
+        &needle,
+        parents,
+        semantic,
+        nodes_by_id,
+        &mut memo,
+        &mut scratch,
+    )
+}
+
+fn nearest_container_text_matches_prenormalized(
+    node: SnapshotNodeId,
+    needle: &NormalizedTextNeedle,
+    parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
+    semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
+    nodes_by_id: &HashMap<SnapshotNodeId, &SnapshotNode>,
+    memo: &mut HashMap<SnapshotNodeId, bool>,
+    scratch: &mut String,
+) -> bool {
+    let Some(ancestor) = parents.get(&node).copied().flatten() else {
+        return false;
+    };
+    ancestor_container_verdict(
+        ancestor,
+        needle,
+        parents,
+        semantic,
+        nodes_by_id,
+        memo,
+        scratch,
+    )
+}
+
+fn ancestor_container_verdict(
+    ancestor: SnapshotNodeId,
+    needle: &NormalizedTextNeedle,
+    parents: &HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
+    semantic: &HashMap<SnapshotNodeId, SemanticNodeMetadata>,
+    nodes_by_id: &HashMap<SnapshotNodeId, &SnapshotNode>,
+    memo: &mut HashMap<SnapshotNodeId, bool>,
+    scratch: &mut String,
+) -> bool {
+    if let Some(&verdict) = memo.get(&ancestor) {
+        return verdict;
     }
-    false
+
+    // Resolve the chain iteratively so a deeply nested page remains linear without adding a
+    // recursive stack bound. Every node on the walked suffix has the same fixed-needle verdict.
+    let mut path = Vec::new();
+    let verdict = 'walk: {
+        let mut current = Some(ancestor);
+        while let Some(node_id) = current {
+            if let Some(&verdict) = memo.get(&node_id) {
+                break 'walk verdict;
+            }
+            path.push(node_id);
+            let Some(node) = nodes_by_id.get(&node_id) else {
+                break 'walk false;
+            };
+            if is_local_container_role(&node.role) {
+                // A semantic container declares an identity boundary: the nearest one is the
+                // sole authority for the query, exactly as before.
+                break 'walk semantic.get(&node_id).is_some_and(|metadata| {
+                    metadata_matches_rendered_text(metadata, needle, scratch)
+                });
+            }
+            if is_generic_container_role(&node.role)
+                && let Some(metadata) = semantic.get(&node_id)
+                && metadata.true_collapsed_text_bytes()
+                    <= krometrail_core::MAX_GENERIC_CONTAINER_TEXT_BYTES
+                && metadata_matches_rendered_text(metadata, needle, scratch)
+            {
+                // Styling divs do not declare identity boundaries, so a bounded generic ancestor
+                // qualifies opportunistically and a non-matching one stays transparent. Rendered
+                // text only grows upward, so page-scale wrappers can never qualify a control.
+                break 'walk true;
+            }
+            current = parents.get(&node_id).copied().flatten();
+        }
+        false
+    };
+    for node_id in path {
+        memo.insert(node_id, verdict);
+    }
+    verdict
+}
+
+fn metadata_matches_rendered_text(
+    metadata: &SemanticNodeMetadata,
+    needle: &NormalizedTextNeedle,
+    scratch: &mut String,
+) -> bool {
+    let candidate = precomputed_candidate(&metadata.rendered_text, &metadata.normalized_match_text);
+    needle.matches_prenormalized(&candidate, scratch)
 }
 
 fn is_local_container_role(role: &str) -> bool {
@@ -1314,7 +1525,10 @@ fn decode_dom_snapshot_with_geometry(
                 node.backend_node_id,
                 SemanticNodeMetadata {
                     labels: Vec::new(),
+                    normalized_labels: Vec::new(),
                     rendered_text: rendered[index].clone(),
+                    normalized_match_text: normalize_semantic_text(&rendered[index], true),
+                    normalized_name: String::new(),
                     collapsed_text_bytes: collapsed_text_bytes[index],
                     test_id: node.test_id.clone(),
                 },
@@ -1577,7 +1791,13 @@ fn decode_viewport_scoped_dom_snapshot(
                 node.backend_node_id,
                 SemanticNodeMetadata {
                     labels: Vec::new(),
+                    normalized_labels: Vec::new(),
                     rendered_text: rendered.get(index).cloned().unwrap_or_default(),
+                    normalized_match_text: normalize_semantic_text(
+                        rendered.get(index).map(String::as_str).unwrap_or_default(),
+                        true,
+                    ),
+                    normalized_name: String::new(),
                     collapsed_text_bytes: collapsed_text_bytes.get(index).copied().unwrap_or(0),
                     test_id: node.test_id.clone(),
                 },
@@ -1773,9 +1993,12 @@ fn push_label(
     if value.is_empty() {
         return;
     }
-    let labels = &mut metadata.entry(backend_node_id).or_default().labels;
-    if !labels.iter().any(|label| label == value) {
-        labels.push(value.to_owned());
+    let entry = metadata.entry(backend_node_id).or_default();
+    if !entry.labels.iter().any(|label| label == value) {
+        entry.labels.push(value.to_owned());
+        entry
+            .normalized_labels
+            .push(normalize_semantic_text(value, true));
     }
 }
 
@@ -2380,7 +2603,7 @@ pub(crate) fn current_reference_error(
 
 #[cfg(test)]
 fn decode_ax_tree(
-    response: &Value,
+    response: Value,
     target_id: TargetId,
     generation: SnapshotGeneration,
 ) -> Result<(Vec<SnapshotNode>, HashMap<SnapshotNodeId, NodeBinding>, u32)> {
@@ -2396,29 +2619,89 @@ fn decode_ax_tree(
     )
 }
 
+#[derive(Deserialize)]
+struct AxTreeResponse {
+    #[serde(default)]
+    nodes: Option<Vec<AxNodeWire>>,
+    #[serde(default)]
+    result: Option<AxTreeResultWire>,
+}
+
+#[derive(Deserialize)]
+struct AxTreeResultWire {
+    #[serde(default)]
+    nodes: Option<Vec<AxNodeWire>>,
+}
+
+#[derive(Deserialize)]
+struct AxNodeWire {
+    #[serde(rename = "nodeId", default)]
+    node_id: String,
+    #[serde(rename = "frameId", default)]
+    frame_id: Option<String>,
+    #[serde(default)]
+    ignored: bool,
+    #[serde(default)]
+    role: Option<AxValueWire>,
+    #[serde(default)]
+    name: Option<AxValueWire>,
+    #[serde(default)]
+    value: Option<AxValueWire>,
+    #[serde(default)]
+    description: Option<AxValueWire>,
+    #[serde(rename = "backendDOMNodeId", default)]
+    backend_dom_node_id: Option<i64>,
+    #[serde(rename = "childIds", default)]
+    child_ids: Vec<String>,
+    #[serde(default)]
+    properties: Vec<AxPropertyWire>,
+}
+
+#[derive(Deserialize)]
+struct AxValueWire {
+    #[serde(default)]
+    value: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AxPropertyWire {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    value: Option<AxPropertyValueWire>,
+}
+
+#[derive(Deserialize)]
+struct AxPropertyValueWire {
+    #[serde(default)]
+    value: Option<Value>,
+}
+
 fn decode_ax_tree_with_ids(
-    response: &Value,
+    response: Value,
     target_id: TargetId,
     generation: SnapshotGeneration,
     node_by_backend: &mut HashMap<i64, SnapshotNodeId>,
     next_node_id: &mut u32,
     expected_frame_id: Option<&str>,
 ) -> Result<(Vec<SnapshotNode>, HashMap<SnapshotNodeId, NodeBinding>, u32)> {
+    let response: AxTreeResponse = serde_json::from_value(response)
+        .map_err(|_| malformed(target_id, "accessibility tree response is malformed"))?;
     let raw_nodes = response
-        .get("nodes")
-        .or_else(|| response.pointer("/result/nodes"))
-        .and_then(Value::as_array)
+        .nodes
+        .or_else(|| response.result.and_then(|result| result.nodes))
         .ok_or_else(|| malformed(target_id, "accessibility tree response is malformed"))?;
     let observed_frame_ids = raw_nodes
         .iter()
-        .filter_map(|node| node.get("frameId").and_then(Value::as_str))
+        .filter_map(|node| node.frame_id.as_deref())
+        .map(str::to_owned)
         .collect::<HashSet<_>>();
-    let nodes: Vec<&Value> = raw_nodes
-        .iter()
+    let mut nodes: Vec<AxNodeWire> = raw_nodes
+        .into_iter()
         .filter(|node| {
             expected_frame_id.is_none_or(|expected| {
-                node.get("frameId")
-                    .and_then(Value::as_str)
+                node.frame_id
+                    .as_deref()
                     .is_none_or(|actual| actual == expected)
             })
         })
@@ -2432,51 +2715,66 @@ fn decode_ax_tree_with_ids(
             "accessibility tree belongs to a different document than the resolved frame",
         ));
     }
-    let by_id = nodes
+    let mut has_node_id = vec![false; nodes.len()];
+    let mut by_id = HashMap::with_capacity(nodes.len());
+    for (index, node) in nodes.iter_mut().enumerate() {
+        if !node.node_id.is_empty() {
+            let id = std::mem::take(&mut node.node_id);
+            has_node_id[index] = true;
+            by_id.insert(id, index);
+        }
+    }
+    let mut has_parent = vec![false; nodes.len()];
+    let mut children = Vec::with_capacity(nodes.len());
+    for node in &nodes {
+        let Some(child_ids) = (!node.child_ids.is_empty()).then_some(&node.child_ids) else {
+            children.push(None);
+            continue;
+        };
+        let child_indexes = child_ids
+            .iter()
+            .map(|child| {
+                by_id
+                    .get(child)
+                    .copied()
+                    .ok_or_else(|| malformed(target_id, "accessibility child node is missing"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for &child in &child_indexes {
+            has_parent[child] = true;
+        }
+        children.push(Some(child_indexes));
+    }
+    let roots = nodes
         .iter()
-        .copied()
-        .filter_map(|node| {
-            node.get("nodeId")
-                .and_then(Value::as_str)
-                .map(|id| (id, node))
+        .enumerate()
+        .filter_map(|(index, node)| {
+            has_node_id[index]
+                .then_some(node)
+                .filter(|_| !has_parent[index])
+                .map(|_| index)
         })
-        .collect::<HashMap<_, _>>();
-    let children = nodes
-        .iter()
-        .flat_map(|node| {
-            node.get("childIds")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-        })
-        .collect::<HashSet<_>>();
-    let roots = nodes.iter().filter_map(|node| {
-        node.get("nodeId")
-            .and_then(Value::as_str)
-            .filter(|id| !children.contains(id))
-    });
+        .collect::<Vec<_>>();
     let mut decoder = Decoder {
         target_id,
         generation,
-        by_id,
-        nodes: Vec::new(),
-        bindings: HashMap::new(),
+        wire_nodes: nodes,
+        nodes: Vec::with_capacity(has_node_id.len()),
+        children,
+        bindings: HashMap::with_capacity(has_node_id.len()),
         text_bytes: 0,
         omitted: 0,
-        visited: HashSet::new(),
+        visited: vec![false; has_node_id.len()],
         node_by_backend,
         next_node_id,
-        seen_backends: HashSet::new(),
+        seen_backends: HashSet::with_capacity(has_node_id.len()),
     };
     for root in roots {
         decoder.visit(root, None, 0)?;
     }
-    for node in nodes {
-        if let Some(id) = node.get("nodeId").and_then(Value::as_str) {
-            if !decoder.visited.contains(id) {
-                decoder.visit(id, None, 0)?;
-            }
+    for (index, &has_id) in has_node_id.iter().enumerate() {
+        if has_id && !decoder.visited[index] {
+            decoder.visit(index, None, 0)?;
         }
     }
     decoder
@@ -2488,39 +2786,38 @@ fn decode_ax_tree_with_ids(
 struct Decoder<'a> {
     target_id: TargetId,
     generation: SnapshotGeneration,
-    by_id: HashMap<&'a str, &'a Value>,
+    wire_nodes: Vec<AxNodeWire>,
     nodes: Vec<SnapshotNode>,
+    children: Vec<Option<Vec<usize>>>,
     bindings: HashMap<SnapshotNodeId, NodeBinding>,
     text_bytes: usize,
     omitted: u32,
-    visited: HashSet<&'a str>,
+    visited: Vec<bool>,
     node_by_backend: &'a mut HashMap<i64, SnapshotNodeId>,
     next_node_id: &'a mut u32,
     seen_backends: HashSet<i64>,
 }
 
 impl<'a> Decoder<'a> {
-    fn visit(&mut self, id: &'a str, parent: Option<SnapshotNodeId>, depth: u16) -> Result<()> {
-        if !self.visited.insert(id) {
+    fn visit(&mut self, index: usize, parent: Option<SnapshotNodeId>, depth: u16) -> Result<()> {
+        if self.visited[index] {
             return Ok(());
         }
-        let node = *self
-            .by_id
-            .get(id)
-            .ok_or_else(|| malformed(self.target_id, "accessibility child node is missing"))?;
-        let ignored = node
-            .get("ignored")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let role = ax_string(node.get("role")).unwrap_or("generic");
-        let skip = ignored || matches!(role, "none" | "presentation");
+        self.visited[index] = true;
+        let node = &mut self.wire_nodes[index];
+        let ignored = node.ignored;
+        let role = ax_string(node.role.as_ref())
+            .unwrap_or("generic")
+            .to_owned();
+        let skip = ignored || matches!(role.as_str(), "none" | "presentation");
         let mut next_parent = parent;
         let mut next_depth = depth;
         if !skip {
-            let name = ax_owned(node.get("name"));
-            let value = ax_owned(node.get("value"));
-            let description = ax_owned(node.get("description"));
-            let (properties, property_bytes, disabled, hidden, signal) = decode_properties(node);
+            let name = ax_owned(node.name.take());
+            let value = ax_owned(node.value.take());
+            let description = ax_owned(node.description.take());
+            let (properties, property_bytes, disabled, hidden, signal) =
+                decode_properties(std::mem::take(&mut node.properties));
             let text_bytes = role.len()
                 + name.as_ref().map_or(0, String::len)
                 + value.as_ref().map_or(0, String::len)
@@ -2531,7 +2828,7 @@ impl<'a> Decoder<'a> {
             {
                 self.omitted = self.omitted.saturating_add(1);
             } else {
-                let backend = node.get("backendDOMNodeId").and_then(Value::as_i64);
+                let backend = node.backend_dom_node_id;
                 let node_id = if let Some(backend_node_id) = backend {
                     self.seen_backends.insert(backend_node_id);
                     if let Some(id) = self.node_by_backend.get(&backend_node_id) {
@@ -2556,17 +2853,19 @@ impl<'a> Decoder<'a> {
                 let actionable = backend.is_some()
                     && !disabled
                     && !hidden
-                    && (ACTIONABLE_ROLES.contains(&role) || (signal && !structural_web_area));
+                    && (ACTIONABLE_ROLES.contains(&role.as_str())
+                        || (signal && !structural_web_area));
                 let reference = actionable.then_some(NodeReference {
                     target_id: self.target_id,
                     generation: self.generation,
                     node_id,
                 });
+                let expectation_role = ExpectationTargetRole::from_accessibility_role(&role);
                 self.nodes.push(SnapshotNode {
                     id: node_id,
                     parent,
                     depth,
-                    role: role.to_owned(),
+                    role,
                     name,
                     value,
                     description,
@@ -2580,7 +2879,7 @@ impl<'a> Decoder<'a> {
                         node_id,
                         NodeBinding {
                             backend_node_id,
-                            expectation_role: ExpectationTargetRole::from_accessibility_role(role),
+                            expectation_role,
                         },
                     );
                 }
@@ -2591,47 +2890,42 @@ impl<'a> Decoder<'a> {
                     .ok_or_else(|| malformed(self.target_id, "snapshot depth exceeds u16"))?;
             }
         }
-        if let Some(child_ids) = node.get("childIds").and_then(Value::as_array) {
-            for child in child_ids.iter().filter_map(Value::as_str) {
-                self.visit(child, next_parent, next_depth)?;
-            }
+        for child in self.children[index].take().into_iter().flatten() {
+            self.visit(child, next_parent, next_depth)?;
         }
         Ok(())
     }
 }
 
-fn decode_properties(node: &Value) -> (Vec<AccessibleProperty>, usize, bool, bool, bool) {
+fn decode_properties(
+    wire_properties: Vec<AxPropertyWire>,
+) -> (Vec<AccessibleProperty>, usize, bool, bool, bool) {
     let mut properties = Vec::new();
     let mut bytes = 0;
     let mut disabled = false;
     let mut hidden = false;
     let mut signal = false;
-    for property in node
-        .get("properties")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let Some(name) = property.get("name").and_then(Value::as_str) else {
+    for property in wire_properties {
+        let Some(name) = property.name else {
             continue;
         };
-        let value = property.get("value").and_then(|value| value.get("value"));
-        let bool_value = value.and_then(Value::as_bool);
+        let value = property.value.and_then(|value| value.value);
+        let bool_value = value.as_ref().and_then(Value::as_bool);
         disabled |= name == "disabled" && bool_value == Some(true);
         hidden |= name == "hidden" && bool_value == Some(true);
-        signal |= ACTIONABLE_SIGNALS.contains(&name) && bool_value == Some(true);
-        if !ACCESSIBLE_PROPERTIES.contains(&name)
+        signal |= ACTIONABLE_SIGNALS.contains(&name.as_str()) && bool_value == Some(true);
+        if !ACCESSIBLE_PROPERTIES.contains(&name.as_str())
             || properties.len() >= MAX_ACCESSIBLE_PROPERTY_COUNT
         {
             continue;
         }
         let accessible = match value {
-            Some(Value::Bool(value)) => AccessibleValue::Boolean(*value),
+            Some(Value::Bool(value)) => AccessibleValue::Boolean(value),
             Some(Value::Number(value)) => match value.as_f64().filter(|value| value.is_finite()) {
                 Some(value) => AccessibleValue::Number(value),
                 None => continue,
             },
-            Some(Value::String(value)) => AccessibleValue::Text(value.clone()),
+            Some(Value::String(value)) => AccessibleValue::Text(value),
             _ => continue,
         };
         bytes += name.len()
@@ -2640,22 +2934,18 @@ fn decode_properties(node: &Value) -> (Vec<AccessibleProperty>, usize, bool, boo
                 _ => 0,
             };
         properties.push(AccessibleProperty {
-            name: name.to_owned(),
+            name,
             value: accessible,
         });
     }
     (properties, bytes, disabled, hidden, signal)
 }
 
-fn ax_string(value: Option<&Value>) -> Option<&str> {
-    value
-        .and_then(|value| value.get("value"))
-        .and_then(Value::as_str)
+fn ax_string(value: Option<&AxValueWire>) -> Option<&str> {
+    value.and_then(|value| value.value.as_deref())
 }
-fn ax_owned(value: Option<&Value>) -> Option<String> {
-    ax_string(value)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
+fn ax_owned(value: Option<AxValueWire>) -> Option<String> {
+    value.and_then(|value| value.value.filter(|value| !value.is_empty()))
 }
 fn stale(target_id: TargetId, message: &'static str) -> krometrail_core::KrometrailError {
     operation_error(ErrorCode::StaleReference, target_id, message)
@@ -3248,7 +3538,8 @@ mod tests {
             {"nodeId":"ignored","ignored":true,"role":{"value":"none"},"childIds":["button"]},
             {"nodeId":"button","ignored":false,"role":{"value":"button"},"name":{"value":"Save"},"backendDOMNodeId":7,"properties":[{"name":"focusable","value":{"value":true}},{"name":"futureProperty","value":{"value":"x"}}]}
         ]});
-        let (nodes, bindings, omitted) = decode_ax_tree(&response, target(), generation).unwrap();
+        let (nodes, bindings, omitted) =
+            decode_ax_tree(response.clone(), target(), generation).unwrap();
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[1].parent, Some(nodes[0].id));
         assert_eq!(nodes[1].name.as_deref(), Some("Save"));
@@ -3265,7 +3556,8 @@ mod tests {
             {"nodeId":"root","ignored":false,"role":{"value":"RootWebArea"},"name":{"value":"Example"},"backendDOMNodeId":1,"childIds":["button"],"properties":[{"name":"focusable","value":{"value":true}}]},
             {"nodeId":"button","ignored":false,"role":{"value":"button"},"name":{"value":"Save"},"backendDOMNodeId":7,"properties":[{"name":"focusable","value":{"value":true}}]}
         ]});
-        let (nodes, bindings, omitted) = decode_ax_tree(&response, target(), generation).unwrap();
+        let (nodes, bindings, omitted) =
+            decode_ax_tree(response.clone(), target(), generation).unwrap();
         assert_eq!(omitted, 0);
         assert_eq!(nodes.len(), 2);
         assert!(!nodes[0].actionable);
@@ -3285,7 +3577,7 @@ mod tests {
         let mut node_by_backend = HashMap::new();
         let mut next_node_id = 0;
         let (nodes, bindings, omitted) = decode_ax_tree_with_ids(
-            &response,
+            response.clone(),
             target(),
             SnapshotGeneration::new(1).unwrap(),
             &mut node_by_backend,
@@ -3866,13 +4158,13 @@ mod tests {
         let generation = SnapshotGeneration::new(1).unwrap();
         let accepted_text = "x".repeat(MAX_SNAPSHOT_TEXT_BYTES - 64);
         let (accepted_nodes, _, accepted_omitted) =
-            decode_ax_tree(&ax_tree_with_name(accepted_text), target(), generation).unwrap();
+            decode_ax_tree(ax_tree_with_name(accepted_text), target(), generation).unwrap();
         assert_eq!(accepted_omitted, 0);
         assert_eq!(accepted_nodes.len(), 2);
 
         let overflow_text = "x".repeat(MAX_SNAPSHOT_TEXT_BYTES + 1);
         let (_, _, overflow_omitted) =
-            decode_ax_tree(&ax_tree_with_name(overflow_text), target(), generation).unwrap();
+            decode_ax_tree(ax_tree_with_name(overflow_text), target(), generation).unwrap();
         assert_eq!(overflow_omitted, 1);
 
         let (registry, bound, snapshot) = status_registry_fixture(&["Ready"], false, 1);
@@ -6038,5 +6330,366 @@ mod tests {
         assert_eq!(next_generation, generation);
         assert_eq!(node_by_backend.get(&42), Some(&node_id));
         assert_eq!(next_node_id, 7);
+    }
+
+    #[test]
+    fn dom_metadata_precomputes_bound_then_normalized_match_text() {
+        let rendered = "  Filters\u{200b} \u{e5cf}\n now ".to_owned();
+        let metadata = decode_dom_snapshot(
+            &dom_snapshot_with_text(rendered.clone()),
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+        )
+        .unwrap();
+        let metadata = metadata.get(&2).expect("text node metadata");
+        assert_eq!(
+            metadata.normalized_match_text,
+            normalize_semantic_text(&metadata.rendered_text, true)
+        );
+    }
+
+    fn benchmark_snapshot_context() -> ObservationContext {
+        ObservationContext::new(
+            SessionId::from_uuid(uuid::Uuid::from_u128(20)),
+            target(),
+            1,
+            krometrail_core::SessionTime::ZERO,
+            krometrail_core::SessionTime::ZERO,
+        )
+        .unwrap()
+    }
+
+    fn benchmark_registry_with_text(
+        node_count: usize,
+    ) -> (SnapshotRegistry, BoundTarget, PageSnapshot) {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let mut node_by_backend = HashMap::new();
+        let mut next_node_id = 0;
+        let (nodes, bindings, omitted) = decode_ax_tree_with_ids(
+            ax_tree_with_node_count(node_count),
+            target(),
+            generation,
+            &mut node_by_backend,
+            &mut next_node_id,
+            None,
+        )
+        .unwrap();
+        let semantic = nodes
+            .iter()
+            .map(|node| {
+                let rendered_text = format!("benchmark node {}", node.id.get());
+                let normalized_match_text = normalize_semantic_text(&rendered_text, true);
+                (
+                    node.id,
+                    SemanticNodeMetadata {
+                        rendered_text,
+                        normalized_match_text,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let context = benchmark_snapshot_context();
+        let snapshot = PageSnapshot::new(context, generation, nodes, omitted).unwrap();
+        let bound = frame_bound();
+        let mut registry = SnapshotRegistry::default();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: bound.attachment_generation,
+                document: DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                frame: None,
+                bindings,
+                node_by_backend,
+                semantic,
+                parent_by_node: snapshot
+                    .nodes
+                    .iter()
+                    .map(|node| (node.id, node.parent))
+                    .collect(),
+                dom_semantics_captured: true,
+                next_node_id,
+            },
+        );
+        (registry, bound, snapshot)
+    }
+
+    fn benchmark_container_payload(node_count: usize) -> (Value, Value) {
+        let mut ax = ax_tree_with_container_node_count(node_count);
+        let ax_nodes = ax["nodes"].as_array_mut().unwrap();
+        ax_nodes[0]["childIds"] = json!(["container"]);
+        let mut container_children = vec![json!("button")];
+        container_children.extend((3..node_count).map(|index| json!(format!("filler-{index}"))));
+        ax_nodes[1]["childIds"] = Value::Array(container_children);
+        for node in ax_nodes.iter_mut().skip(3) {
+            node["role"]["value"] = json!("button");
+        }
+
+        let mut dom = dom_snapshot_with_container_node_count(node_count);
+        let parent_indices = dom["documents"][0]["nodes"]["parentIndex"]
+            .as_array_mut()
+            .unwrap();
+        for parent in parent_indices.iter_mut().skip(4) {
+            *parent = json!(1);
+        }
+        (ax, dom)
+    }
+
+    fn benchmark_container_registry(
+        node_count: usize,
+    ) -> (SnapshotRegistry, BoundTarget, PageSnapshot) {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let (ax, dom) = benchmark_container_payload(node_count);
+        let mut node_by_backend = HashMap::new();
+        let mut next_node_id = 0;
+        let (nodes, bindings, omitted) = decode_ax_tree_with_ids(
+            ax,
+            target(),
+            generation,
+            &mut node_by_backend,
+            &mut next_node_id,
+            None,
+        )
+        .unwrap();
+        let dom_metadata = decode_dom_snapshot(
+            &dom,
+            &DocumentFingerprint {
+                frame_id: "main".into(),
+                loader_id: "loader".into(),
+            },
+            target(),
+        )
+        .unwrap();
+        let semantic = dom_metadata
+            .into_iter()
+            .filter_map(|(backend, metadata)| {
+                node_by_backend
+                    .get(&backend)
+                    .copied()
+                    .map(|node_id| (node_id, metadata))
+            })
+            .collect::<HashMap<_, _>>();
+        let context = benchmark_snapshot_context();
+        let snapshot = PageSnapshot::new(context, generation, nodes, omitted).unwrap();
+        let bound = frame_bound();
+        let mut registry = SnapshotRegistry::default();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: bound.attachment_generation,
+                document: DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                frame: None,
+                bindings,
+                node_by_backend,
+                semantic,
+                parent_by_node: snapshot
+                    .nodes
+                    .iter()
+                    .map(|node| (node.id, node.parent))
+                    .collect(),
+                dom_semantics_captured: true,
+                next_node_id,
+            },
+        );
+        (registry, bound, snapshot)
+    }
+
+    /// cdpkit's parse-to-`Value` cost is intrinsic and excluded; this times typed AX decode only.
+    #[test]
+    #[ignore]
+    fn perf_decode_ax_50k() {
+        let node_count = 50_000;
+        let iterations = 3;
+        let payload = ax_tree_with_node_count(node_count);
+        let payloads = (0..iterations).map(|_| payload.clone()).collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        for payload in payloads {
+            let mut node_by_backend = HashMap::new();
+            let mut next_node_id = 0;
+            std::hint::black_box(
+                decode_ax_tree_with_ids(
+                    payload,
+                    target(),
+                    SnapshotGeneration::new(1).unwrap(),
+                    &mut node_by_backend,
+                    &mut next_node_id,
+                    None,
+                )
+                .unwrap(),
+            );
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "perf_decode_ax_50k: {:.3} ms/op",
+            elapsed.as_secs_f64() * 1_000.0 / f64::from(iterations)
+        );
+    }
+
+    /// cdpkit's parse-to-`Value` cost is intrinsic and excluded; this times a text-miss probe.
+    #[test]
+    #[ignore]
+    fn perf_probe_text_miss_50k() {
+        let iterations = 10;
+        let (registry, bound, snapshot) = benchmark_registry_with_text(50_000);
+        let query = SemanticQuery::Text {
+            text: krometrail_core::SemanticTextMatch::new(
+                "needle not present",
+                krometrail_core::SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap(),
+        };
+        let started = std::time::Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(registry.probe_presence(&bound, &query, &snapshot).unwrap());
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "perf_probe_text_miss_50k: {:.3} ms/op",
+            elapsed.as_secs_f64() * 1_000.0 / f64::from(iterations)
+        );
+    }
+
+    /// cdpkit's parse-to-`Value` cost is intrinsic and excluded; this times container matching.
+    #[test]
+    #[ignore]
+    fn perf_container_contains_50k() {
+        let iterations = 10;
+        let (registry, bound, snapshot) = benchmark_container_registry(50_000);
+        let query = SemanticQuery::role_in_container(
+            "button",
+            None,
+            krometrail_core::SemanticTextMatch::new(
+                "Save action",
+                krometrail_core::SemanticTextMatchMode::Contains,
+                false,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            query,
+            None,
+            1,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(registry.query(&bound, &request, &snapshot).unwrap());
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "perf_container_contains_50k: {:.3} ms/op",
+            elapsed.as_secs_f64() * 1_000.0 / f64::from(iterations)
+        );
+    }
+
+    /// Full simulated role/name poll; cdpkit parse and browser round trips are not represented.
+    #[tokio::test]
+    #[ignore]
+    async fn perf_poll_role_name_50k() {
+        let iterations = 3;
+        let transport = SnapshotTransport::default();
+        for _ in 0..iterations {
+            transport.push("Page.getFrameTree", frame_tree("main-loader"));
+            transport.push(
+                "Accessibility.getFullAXTree",
+                ax_tree_with_node_count(50_000),
+            );
+        }
+        let mut control = page_control();
+        let bound = frame_bound();
+        let query = SemanticQuery::role(
+            "button",
+            Some(
+                krometrail_core::SemanticTextMatch::new(
+                    "not present",
+                    krometrail_core::SemanticTextMatchMode::Exact,
+                    false,
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(
+                control
+                    .probe_semantic_presence(
+                        &transport,
+                        &bound,
+                        &query,
+                        krometrail_core::SessionTime::ZERO,
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "perf_poll_role_name_50k: {:.3} ms/op",
+            elapsed.as_secs_f64() * 1_000.0 / f64::from(iterations)
+        );
+    }
+
+    /// Full simulated AX+DOM text poll; cdpkit parse and browser round trips are not represented.
+    #[tokio::test]
+    #[ignore]
+    async fn perf_poll_text_50k() {
+        let iterations = 3;
+        let transport = SnapshotTransport::default();
+        for _ in 0..iterations {
+            transport.push("Page.getFrameTree", frame_tree("main-loader"));
+            transport.push(
+                "Accessibility.getFullAXTree",
+                ax_tree_with_node_count(50_000),
+            );
+            transport.push(
+                "DOMSnapshot.captureSnapshot",
+                dom_snapshot_with_container_node_count(50_000),
+            );
+            transport.push("Page.getFrameTree", frame_tree("main-loader"));
+        }
+        let mut control = page_control();
+        let bound = frame_bound();
+        let query = SemanticQuery::Text {
+            text: krometrail_core::SemanticTextMatch::new(
+                "needle not present",
+                krometrail_core::SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap(),
+        };
+        let started = std::time::Instant::now();
+        for _ in 0..iterations {
+            std::hint::black_box(
+                control
+                    .probe_semantic_presence(
+                        &transport,
+                        &bound,
+                        &query,
+                        krometrail_core::SessionTime::ZERO,
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "perf_poll_text_50k: {:.3} ms/op",
+            elapsed.as_secs_f64() * 1_000.0 / f64::from(iterations)
+        );
     }
 }

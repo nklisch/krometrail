@@ -76,3 +76,10 @@ parse-skip and, post opt-1/opt-3, costs about the decode it would save).
       change is observed on the next poll with no added latency beyond the digest.
 - [ ] `perf_poll_role_name_50k` / `perf_poll_text_50k` quiescent runs reach
       ~1–5 ms with the transport fingerprint enabled.
+
+## Implementation notes
+
+Closed unimplemented per the parent feature's `## Host adjudication (scope
+decision)`: opt-4 is deferred because cdpkit 0.4.0 discards pre-parse bytes,
+and no parsed-`Value` fingerprint or transport hook was added. This story's
+runtime units and stage fields were intentionally left unchanged.

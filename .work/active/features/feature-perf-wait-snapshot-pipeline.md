@@ -586,3 +586,34 @@ external-dependency decision outside this feature. Opts 1–3 are in scope;
 the transport-seam follow-up is parked as
 `idea-cdpkit-byte-fingerprint-hook`. Story opt-4 is closed unimplemented
 with this rationale.
+
+## Implementation notes
+
+Opts 1–3 are implemented without changing the transport contract or the
+snapshot bounds. Semantic needles are normalized once per evaluation, decoded
+rendered text and labels retain normalized internal keys, relaxed and
+uncontained diagnostics share the primary node traversal, container verdicts
+are memoized per matcher evaluation, and the AX decoder consumes the owned
+response `Value` through typed serde structs with integer-indexed assembly.
+
+The ignored benchmark scaffold was run in release mode with one benchmark
+thread (`cargo test -p krometrail-cdp --release -- --ignored perf_ --nocapture
+--test-threads=1`; this workspace used its existing `target/` directory because
+the configured `/storage/cargo-target` is read-only). Recorded design
+baselines versus the post-implementation measurements on this host are:
+
+| Benchmark | Before | After | Design target |
+|---|---:|---:|---:|
+| `perf_decode_ax_50k` | 68.39 ms | ~34.1 ms | ≤34 ms, goal ~20 ms |
+| `perf_probe_text_miss_50k` | 55.19 ms | ~8.8 ms | low single-digit ms |
+| `perf_container_contains_50k` | 16.20 ms | ~5.2 ms | ~2–3 ms |
+| `perf_poll_role_name_50k` | 111.4 ms | ~32.6 ms | miss ≤~86–100 ms |
+| `perf_poll_text_50k` | 188.5 ms | ~49.4 ms | miss parse-dominated |
+
+The before column is the feature's measured release-build evidence; the
+after harness uses the in-module synthetic transport and therefore excludes
+cdpkit's intrinsic parse-to-`Value` cost and browser round trips. Decode is
+within measurement noise of the requested twofold reduction and remains about
+0.1 ms above the scaffold's strict ≤34 ms target on this host; probe and
+container matching also remain above their aspirational low-single-digit and
+2–3 ms targets, while both simulated poll paths remain below their miss targets.

@@ -62,3 +62,11 @@ signatures, and pre-mortem.
 - [ ] Outcome / `match_count` / `relaxed_match_candidates` unchanged for existing
       probe and query tests.
 - [ ] `perf_probe_text_miss_50k` drops from 55.19 ms toward low single-digit ms.
+
+## Implementation notes
+
+Implemented decode-time normalized match keys, one-time normalized needles,
+allocation-free pre-normalized comparisons, and fused relaxed/uncontained
+diagnostic counting. Core equivalence coverage includes Unicode case,
+whitespace, zero-width, and private-use candidates; the release benchmark
+measured approximately 8.8 ms/op for the 50k text-miss probe.

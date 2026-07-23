@@ -49,3 +49,10 @@ parent feature body (Optimization 2) for the verdict-function signature.
 - [ ] Existing nearest-container / generic-container-bound / local-container
       authority tests pass unchanged.
 - [ ] `perf_container_contains_50k` drops from 16.20 ms toward ~2–3 ms.
+
+## Implementation notes
+
+Implemented per-matcher ancestor verdict memoization with an iterative walk,
+preserving nearest-local-container authority and generic-container bounds.
+The release benchmark measured approximately 5.2 ms/op for the 50k container
+query; existing authority and deep-chain tests remain green.
