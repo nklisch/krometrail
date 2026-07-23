@@ -12,8 +12,8 @@ use temporal_vision::{
     ArtifactKind, ArtifactLabels, DifferenceMapLimits, DifferenceMapParameters, FilmstripTileLimit,
     IntegerScale, MeasurementParameters, MotionDecay, MotionHistoryParameters,
     NormalizationParameters, NormalizedSequence, ProcessingLimits, RegionFilmstripLabels,
-    RegionFilmstripParameters, RegionFilmstripRenderLimits, RenderLimits, StoryboardParameters,
-    StoryboardTileLimit, TimePalette, Timestamp,
+    RegionFilmstripParameters, RegionFilmstripRenderLimits, RenderLimits, SharedAdjacentAnalysis,
+    StoryboardParameters, StoryboardTileLimit, TimePalette, Timestamp,
 };
 
 use super::{
@@ -139,6 +139,22 @@ pub(crate) fn normalization_identity(prepared: &PreparedGenerator) -> Result<Opt
         .map_err(|_| generation_error("could not encode normalization identity"))
 }
 
+pub(crate) fn analysis_noise_floor(prepared: &PreparedGenerator) -> Option<u16> {
+    match &prepared.request {
+        ArtifactGeneratorRequest::Storyboard(request) => Some(request.noise_floor),
+        ArtifactGeneratorRequest::DifferenceMap(request) => Some(request.noise_floor),
+        ArtifactGeneratorRequest::MotionHistory(request) => Some(request.noise_floor),
+        ArtifactGeneratorRequest::RegionFilmstrip(_) => None,
+    }
+}
+
+pub(crate) fn needs_change_masks(prepared: &PreparedGenerator) -> bool {
+    matches!(
+        &prepared.request,
+        ArtifactGeneratorRequest::DifferenceMap(_) | ArtifactGeneratorRequest::MotionHistory(_)
+    )
+}
+
 pub(crate) fn estimated_normalized_bytes(
     prepared: &PreparedGenerator,
     epoch: &super::epoch::EpochPlan,
@@ -179,6 +195,7 @@ pub(crate) fn generate(
     prepared: &PreparedGenerator,
     artifact_ids: &[ArtifactId],
     normalized: Option<&NormalizedSequence<FrameId>>,
+    shared: Option<&SharedAdjacentAnalysis>,
     limits: ArtifactWorkLimits,
 ) -> Result<Vec<GeneratedOutput>> {
     let outputs = match &prepared.request {
@@ -202,12 +219,13 @@ pub(crate) fn generate(
                 storyboard_parameters =
                     storyboard_parameters.with_analysis_source_indices(source_indices.to_vec());
             }
-            let generated = temporal_vision::generate_storyboard(
+            let generated = temporal_vision::generate_storyboard_with_analysis(
                 artifact_ids[0],
                 request.include_orientation.then(|| artifact_ids[1]),
                 &epoch.sequence,
                 normalized,
                 storyboard_parameters,
+                shared,
             )
             .map_err(vision_error)?;
             let mut outputs = vec![from_generated(generated.storyboard())];
@@ -220,7 +238,7 @@ pub(crate) fn generate(
             let normalized = normalized
                 .ok_or_else(|| generation_error("difference-map normalization is missing"))?;
             let reference = resolve_reference(request.reference, epoch)?;
-            let generated = temporal_vision::render_difference_map(
+            let generated = temporal_vision::render_difference_map_with_analysis(
                 artifact_ids[0],
                 &epoch.sequence,
                 normalized,
@@ -238,6 +256,7 @@ pub(crate) fn generate(
                         encoded_limit(request.output, limits)?,
                     ),
                 ),
+                shared,
             )
             .map_err(vision_error)?;
             vec![from_generated(&generated)]
@@ -294,7 +313,7 @@ pub(crate) fn generate(
             let normalized = normalized
                 .ok_or_else(|| generation_error("motion-history normalization is missing"))?;
             let reference = resolve_reference(request.reference, epoch)?;
-            let generated = temporal_vision::generate_motion_history(
+            let generated = temporal_vision::generate_motion_history_with_analysis(
                 artifact_ids[0],
                 &epoch.sequence,
                 normalized,
@@ -315,6 +334,7 @@ pub(crate) fn generate(
                     .map_err(vision_error)?,
                     render_limits(request.output, limits)?,
                 ),
+                shared,
             )
             .map_err(vision_error)?;
             vec![from_generated(&generated)]
@@ -781,7 +801,7 @@ fn encoded_limit(
         .ok_or_else(|| limit_error("effective output byte limit is zero"))
 }
 
-fn vision_error(error: temporal_vision::VisionError) -> KrometrailError {
+pub(crate) fn vision_error(error: temporal_vision::VisionError) -> KrometrailError {
     let code = if error.code == temporal_vision::ErrorCode::ResourceLimitExceeded {
         ErrorCode::ResourceLimitExceeded
     } else {

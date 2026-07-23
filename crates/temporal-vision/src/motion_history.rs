@@ -6,9 +6,9 @@ use crate::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, ComparisonOutcome,
     EncodedImage, ErrorCode, EvidenceClass, FrameSequence, GeneratedArtifact,
     MeasurementParameters, NormalizationKind, NormalizationStep, NormalizedSequence,
-    ParameterValue, Parameters, PixelDimensions, Result, Rgb8, TimeRange, Timestamp, VisionError,
-    generator_descriptor,
-    measure::{classify_pixel_change, linear_luminance},
+    ParameterValue, Parameters, PixelDimensions, Result, Rgb8, SharedAdjacentAnalysis, TimeRange,
+    Timestamp, VisionError, generator_descriptor,
+    measure::{PixelClassifier, linear_luminance, pair_pixels},
     measure_adjacent,
     provenance::analysis_sampling_parameters,
     render::{
@@ -224,12 +224,33 @@ where
     G: Eq,
     P: AsRef<[u8]>,
 {
+    build_motion_history_plan_with_analysis(source, normalized, parameters, None)
+}
+
+pub fn build_motion_history_plan_with_analysis<F, M, G, P>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: &MotionHistoryParameters,
+    shared: Option<&SharedAdjacentAnalysis>,
+) -> Result<MotionHistoryPlan<F>>
+where
+    F: Clone + Eq,
+    M: Eq,
+    G: Eq,
+    P: AsRef<[u8]>,
+{
     validate_source_alignment(source, normalized, parameters.reference_frame_index)?;
     let dimensions = normalized.dimensions();
     let pixel_count = dimensions.pixel_count()?;
     ensure_plan_memory_fits(pixel_count, parameters.limits)?;
 
-    let comparisons = measure_adjacent(normalized, parameters.measurement)?;
+    let comparisons_owned;
+    let comparisons = if let Some(shared) = shared {
+        shared.comparisons()
+    } else {
+        comparisons_owned = measure_adjacent(normalized, parameters.measurement)?;
+        &comparisons_owned
+    };
     let measured_pair_count = comparisons
         .iter()
         .filter(|comparison| matches!(comparison.outcome(), ComparisonOutcome::Measured(_)))
@@ -241,8 +262,6 @@ where
     let mut ever_changed_bits = vec![0_u8; mask_byte_len];
     let mut continuity_segment_count = 0_usize;
     let mut max_segment_rank = 0_u32;
-    let width = usize::try_from(dimensions.width()).map_err(|_| motion_limit_error())?;
-
     let mut segment_start = None;
     for (comparison_index, comparison) in comparisons.iter().enumerate() {
         match comparison.outcome() {
@@ -253,9 +272,10 @@ where
                 if let Some(start) = segment_start.take() {
                     accumulate_segment(
                         &comparisons[start..comparison_index],
+                        start,
                         normalized,
                         parameters,
-                        width,
+                        shared,
                         &mut segment_accumulation,
                         &mut accumulation,
                         &mut ever_changed_bits,
@@ -272,9 +292,10 @@ where
     if let Some(start) = segment_start {
         accumulate_segment(
             &comparisons[start..],
+            start,
             normalized,
             parameters,
-            width,
+            shared,
             &mut segment_accumulation,
             &mut accumulation,
             &mut ever_changed_bits,
@@ -363,51 +384,143 @@ fn plan_working_bytes(pixel_count: usize) -> Result<usize> {
 #[allow(clippy::too_many_arguments)]
 fn accumulate_segment<F>(
     comparisons: &[crate::FrameComparison],
+    comparison_start: usize,
     normalized: &NormalizedSequence<F>,
     parameters: &MotionHistoryParameters,
-    width: usize,
+    shared: Option<&SharedAdjacentAnalysis>,
     segment_accumulation: &mut [u16],
     accumulation: &mut [u16],
     ever_changed_bits: &mut [u8],
 ) -> Result<()> {
     segment_accumulation.fill(0);
-    for (offset, comparison) in comparisons.iter().enumerate() {
-        debug_assert!(matches!(
-            comparison.outcome(),
-            ComparisonOutcome::Measured(_)
-        ));
-        let rank =
-            u32::try_from(comparisons.len() - 1 - offset).map_err(|_| motion_limit_error())?;
-        let weight = parameters.decay.weight_at(rank);
-        let earlier = normalized.frames()[comparison.earlier_frame_index()].linear_rgb16();
-        let later = normalized.frames()[comparison.later_frame_index()].linear_rgb16();
-        for (pixel, (before, after)) in earlier
-            .chunks_exact(3)
-            .zip(later.chunks_exact(3))
-            .enumerate()
-        {
-            let x = u32::try_from(pixel % width).map_err(|_| motion_limit_error())?;
-            let y = u32::try_from(pixel / width).map_err(|_| motion_limit_error())?;
-            if normalized
-                .analysis_mask()
-                .is_some_and(|mask| mask.includes(x, y) != Some(true))
-            {
-                continue;
+    let pairs = comparisons
+        .iter()
+        .map(|comparison| {
+            debug_assert!(matches!(
+                comparison.outcome(),
+                ComparisonOutcome::Measured(_)
+            ));
+            pair_pixels(
+                normalized,
+                comparison.earlier_frame_index(),
+                comparison.later_frame_index(),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let dimensions = normalized.dimensions();
+    let width = usize::try_from(dimensions.width()).map_err(|_| motion_limit_error())?;
+    let pixel_count = dimensions.pixel_count()?;
+    let mask = normalized.analysis_mask();
+    let classifier =
+        PixelClassifier::new(parameters.measurement).map_err(|_| motion_limit_error())?;
+    let (local_accumulation, local_ever_changed) = crate::parallel::map_reduce(
+        pairs.len(),
+        || {
+            (
+                vec![0_u16; pixel_count],
+                vec![0_u8; ever_changed_bits.len()],
+            )
+        },
+        |(local_accumulation, local_ever_changed), offset| {
+            let rank = match u32::try_from(pairs.len() - 1 - offset) {
+                Ok(rank) => rank,
+                Err(_) => return,
+            };
+            let weight = parameters.decay.weight_at(rank);
+            let pair = &pairs[offset];
+            for y in 0..dimensions.height() {
+                let row = match usize::try_from(y)
+                    .ok()
+                    .and_then(|row| row.checked_mul(width))
+                {
+                    Some(row) => row,
+                    None => return,
+                };
+                let byte_row = match row.checked_mul(3) {
+                    Some(row) => row,
+                    None => return,
+                };
+                let end = match byte_row.checked_add(width * 3) {
+                    Some(end) => end,
+                    None => return,
+                };
+                let mut mask_cursor = mask.map(|mask| {
+                    let (bits, bit_offset) = mask
+                        .row_bits(y)
+                        .expect("mask dimensions match normalized frames");
+                    (bits, 0_usize, 0x80_u8 >> bit_offset)
+                });
+                let change_start = usize::try_from(y)
+                    .ok()
+                    .and_then(|row| row.checked_mul(width))
+                    .expect("normalized dimensions fit the change-mask index space");
+                let mut change_cursor = shared
+                    .and_then(|analysis| analysis.change_mask_for_pair(comparison_start + offset))
+                    .map(|bits| (bits, change_start / 8, 0x80_u8 >> (change_start % 8)));
+                for (x, (before, after)) in pair.earlier[byte_row..end]
+                    .chunks_exact(3)
+                    .zip(pair.later[byte_row..end].chunks_exact(3))
+                    .enumerate()
+                {
+                    let changed_by_mask = if let Some((bits, byte, bit)) = change_cursor.as_mut() {
+                        let changed = bits[*byte] & *bit != 0;
+                        *bit >>= 1;
+                        if *bit == 0 {
+                            *bit = 0x80;
+                            *byte += 1;
+                        }
+                        Some(changed)
+                    } else {
+                        None
+                    };
+                    let included = if let Some((bits, byte, bit)) = mask_cursor.as_mut() {
+                        let included = bits[*byte] & *bit != 0;
+                        *bit >>= 1;
+                        if *bit == 0 {
+                            *bit = 0x80;
+                            *byte += 1;
+                        }
+                        included
+                    } else {
+                        true
+                    };
+                    if !included {
+                        continue;
+                    }
+                    let before: &[u16; 3] = before
+                        .try_into()
+                        .expect("chunks_exact yields three-channel pixels");
+                    let after: &[u16; 3] = after
+                        .try_into()
+                        .expect("chunks_exact yields three-channel pixels");
+                    match changed_by_mask {
+                        Some(false) => continue,
+                        Some(true) => {}
+                        None if !classifier.classify(before, after).changed => continue,
+                        None => {}
+                    }
+                    let pixel = row + x;
+                    set_bit(local_ever_changed, pixel);
+                    if weight != 0 {
+                        local_accumulation[pixel] =
+                            local_accumulation[pixel].saturating_add(weight);
+                    }
+                }
             }
-            let before: &[u16; 3] = before
-                .try_into()
-                .expect("chunks_exact yields three-channel pixels");
-            let after: &[u16; 3] = after
-                .try_into()
-                .expect("chunks_exact yields three-channel pixels");
-            if !classify_pixel_change(before, after, parameters.measurement)?.changed {
-                continue;
+        },
+        |(mut left_accumulation, mut left_changed), (right_accumulation, right_changed)| {
+            for (left, right) in left_accumulation.iter_mut().zip(right_accumulation) {
+                *left = left.saturating_add(right);
             }
-            set_bit(ever_changed_bits, pixel);
-            if weight != 0 {
-                segment_accumulation[pixel] = segment_accumulation[pixel].saturating_add(weight);
+            for (left, right) in left_changed.iter_mut().zip(right_changed) {
+                *left |= right;
             }
-        }
+            (left_accumulation, left_changed)
+        },
+    );
+    segment_accumulation.copy_from_slice(&local_accumulation);
+    for (target, local) in ever_changed_bits.iter_mut().zip(local_ever_changed) {
+        *target |= local;
     }
     for (composite, segment) in accumulation.iter_mut().zip(segment_accumulation.iter()) {
         *composite = (*composite).max(*segment);
@@ -513,9 +626,25 @@ where
     G: Clone + Eq,
     P: AsRef<[u8]>,
 {
+    generate_motion_history_with_analysis(artifact_id, source, normalized, parameters, None)
+}
+
+pub fn generate_motion_history_with_analysis<A, F, M, G, P>(
+    artifact_id: A,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: MotionHistoryParameters,
+    shared: Option<&SharedAdjacentAnalysis>,
+) -> Result<MotionHistoryArtifact<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
     validate_source_alignment(source, normalized, parameters.reference_frame_index)?;
     let layout = MotionHistoryLayout::new(normalized.dimensions(), parameters.limits)?;
-    let plan = build_motion_history_plan(source, normalized, &parameters)?;
+    let plan = build_motion_history_plan_with_analysis(source, normalized, &parameters, shared)?;
     let mut canvas = Canvas::new(
         layout.dimensions,
         BLACK,

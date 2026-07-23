@@ -60,3 +60,15 @@ collapses from `4M+B` toward `M+B` for the storyboard-difference-motion set.
 If cohort detection in `run_flight` proves too invasive, opt-1+opt-2+opt-3
 already meet the deadline and `<1 s` target, so this story can be reviewed and
 landed on its own merits or deferred without losing the headline wall-time result.
+
+## Implementation notes
+
+Added `SharedAdjacentAnalysis` with comparisons and optional changed-pixel
+masks, threaded it through storyboard, difference-map, and motion-history
+generators, and built it once for matching epoch/normalization/noise cohorts in
+`run_flight`. Shared-mask permits remain held while the cohort cache is live;
+alone, mixed, over-budget, and analysis-failure paths fall back to independent
+generation. Public equivalence tests compare bytes, manifests, and output hashes
+with and without sharing. The release benchmark reports `M+B` (119 shared
+measurable pairs plus 80 storyboard baseline pairs) instead of the previous
+`4M+B` accounting.

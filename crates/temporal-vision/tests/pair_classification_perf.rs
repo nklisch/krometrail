@@ -25,8 +25,8 @@ use temporal_vision::{
     FrameSequence, FrequencyMode, IntegerScale, Marker, MeasurementParameters,
     NormalizationParameters, NormalizedSequence, PixelDimensions, PixelFormat, ProcessingLimits,
     RenderLimits, Rgb8, StoryboardParameters, StoryboardTileLimit, TimePalette, TimeRange,
-    Timestamp, generate_motion_history, generate_storyboard, normalize_sequence,
-    render_difference_map,
+    Timestamp, analyze_adjacent_pairs, generate_motion_history_with_analysis,
+    generate_storyboard_with_analysis, normalize_sequence, render_difference_map_with_analysis,
 };
 
 type Source = FrameSequence<u32, u32, u32, Box<[u8]>>;
@@ -89,6 +89,7 @@ struct Config {
     evidence: Evidence,
     generators: Generators,
     repetitions: usize,
+    workers: usize,
 }
 
 impl Config {
@@ -137,6 +138,7 @@ impl Config {
             evidence,
             generators,
             repetitions,
+            workers: env_usize("PERF_PAIR_WORKERS", 0),
         }
     }
 }
@@ -179,6 +181,9 @@ struct Accounting {
     included_analysis_pixels: u64,
     storyboard_baseline_pair_calls: u64,
     storyboard_baseline_classified_pair_calls: u64,
+    shared_analysis_pair_calls: u64,
+    shared_analysis_classified_pixel_passes: u64,
+    shared_analysis_classifier_pixel_calls: u64,
     storyboard: ConsumerAccounting,
     difference: ConsumerAccounting,
     motion: Option<ConsumerAccounting>,
@@ -241,6 +246,7 @@ struct BenchmarkReport {
     evidence: Evidence,
     generators: Generators,
     repetitions: usize,
+    workers: usize,
     counter_evidence: CounterEvidence,
     runs: Vec<RepetitionReport>,
 }
@@ -323,6 +329,7 @@ fn baseline_pair_classification_profile() {
         evidence: config.evidence,
         generators: config.generators,
         repetitions: config.repetitions,
+        workers: config.workers,
         counter_evidence,
         runs,
     };
@@ -369,12 +376,27 @@ fn normalized(source: &Source, config: Config) -> Normalized {
 }
 
 fn build_output(source: &Source, normalized: Normalized, config: Config) -> PipelineOutput {
+    let shared = analyze_adjacent_pairs(
+        &normalized,
+        MeasurementParameters::new(MEASUREMENT_NOISE_FLOOR),
+        true,
+    )
+    .unwrap();
+    build_output_with_analysis(source, normalized, config, Some(&shared))
+}
+
+fn build_output_with_analysis(
+    source: &Source,
+    normalized: Normalized,
+    config: Config,
+    shared: Option<&temporal_vision::SharedAdjacentAnalysis>,
+) -> PipelineOutput {
     let accounting = accounting(source, &normalized, config);
     assert_accounting(&accounting, config.generators.includes_motion());
     let labels =
         ArtifactLabels::new("TEMPORAL STORYBOARD", "KROMETRAIL RETAINED SOURCE FRAMES").unwrap();
     let anchor = source.frames()[source.frames().len() / 3].timestamp();
-    let storyboard = generate_storyboard(
+    let storyboard = generate_storyboard_with_analysis(
         1,
         Some(2),
         source,
@@ -386,9 +408,10 @@ fn build_output(source: &Source, normalized: Normalized, config: Config) -> Pipe
             labels,
             RenderLimits::default(),
         ),
+        shared,
     )
     .unwrap();
-    let difference = render_difference_map(
+    let difference = render_difference_map_with_analysis(
         3,
         source,
         &normalized,
@@ -401,6 +424,7 @@ fn build_output(source: &Source, normalized: Normalized, config: Config) -> Pipe
             Rgb8::new(0, 0, 0),
             DifferenceMapLimits::default(),
         ),
+        shared,
     )
     .unwrap();
     let mut artifacts = vec![
@@ -415,7 +439,7 @@ fn build_output(source: &Source, normalized: Normalized, config: Config) -> Pipe
         )
         .unwrap();
         artifacts.push(
-            generate_motion_history(
+            generate_motion_history_with_analysis(
                 4,
                 source,
                 &normalized,
@@ -429,6 +453,7 @@ fn build_output(source: &Source, normalized: Normalized, config: Config) -> Pipe
                     motion_labels,
                     RenderLimits::default(),
                 ),
+                shared,
             )
             .unwrap(),
         );
@@ -482,11 +507,10 @@ fn accounting(source: &Source, normalized: &Normalized, config: Config) -> Accou
     let gap = u64::try_from(gap_pairs).unwrap();
     let baseline_calls = u64::try_from(storyboard_baseline_pair_calls).unwrap();
     let baseline_classified = u64::try_from(storyboard_baseline_classified_pair_calls).unwrap();
-    let storyboard_passes = measurable + baseline_classified;
+    let storyboard_passes = baseline_classified;
     let difference_passes = measurable;
-    let motion_passes = measurable * 2;
     let storyboard = ConsumerAccounting {
-        measure_adjacent_calls: adjacent,
+        measure_adjacent_calls: 0,
         direct_pair_pixel_passes: 0,
         classified_pixel_passes: storyboard_passes,
         classifier_pixel_calls: included * storyboard_passes,
@@ -494,42 +518,27 @@ fn accounting(source: &Source, normalized: &Normalized, config: Config) -> Accou
     let difference = ConsumerAccounting {
         measure_adjacent_calls: 0,
         direct_pair_pixel_passes: difference_passes,
-        classified_pixel_passes: difference_passes,
-        classifier_pixel_calls: included * difference_passes,
+        classified_pixel_passes: 0,
+        classifier_pixel_calls: 0,
     };
     let motion = config
         .generators
         .includes_motion()
-        .then(|| ConsumerAccounting {
-            measure_adjacent_calls: adjacent,
+        .then_some(ConsumerAccounting {
+            measure_adjacent_calls: 0,
             direct_pair_pixel_passes: measurable,
-            classified_pixel_passes: motion_passes,
-            classifier_pixel_calls: included * motion_passes,
+            classified_pixel_passes: 0,
+            classifier_pixel_calls: 0,
         });
-    let total_measure_adjacent_calls = adjacent
-        + if config.generators.includes_motion() {
-            adjacent
-        } else {
-            0
-        };
+    let total_measure_adjacent_calls = 1;
     let total_direct_pair_pixel_passes = difference_passes
         + if config.generators.includes_motion() {
             measurable
         } else {
             0
         };
-    let expected_passes = storyboard_passes
-        + difference_passes
-        + if config.generators.includes_motion() {
-            motion_passes
-        } else {
-            0
-        };
-    let expected_formula = if config.generators.includes_motion() {
-        "4M+B".to_owned()
-    } else {
-        "2M+B".to_owned()
-    };
+    let expected_passes = measurable + baseline_classified;
+    let expected_formula = "M+B".to_owned();
     Accounting {
         frame_count: u64::try_from(source.frames().len()).unwrap(),
         adjacent_pairs: adjacent,
@@ -538,6 +547,9 @@ fn accounting(source: &Source, normalized: &Normalized, config: Config) -> Accou
         included_analysis_pixels: included,
         storyboard_baseline_pair_calls: baseline_calls,
         storyboard_baseline_classified_pair_calls: baseline_classified,
+        shared_analysis_pair_calls: adjacent,
+        shared_analysis_classified_pixel_passes: measurable,
+        shared_analysis_classifier_pixel_calls: included * measurable,
         storyboard,
         difference,
         motion,
@@ -554,13 +566,8 @@ fn assert_accounting(accounting: &Accounting, includes_motion: bool) {
         accounting.adjacent_pairs,
         accounting.measurable_adjacent_pairs + accounting.gap_pairs
     );
-    let expected = if includes_motion {
-        4 * accounting.measurable_adjacent_pairs
-            + accounting.storyboard_baseline_classified_pair_calls
-    } else {
-        2 * accounting.measurable_adjacent_pairs
-            + accounting.storyboard_baseline_classified_pair_calls
-    };
+    let expected =
+        accounting.measurable_adjacent_pairs + accounting.storyboard_baseline_classified_pair_calls;
     assert_eq!(accounting.expected_classified_pixel_passes, expected);
     assert_eq!(
         accounting.expected_classifier_pixel_calls,
@@ -568,18 +575,22 @@ fn assert_accounting(accounting: &Accounting, includes_motion: bool) {
     );
     assert_eq!(
         accounting.storyboard.classified_pixel_passes,
-        accounting.measurable_adjacent_pairs + accounting.storyboard_baseline_classified_pair_calls
+        accounting.storyboard_baseline_classified_pair_calls
     );
+    assert_eq!(accounting.difference.classified_pixel_passes, 0);
+    if let Some(motion) = &accounting.motion {
+        assert_eq!(motion.classified_pixel_passes, 0);
+    }
     assert_eq!(
-        accounting.difference.classified_pixel_passes,
+        accounting.shared_analysis_classified_pixel_passes,
         accounting.measurable_adjacent_pairs
     );
-    if let Some(motion) = &accounting.motion {
-        assert_eq!(
-            motion.classified_pixel_passes,
-            2 * accounting.measurable_adjacent_pairs
-        );
-    }
+    assert_eq!(
+        accounting.expected_classified_pixel_passes,
+        accounting.shared_analysis_classified_pixel_passes
+            + accounting.storyboard_baseline_classified_pair_calls
+    );
+    let _ = includes_motion;
 }
 
 fn intersects_gap(source: &Source, earlier: Timestamp, later: Timestamp) -> bool {

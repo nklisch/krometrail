@@ -48,3 +48,11 @@ full-u16-range classifier equivalence test and the perf scaffold's
 - [ ] All parent Unit 1.1–1.4 acceptance criteria met.
 - [ ] `cargo test -p temporal-vision` green; `cargo clippy -- -D warnings` clean.
 - [ ] Benchmark shows per adjacent-pair pass 980 ms → 150–300 ms at identity.
+
+## Implementation notes
+
+Implemented the u64 classifier and all three row-based reducers. The full-u16
+reference test, threshold-boundary test, masked/gapped tests, artifact digest
+guards, and shared-vs-independent reducer assertions pass. The 120-frame
+identity release scaffold measured 2,075,270 µs for normalization plus all
+generators at one worker, with the shared accounting reduced to `M+B`.

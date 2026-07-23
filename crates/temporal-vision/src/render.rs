@@ -12,7 +12,8 @@ use crate::{
     EvidenceClass, FrameSequence, GeneratedArtifact, Marker, MeasurementParameters,
     NormalizationKind, NormalizationStep, NormalizedSequence, ParameterValue, Parameters,
     PixelDimensions, Result, SelectionReason, StoryboardSelection, StoryboardTileLimit, Timestamp,
-    VisionError, generator_descriptor, normalize::make_parameters, select_storyboard_frames,
+    VisionError, generator_descriptor, normalize::make_parameters,
+    select_storyboard_frames_with_analysis,
 };
 use canvas::{
     BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error, canvas_output_limit_error,
@@ -204,12 +205,37 @@ where
     G: Clone + Eq,
     P: AsRef<[u8]>,
 {
-    let selection = select_storyboard_frames(
+    generate_storyboard_with_analysis(
+        storyboard_artifact_id,
+        orientation_artifact_id,
+        source,
+        normalized,
+        parameters,
+        None,
+    )
+}
+
+pub fn generate_storyboard_with_analysis<A, F, M, G, P>(
+    storyboard_artifact_id: A,
+    orientation_artifact_id: Option<A>,
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: StoryboardParameters,
+    shared: Option<&crate::SharedAdjacentAnalysis>,
+) -> Result<StoryboardArtifacts<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    let selection = select_storyboard_frames_with_analysis(
         source,
         normalized,
         parameters.anchor,
         parameters.tile_limit,
         parameters.measurement,
+        shared,
     )?;
     let marker_assignments = assign_markers(source.markers(), &selection);
     let storyboard_raster = render_storyboard(

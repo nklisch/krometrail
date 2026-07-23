@@ -602,3 +602,36 @@ filmstrip `output_hash`, manifest, and bytes match the full-normalization output
   capturing it as a separate `[research]`/foundation item if the user wants to
   pursue larger identity-scale budgets. opt-2 already removes the filmstrip
   instance of this failure without touching the format.
+
+## Implementation notes
+
+- Implemented opt-1 with the hoisted `PixelClassifier`, the documented
+  `WEIGHT_SUM * u16::MAX^2 ≈ 2.815e14 < 2^63` invariant, row cursors, and
+  changed-pixel-only aggregate work. Checked `u128` aggregation remains at the
+  reduction boundary.
+- Implemented opt-2 with selected-tile subsequence normalization, locator
+  normalization, cropped opaque identity/downscale kernels, and the 120-frame
+  retained-byte regression. The subsequence frame values match the corresponding
+  full-normalization frames.
+- Implemented opt-3 with scoped workers capped at 16 and fixed-order private
+  accumulator merges. The worker-count test covers 1, 2, and 16 workers.
+- Implemented opt-4 with `SharedAdjacentAnalysis`, optional bit-packed masks,
+  generator threading, cohort keys scoped by epoch/normalization identity/noise
+  floor, and scheduler permits retained for live shared masks. Lone cohorts and
+  budget failures retain the independent fallback path.
+- Added shared-vs-independent artifact equivalence assertions for storyboard,
+  difference-map, and motion-history outputs; existing output hashes and
+  manifests remain unchanged.
+
+Benchmark measurements, release build, 2026-07-23:
+
+| Workload | Before evidence | After measurement |
+| --- | ---: | ---: |
+| 120 frames, 1224×958, identity, all three generators, one worker | 9.3 s suite; 980 ms adjacent pass | 2,075,270 µs wall; `M+B` accounting (199 classified passes), duplicate digest guard passed |
+| Same workload, 30-frame 1920×1080 worker-count comparison | — | 1,066,098 µs at worker 1 and 1,113,817 µs at worker 16; normalized/artifact/output digests identical |
+| 120-frame 1224×958 region filmstrip | 389 ms; default-limit retained-byte failure | 135,429 µs; 12 tiles; 5,111,808 normalized bytes; success |
+
+The adjacent-pair baseline and original filmstrip failure values are the measured
+design evidence above; the after runs used the checked-in ignored release
+scaffolds. Hardware scheduling made the 16-worker sample slower than the pinned
+single-worker sample on this host, while determinism remained exact.

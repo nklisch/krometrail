@@ -116,6 +116,7 @@ mod geometry;
 mod measure;
 mod motion_history;
 mod normalize;
+mod parallel;
 mod provenance;
 mod render;
 mod select;
@@ -124,7 +125,7 @@ mod sequence;
 pub use artifact::{EncodedImage, GeneratedArtifact};
 pub use difference_map::{
     DifferenceMapArtifact, DifferenceMapLimits, DifferenceMapParameters, FrequencyMode,
-    TimePalette, render_difference_map,
+    TimePalette, render_difference_map, render_difference_map_with_analysis,
 };
 pub use error::{ErrorCode, Result, VisionError};
 pub use filmstrip::{
@@ -137,11 +138,13 @@ pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, 
 pub use geometry::{BinaryMask, FrameRegion, PixelRect};
 pub use measure::{
     ChangedPixelProportion, ComparisonOutcome, FrameComparison, MeasurementParameters,
-    MeasurementVector, measure_adjacent, measure_pair,
+    MeasurementVector, PairChangeMasks, SharedAdjacentAnalysis, analyze_adjacent_pairs,
+    measure_adjacent, measure_pair,
 };
 pub use motion_history::{
     MotionDecay, MotionHistoryArtifact, MotionHistoryParameters, MotionHistoryPlan,
-    build_motion_history_plan, generate_motion_history,
+    build_motion_history_plan, build_motion_history_plan_with_analysis, generate_motion_history,
+    generate_motion_history_with_analysis,
 };
 pub use normalize::{
     IntegerScale, NormalizationParameters, NormalizedFrame, NormalizedSequence, ProcessingLimits,
@@ -154,10 +157,12 @@ pub use provenance::{
 };
 pub use render::{
     ArtifactLabels, RenderLimits, StoryboardArtifacts, StoryboardParameters, generate_storyboard,
+    generate_storyboard_with_analysis,
 };
 pub use select::{
     OmittedAnchor, SelectedFrame, SelectionReason, StoryboardSelection, StoryboardTileLimit,
     StoryboardVisualSummary, VisualChangeMoment, select_storyboard_frames,
+    select_storyboard_frames_with_analysis,
 };
 pub use sequence::{
     BorrowedFrameSequence, DeclaredGap, FrameSequence, Marker, OwnedFrameSequence, TimeRange,

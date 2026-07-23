@@ -11,7 +11,9 @@ use krometrail_core::{
     ArtifactSourceFingerprint, ArtifactStore, ErrorCode, FrameSource, IdSource, KrometrailError,
     NonEmptyText, PortFuture, Result,
 };
-use temporal_vision::{ArtifactKind, generator_descriptor};
+use temporal_vision::{
+    ArtifactKind, SharedAdjacentAnalysis, analyze_adjacent_pairs, generator_descriptor,
+};
 
 use super::{
     cache::{CacheIdentityInput, cache_metadata},
@@ -20,8 +22,9 @@ use super::{
         ADAPTER_VERSION, EpochPlan, WorkCancellation, bounded_plan, decode_plan, validate_and_plan,
     },
     generators::{
-        PreparedGenerator, estimated_normalized_bytes, generate, normalization_identity, normalize,
-        prepare_generator, reserved_output_bytes,
+        PreparedGenerator, analysis_noise_floor, estimated_normalized_bytes, generate,
+        needs_change_masks, normalization_identity, normalize, prepare_generator,
+        reserved_output_bytes, vision_error,
     },
     scheduler::{
         ArtifactScheduler, ArtifactWorkLimits, cancelled_error, controlled, deadline_error,
@@ -371,6 +374,27 @@ impl TemporalVisionArtifactService {
                 .push(slot);
         }
 
+        let mut cohort_counts = BTreeMap::<(usize, Vec<u8>, u16), usize>::new();
+        let mut cohort_wants_masks = BTreeMap::<(usize, Vec<u8>, u16), bool>::new();
+        for group in groups.values() {
+            let prepared = &group[0].0.prepared;
+            let Some(noise_floor) = analysis_noise_floor(prepared) else {
+                continue;
+            };
+            let Some(identity) = normalization_identity(prepared)? else {
+                continue;
+            };
+            let key = (group[0].0.epoch_index, identity.to_vec(), noise_floor);
+            *cohort_counts.entry(key.clone()).or_default() += 1;
+            *cohort_wants_masks.entry(key).or_default() |= needs_change_masks(prepared);
+        }
+        let mut shared_analyses =
+            BTreeMap::<(usize, Vec<u8>, u16), Arc<SharedAdjacentAnalysis>>::new();
+        // Change masks remain live as long as their cohort can be reused. Keep their
+        // corresponding scheduler permits for the same lifetime so the shared-analysis cache
+        // cannot grow outside the combined-request memory budget.
+        let mut shared_memory_permits = Vec::new();
+
         let generator_semaphore = self.scheduler.generator_semaphore();
 
         let mut total_output_bytes = 0_usize;
@@ -391,13 +415,49 @@ impl TemporalVisionArtifactService {
                     self.scheduler.limits(),
                 )?))
             })?;
-            let reservation = plan
+            let base_reservation = plan
                 .decoded_bytes
                 .checked_add(normalized_bytes)
                 .and_then(|value| value.checked_add(output_reservation))
                 .ok_or_else(|| limit_error("combined artifact memory estimate overflows"))?;
+            let cohort_key = {
+                let prepared = &group[0].0.prepared;
+                analysis_noise_floor(prepared)
+                    .zip(normalization_identity(prepared)?)
+                    .map(|(noise_floor, identity)| {
+                        (group[0].0.epoch_index, identity.to_vec(), noise_floor)
+                    })
+            };
+            let estimated_mask_bytes = if cohort_key
+                .as_ref()
+                .is_some_and(|key| cohort_counts.get(key).copied().unwrap_or(0) > 1)
+                && cohort_key
+                    .as_ref()
+                    .and_then(|key| cohort_wants_masks.get(key).copied())
+                    .unwrap_or(false)
+            {
+                estimated_change_mask_bytes(plan)?
+            } else {
+                0
+            };
+            let shared_mask_bytes = if normalized_bytes
+                .checked_add(estimated_mask_bytes)
+                .is_some_and(|value| value <= self.scheduler.limits().max_normalized_bytes.get())
+                && base_reservation
+                    .checked_add(estimated_mask_bytes)
+                    .is_some_and(|value| {
+                        value <= self.scheduler.limits().max_combined_request_bytes.get()
+                    }) {
+                estimated_mask_bytes
+            } else {
+                0
+            };
             if normalized_bytes > self.scheduler.limits().max_normalized_bytes.get()
-                || reservation > self.scheduler.limits().max_combined_request_bytes.get()
+                || base_reservation
+                    .checked_add(shared_mask_bytes)
+                    .is_none_or(|value| {
+                        value > self.scheduler.limits().max_combined_request_bytes.get()
+                    })
             {
                 let error = limit_error("artifact generator exceeds memory limits");
                 for slot in group {
@@ -407,7 +467,7 @@ impl TemporalVisionArtifactService {
             }
             let memory = match self
                 .scheduler
-                .acquire_memory(reservation, deadline, &cancellation)
+                .acquire_memory(base_reservation, deadline, &cancellation)
                 .await
             {
                 Ok(memory) => memory,
@@ -471,6 +531,65 @@ impl TemporalVisionArtifactService {
                 None
             };
 
+            let shared_analysis = if let Some(key) = cohort_key
+                .filter(|key| cohort_counts.get(key).copied().unwrap_or(0) > 1)
+                .filter(|_| estimated_mask_bytes == 0 || shared_mask_bytes > 0)
+            {
+                let want_change_masks = cohort_wants_masks.get(&key).copied().unwrap_or(false);
+                if let Some(existing) = shared_analyses.get(&key) {
+                    Some(Arc::clone(existing))
+                } else if let Some(normalized) = normalized_sequence.as_ref() {
+                    let mask_permit = if shared_mask_bytes > 0 {
+                        match self
+                            .scheduler
+                            .acquire_memory(shared_mask_bytes, deadline, &cancellation)
+                            .await
+                        {
+                            Ok(permit) => Some(permit),
+                            Err(error) if is_fatal(&error) => return Err(error),
+                            Err(_) => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if shared_mask_bytes > 0 && mask_permit.is_none() {
+                        None
+                    } else {
+                        let normalized_for_analysis = Arc::clone(normalized);
+                        let measurement = temporal_vision::MeasurementParameters::new(key.2);
+                        let token = cancellation.clone();
+                        let built = self
+                            .scheduler
+                            .run_blocking(deadline, &cancellation, move || {
+                                token.check()?;
+                                analyze_adjacent_pairs(
+                                    &normalized_for_analysis,
+                                    measurement,
+                                    want_change_masks,
+                                )
+                                .map_err(vision_error)
+                            })
+                            .await;
+                        match built {
+                            Ok(value) => {
+                                let value = Arc::new(value);
+                                if let Some(permit) = mask_permit {
+                                    shared_memory_permits.push(permit);
+                                }
+                                shared_analyses.insert(key, Arc::clone(&value));
+                                Some(value)
+                            }
+                            Err(error) if is_fatal(&error) => return Err(error),
+                            Err(_) => None,
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let ids: Vec<_> = prepared
                 .request
                 .output_kinds()
@@ -493,6 +612,7 @@ impl TemporalVisionArtifactService {
                         &prepared_for_generate,
                         &ids,
                         normalized_for_generate.as_deref(),
+                        shared_analysis.as_deref(),
                         limits,
                     )
                 })
@@ -733,6 +853,26 @@ pub(crate) fn analysis_effective_max_frames(
     // division structurally safe rather than invariant-dependent.
     let byte_frame_limit = limits.max_decoded_bytes.get() / per_frame_decoded_bytes.max(1);
     Ok(limits.max_source_frames.get().min(byte_frame_limit).max(1))
+}
+
+fn estimated_change_mask_bytes(plan: &EpochPlan) -> Result<usize> {
+    let pixels = usize::try_from(plan.descriptor.image.width())
+        .ok()
+        .and_then(|width| {
+            usize::try_from(plan.descriptor.image.height())
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .ok_or_else(|| limit_error("change-mask byte estimate overflows"))?;
+    let bytes_per_pair = pixels
+        .checked_add(7)
+        .and_then(|value| value.checked_div(8))
+        .ok_or_else(|| limit_error("change-mask byte estimate overflows"))?;
+    plan.frames
+        .len()
+        .saturating_sub(1)
+        .checked_mul(bytes_per_pair)
+        .ok_or_else(|| limit_error("change-mask byte estimate overflows"))
 }
 
 impl ArtifactGeneration for TemporalVisionArtifactService {

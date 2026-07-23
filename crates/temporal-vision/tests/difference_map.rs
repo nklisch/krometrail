@@ -8,7 +8,8 @@ use temporal_vision::{
     DifferenceMapParameters, ErrorCode, EvidenceClass, Frame, FrameRegion, FrameSequence,
     FrequencyMode, IntegerScale, Marker, MeasurementParameters, NormalizationParameters,
     PixelDimensions, PixelFormat, PixelRect, ProcessingLimits, Rgb8, TimePalette, TimeRange,
-    Timestamp, normalize_sequence, render_difference_map,
+    Timestamp, analyze_adjacent_pairs, normalize_sequence, render_difference_map,
+    render_difference_map_with_analysis,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -120,6 +121,16 @@ fn browser_free_public_contract_is_traceable_bounded_and_deterministic() {
     )
     .unwrap();
     assert_eq!(first, second);
+    let shared = analyze_adjacent_pairs(&normalized, MeasurementParameters::new(0), true).unwrap();
+    let shared_result = render_difference_map_with_analysis(
+        ArtifactId("difference-a".into()),
+        &source,
+        &normalized,
+        parameters(DifferenceMapLimits::default()),
+        Some(&shared),
+    )
+    .unwrap();
+    assert_eq!(first, shared_result);
 
     let manifest = first.manifest();
     assert_eq!(manifest.artifact_kind(), ArtifactKind::DifferenceMap);

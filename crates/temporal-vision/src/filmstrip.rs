@@ -954,8 +954,18 @@ where
     // A fully outside region is rendered entirely as padding. Keep normalization bounded to a
     // single source pixel because draw_tile never reads normalized data for that tile.
     let crop = crop.unwrap_or(PixelRect::new(0, 0, 1, 1)?);
+    let tile_source = FrameSequence::new(
+        plan.tiles()
+            .iter()
+            .map(|tile| source.frames()[tile.frame_index()].to_owned())
+            .collect(),
+        Vec::<Marker<M>>::new(),
+        Vec::<DeclaredGap<G>>::new(),
+        source.region(),
+        source.mask().cloned(),
+    )?;
     let normalized = normalize_sequence(
-        source,
+        &tile_source,
         NormalizationParameters::new(
             parameters.background,
             Some(crop),
@@ -1251,7 +1261,7 @@ fn render_filmstrip<F: Display + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
             layout,
             index,
             tile,
-            &normalized.frames()[tile.frame_index()],
+            &normalized.frames()[index],
             normalized.source_crop(),
             parameters,
         )?;
@@ -2385,5 +2395,119 @@ mod tests {
                 bottom: 2
             }
         );
+    }
+
+    #[test]
+    fn selected_tile_subsequence_matches_full_normalization() {
+        let source = source(10);
+        let region = SignedPixelRect::new(
+            0,
+            0,
+            NonZeroU32::new(8).unwrap(),
+            NonZeroU32::new(6).unwrap(),
+        )
+        .unwrap();
+        let plan = plan_region_filmstrip(
+            &source,
+            RegionDefinition::FixedSourceImage { rect: region },
+            Timestamp::from_nanos(50),
+            FilmstripTileLimit::new(4).unwrap(),
+            None,
+        )
+        .unwrap();
+        let tile_source = FrameSequence::new(
+            plan.tiles()
+                .iter()
+                .map(|tile| source.frames()[tile.frame_index()].clone())
+                .collect(),
+            Vec::<Marker<u8>>::new(),
+            Vec::<DeclaredGap<u8>>::new(),
+            None,
+            None,
+        )
+        .unwrap();
+        let limits = ProcessingLimits::default();
+        let parameters = |sequence: &FrameSequence<u8, u8, u8, Box<[u8]>>| {
+            normalize_sequence(
+                sequence,
+                NormalizationParameters::new(
+                    Rgb8::new(0, 0, 0),
+                    Some(PixelRect::new(0, 0, 8, 6).unwrap()),
+                    IntegerScale::IDENTITY,
+                    limits,
+                ),
+            )
+            .unwrap()
+        };
+        let full = parameters(&source);
+        let selected = parameters(&tile_source);
+        for (position, tile) in plan.tiles().iter().enumerate() {
+            assert_eq!(
+                selected.frames()[position],
+                full.frames()[tile.frame_index()]
+            );
+        }
+    }
+
+    #[test]
+    fn filmstrip_120_frames_fit_when_only_selected_tiles_are_retained() {
+        let dimensions = PixelDimensions::new(128, 128).unwrap();
+        let source = sized_source(120, dimensions);
+        let region = SignedPixelRect::new(
+            0,
+            0,
+            NonZeroU32::new(128).unwrap(),
+            NonZeroU32::new(128).unwrap(),
+        )
+        .unwrap();
+        let limits = RegionFilmstripRenderLimits::new(
+            NonZeroU32::new(4_096).unwrap(),
+            NonZeroU32::new(4_096).unwrap(),
+            NonZeroUsize::new(1_000_000).unwrap(),
+            NonZeroUsize::new(1_000_000).unwrap(),
+        )
+        .with_max_source_frames(NonZeroUsize::new(120).unwrap());
+        let artifact = generate_region_filmstrip(
+            1_u32,
+            &source,
+            RegionFilmstripParameters::new(
+                RegionDefinition::FixedSourceImage { rect: region },
+                Timestamp::from_nanos(400),
+                FilmstripTileLimit::new(3).unwrap(),
+                Rgb8::new(0, 0, 0),
+                Rgb8::new(255, 0, 255),
+                IntegerScale::IDENTITY,
+                RegionFilmstripLabels::new("FILMSTRIP", "SOURCE").unwrap(),
+                limits,
+            ),
+        )
+        .unwrap();
+        assert_eq!(artifact.plan().tiles().len(), 3);
+        assert!(!artifact.image().bytes().is_empty());
+    }
+
+    fn sized_source(
+        frame_count: usize,
+        dimensions: PixelDimensions,
+    ) -> FrameSequence<u32, u32, u32, Box<[u8]>> {
+        FrameSequence::new(
+            (0..frame_count)
+                .map(|id| {
+                    Frame::new(
+                        u32::try_from(id).unwrap(),
+                        Timestamp::from_nanos(u64::try_from(id).unwrap() * 10),
+                        dimensions,
+                        PixelFormat::Rgba8SrgbStraight,
+                        vec![0; dimensions.rgba8_byte_len().unwrap()].into_boxed_slice(),
+                    )
+                    .unwrap()
+                })
+                .collect(),
+            Vec::<Marker<u32>>::new(),
+            Vec::<DeclaredGap<u32>>::new(),
+            None,
+            None,
+        )
+        .unwrap()
     }
 }

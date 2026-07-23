@@ -4,8 +4,8 @@ use crate::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, BinaryMask, EncodedImage, ErrorCode,
     EvidenceClass, FrameSequence, GeneratedArtifact, MeasurementParameters, NormalizationKind,
     NormalizationStep, NormalizedSequence, ParameterValue, Parameters, PixelDimensions, PixelRect,
-    Result, Rgb8, Timestamp, VisionError, generator_descriptor,
-    measure::{classify_pixel_change, intersecting_gap_count, linear_luminance},
+    Result, Rgb8, SharedAdjacentAnalysis, Timestamp, VisionError, generator_descriptor,
+    measure::{PixelClassifier, linear_luminance, pair_pixels},
     provenance::analysis_sampling_parameters,
     render::{
         canvas::{BLACK, Canvas, MUTED, PANEL, WARNING, WHITE, canvas_limit_error},
@@ -125,7 +125,6 @@ impl DifferenceMapParameters {
 #[derive(Debug)]
 pub(crate) struct DifferenceAccumulators {
     dimensions: PixelDimensions,
-    analysis_mask: Option<BinaryMask>,
     change_count: Box<[u32]>,
     comparable_count: Box<[u32]>,
     magnitude_sum: Box<[u64]>,
@@ -135,10 +134,33 @@ pub(crate) struct DifferenceAccumulators {
 }
 
 impl DifferenceAccumulators {
+    fn empty(dimensions: PixelDimensions) -> Result<Self> {
+        let pixel_count = dimensions.pixel_count()?;
+        Ok(Self {
+            dimensions,
+            change_count: vec![0; pixel_count].into_boxed_slice(),
+            comparable_count: vec![0; pixel_count].into_boxed_slice(),
+            magnitude_sum: vec![0; pixel_count].into_boxed_slice(),
+            weighted_time_sum: vec![0; pixel_count].into_boxed_slice(),
+            first_change_offset: vec![0; pixel_count].into_boxed_slice(),
+            last_change_offset: vec![0; pixel_count].into_boxed_slice(),
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn accumulate<F>(
         normalized: &NormalizedSequence<F>,
         measurement: MeasurementParameters,
         limits: DifferenceMapLimits,
+    ) -> Result<Self> {
+        Self::accumulate_with_analysis(normalized, measurement, limits, None)
+    }
+
+    pub(crate) fn accumulate_with_analysis<F>(
+        normalized: &NormalizedSequence<F>,
+        measurement: MeasurementParameters,
+        limits: DifferenceMapLimits,
+        shared: Option<&SharedAdjacentAnalysis>,
     ) -> Result<Self> {
         let pixel_count = normalized.dimensions().pixel_count()?;
         let accumulator_bytes = pixel_count
@@ -148,86 +170,186 @@ impl DifferenceAccumulators {
             return Err(accumulator_limit_error());
         }
 
-        let mut accumulators = Self {
-            dimensions: normalized.dimensions(),
-            analysis_mask: normalized.analysis_mask().cloned(),
-            change_count: vec![0; pixel_count].into_boxed_slice(),
-            comparable_count: vec![0; pixel_count].into_boxed_slice(),
-            magnitude_sum: vec![0; pixel_count].into_boxed_slice(),
-            weighted_time_sum: vec![0; pixel_count].into_boxed_slice(),
-            first_change_offset: vec![0; pixel_count].into_boxed_slice(),
-            last_change_offset: vec![0; pixel_count].into_boxed_slice(),
-        };
+        let dimensions = normalized.dimensions();
+        let mask = normalized.analysis_mask();
         let range_start = normalized.frames()[0].timestamp().as_nanos();
-        let width = usize::try_from(normalized.dimensions().width())
-            .map_err(|_| accumulator_limit_error())?;
+        let pairs = (1..normalized.frames().len())
+            .map(|later| pair_pixels(normalized, later - 1, later))
+            .collect::<Result<Vec<_>>>()?;
+        let classifier =
+            PixelClassifier::new(measurement).map_err(|_| accumulator_limit_error())?;
+        crate::parallel::map_reduce(
+            pairs.len(),
+            || Self::empty(dimensions),
+            |state, index| {
+                if state.is_err() {
+                    return;
+                }
+                let result = match state {
+                    Ok(accumulators) => accumulate_pair(
+                        accumulators,
+                        &pairs[index],
+                        range_start,
+                        mask,
+                        &classifier,
+                        shared.and_then(|analysis| analysis.change_mask_for_pair(index)),
+                    ),
+                    Err(_) => Ok(()),
+                };
+                if let Err(error) = result {
+                    *state = Err(error);
+                }
+            },
+            merge_results,
+        )
+    }
+}
 
-        for frames in normalized.frames().windows(2) {
-            let earlier = &frames[0];
-            let later = &frames[1];
-            if intersecting_gap_count(
-                normalized.gap_ranges(),
-                earlier.timestamp(),
-                later.timestamp(),
-            ) > 0
-            {
+fn accumulate_pair(
+    accumulators: &mut DifferenceAccumulators,
+    pair: &crate::measure::PairPixels<'_>,
+    range_start: u64,
+    mask: Option<&BinaryMask>,
+    classifier: &PixelClassifier,
+    change_bits: Option<&[u8]>,
+) -> Result<()> {
+    if pair.gap_count > 0 {
+        return Ok(());
+    }
+    let later_offset = pair
+        .later_timestamp
+        .as_nanos()
+        .checked_sub(range_start)
+        .ok_or_else(accumulator_limit_error)?;
+    let width =
+        usize::try_from(accumulators.dimensions.width()).map_err(|_| accumulator_limit_error())?;
+    let row_stride = width.checked_mul(3).ok_or_else(accumulator_limit_error)?;
+    for y in 0..accumulators.dimensions.height() {
+        let row = usize::try_from(y)
+            .ok()
+            .and_then(|row| row.checked_mul(row_stride))
+            .ok_or_else(accumulator_limit_error)?;
+        let end = row
+            .checked_add(row_stride)
+            .ok_or_else(accumulator_limit_error)?;
+        let mut mask_cursor = mask.map(|mask| {
+            let (bits, offset) = mask
+                .row_bits(y)
+                .expect("mask dimensions match normalized frames");
+            (bits, 0_usize, 0x80_u8 >> offset)
+        });
+        let change_start = usize::try_from(y)
+            .ok()
+            .and_then(|row| row.checked_mul(width))
+            .ok_or_else(accumulator_limit_error)?;
+        let mut change_cursor =
+            change_bits.map(|bits| (bits, change_start / 8, 0x80_u8 >> (change_start % 8)));
+        for (x, (before, after)) in pair.earlier[row..end]
+            .chunks_exact(3)
+            .zip(pair.later[row..end].chunks_exact(3))
+            .enumerate()
+        {
+            let changed_by_mask = if let Some((bits, byte, bit)) = change_cursor.as_mut() {
+                let changed = bits[*byte] & *bit != 0;
+                *bit >>= 1;
+                if *bit == 0 {
+                    *bit = 0x80;
+                    *byte += 1;
+                }
+                Some(changed)
+            } else {
+                None
+            };
+            let included = if let Some((bits, byte, bit)) = mask_cursor.as_mut() {
+                let included = bits[*byte] & *bit != 0;
+                *bit >>= 1;
+                if *bit == 0 {
+                    *bit = 0x80;
+                    *byte += 1;
+                }
+                included
+            } else {
+                true
+            };
+            if !included {
                 continue;
             }
-            let later_offset = later
-                .timestamp()
-                .as_nanos()
-                .checked_sub(range_start)
+            let pixel = y as usize * width + x;
+            accumulators.comparable_count[pixel] = accumulators.comparable_count[pixel]
+                .checked_add(1)
                 .ok_or_else(accumulator_limit_error)?;
-            for (pixel, (before, after)) in earlier
-                .linear_rgb16()
-                .chunks_exact(3)
-                .zip(later.linear_rgb16().chunks_exact(3))
-                .enumerate()
-            {
-                let x = u32::try_from(pixel % width).map_err(|_| accumulator_limit_error())?;
-                let y = u32::try_from(pixel / width).map_err(|_| accumulator_limit_error())?;
-                if accumulators
-                    .analysis_mask
-                    .as_ref()
-                    .is_some_and(|mask| mask.includes(x, y) != Some(true))
-                {
-                    continue;
+            let before: &[u16; 3] = before
+                .try_into()
+                .expect("chunks_exact yields three-channel pixels");
+            let after: &[u16; 3] = after
+                .try_into()
+                .expect("chunks_exact yields three-channel pixels");
+            let weighted_square = match changed_by_mask {
+                Some(false) => continue,
+                Some(true) => classifier.weighted_square(before, after),
+                None => {
+                    let change = classifier.classify(before, after);
+                    if !change.changed {
+                        continue;
+                    }
+                    change.weighted_square
                 }
-                accumulators.comparable_count[pixel] = accumulators.comparable_count[pixel]
-                    .checked_add(1)
-                    .ok_or_else(accumulator_limit_error)?;
-                let before: &[u16; 3] = before
-                    .try_into()
-                    .expect("chunks_exact yields three-channel pixels");
-                let after: &[u16; 3] = after
-                    .try_into()
-                    .expect("chunks_exact yields three-channel pixels");
-                let change = classify_pixel_change(before, after, measurement)?;
-                if !change.changed {
-                    continue;
-                }
-                let magnitude =
-                    u64::try_from(change.weighted_square).map_err(|_| accumulator_limit_error())?;
-                let count = accumulators.change_count[pixel]
-                    .checked_add(1)
-                    .ok_or_else(accumulator_limit_error)?;
-                accumulators.change_count[pixel] = count;
-                accumulators.magnitude_sum[pixel] = accumulators.magnitude_sum[pixel]
-                    .checked_add(magnitude)
-                    .ok_or_else(accumulator_limit_error)?;
-                let weighted_time = u128::from(later_offset)
-                    .checked_mul(change.weighted_square)
-                    .ok_or_else(accumulator_limit_error)?;
-                accumulators.weighted_time_sum[pixel] = accumulators.weighted_time_sum[pixel]
-                    .checked_add(weighted_time)
-                    .ok_or_else(accumulator_limit_error)?;
-                if count == 1 {
-                    accumulators.first_change_offset[pixel] = later_offset;
-                }
-                accumulators.last_change_offset[pixel] = later_offset;
+            };
+            let count = accumulators.change_count[pixel]
+                .checked_add(1)
+                .ok_or_else(accumulator_limit_error)?;
+            accumulators.change_count[pixel] = count;
+            accumulators.magnitude_sum[pixel] = accumulators.magnitude_sum[pixel]
+                .checked_add(weighted_square)
+                .ok_or_else(accumulator_limit_error)?;
+            let weighted_time = u128::from(later_offset)
+                .checked_mul(u128::from(weighted_square))
+                .ok_or_else(accumulator_limit_error)?;
+            accumulators.weighted_time_sum[pixel] = accumulators.weighted_time_sum[pixel]
+                .checked_add(weighted_time)
+                .ok_or_else(accumulator_limit_error)?;
+            if count == 1 {
+                accumulators.first_change_offset[pixel] = later_offset;
             }
+            accumulators.last_change_offset[pixel] = later_offset;
         }
-        Ok(accumulators)
+    }
+    Ok(())
+}
+
+fn merge_results(
+    left: Result<DifferenceAccumulators>,
+    right: Result<DifferenceAccumulators>,
+) -> Result<DifferenceAccumulators> {
+    match (left, right) {
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+        (Ok(mut left), Ok(right)) => {
+            for index in 0..left.change_count.len() {
+                left.change_count[index] = left.change_count[index]
+                    .checked_add(right.change_count[index])
+                    .ok_or_else(accumulator_limit_error)?;
+                left.comparable_count[index] = left.comparable_count[index]
+                    .checked_add(right.comparable_count[index])
+                    .ok_or_else(accumulator_limit_error)?;
+                left.magnitude_sum[index] = left.magnitude_sum[index]
+                    .checked_add(right.magnitude_sum[index])
+                    .ok_or_else(accumulator_limit_error)?;
+                left.weighted_time_sum[index] = left.weighted_time_sum[index]
+                    .checked_add(right.weighted_time_sum[index])
+                    .ok_or_else(accumulator_limit_error)?;
+                if right.change_count[index] > 0 {
+                    if left.change_count[index] == right.change_count[index] {
+                        left.first_change_offset[index] = right.first_change_offset[index];
+                    } else {
+                        left.first_change_offset[index] =
+                            left.first_change_offset[index].min(right.first_change_offset[index]);
+                    }
+                    left.last_change_offset[index] =
+                        left.last_change_offset[index].max(right.last_change_offset[index]);
+                }
+            }
+            Ok(left)
+        }
     }
 }
 
@@ -242,14 +364,24 @@ pub(crate) struct DifferenceMapData {
 }
 
 impl DifferenceMapData {
+    #[cfg(test)]
     pub(crate) fn build<F>(
         normalized: &NormalizedSequence<F>,
         parameters: DifferenceMapParameters,
     ) -> Result<Self> {
-        let accumulators = DifferenceAccumulators::accumulate(
+        Self::build_with_analysis(normalized, parameters, None)
+    }
+
+    pub(crate) fn build_with_analysis<F>(
+        normalized: &NormalizedSequence<F>,
+        parameters: DifferenceMapParameters,
+        shared: Option<&SharedAdjacentAnalysis>,
+    ) -> Result<Self> {
+        let accumulators = DifferenceAccumulators::accumulate_with_analysis(
             normalized,
             parameters.measurement,
             parameters.limits,
+            shared,
         )?;
         let range_start = normalized.frames()[0].timestamp();
         let range_duration_ns = normalized
@@ -460,8 +592,24 @@ where
     G: Clone + Eq,
     P: AsRef<[u8]>,
 {
+    render_difference_map_with_analysis(artifact_id, sequence, normalized, parameters, None)
+}
+
+pub fn render_difference_map_with_analysis<A, F, M, G, P>(
+    artifact_id: A,
+    sequence: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    parameters: DifferenceMapParameters,
+    shared: Option<&SharedAdjacentAnalysis>,
+) -> Result<DifferenceMapArtifact<A, F, M, G>>
+where
+    F: Clone + Eq,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
     validate_normalized_source(sequence, normalized, parameters.reference_frame_index)?;
-    let data = DifferenceMapData::build(normalized, parameters)?;
+    let data = DifferenceMapData::build_with_analysis(normalized, parameters, shared)?;
     let layout = DifferenceMapLayout::new(data.dimensions())?;
     let canvas_bytes = layout
         .image
@@ -1106,7 +1254,6 @@ mod tests {
             DifferenceMapData {
                 accumulators: DifferenceAccumulators {
                     dimensions: PixelDimensions::new(3, 1).unwrap(),
-                    analysis_mask: None,
                     change_count: vec![2, 1, 0].into_boxed_slice(),
                     comparable_count: vec![2, 4, 0].into_boxed_slice(),
                     magnitude_sum: vec![100, 50, 0].into_boxed_slice(),

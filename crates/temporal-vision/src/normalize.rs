@@ -287,7 +287,7 @@ pub fn normalize_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         restricted_domain,
     )?;
     let background = parameters.background.channels().map(linear_channel);
-    let allow_opaque_full_frame_fast_path = parameters.crop.is_none() && !restricted_domain;
+    let allow_opaque_crop_fast_path = !restricted_domain;
     let frames = sequence
         .frames()
         .iter()
@@ -298,7 +298,7 @@ pub fn normalize_sequence<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
                 dimensions,
                 parameters.scale,
                 background,
-                allow_opaque_full_frame_fast_path,
+                allow_opaque_crop_fast_path,
             )
         })
         .collect::<Result<Vec<_>>>()?
@@ -524,7 +524,7 @@ fn normalize_frame<F: Clone, P: AsRef<[u8]>>(
     dimensions: PixelDimensions,
     scale: IntegerScale,
     background: [u16; 3],
-    allow_opaque_full_frame_fast_path: bool,
+    allow_opaque_crop_fast_path: bool,
 ) -> Result<NormalizedFrame<F>> {
     let capacity = dimensions
         .pixel_count()?
@@ -535,9 +535,9 @@ fn normalize_frame<F: Clone, P: AsRef<[u8]>>(
         crop,
         dimensions,
         scale,
-        allow_opaque_full_frame_fast_path,
+        allow_opaque_crop_fast_path,
     ) {
-        return normalize_opaque_full_frame(frame, dimensions, scale, capacity);
+        return normalize_opaque_crop(frame, crop, dimensions, scale, capacity);
     }
     normalize_frame_general(frame, crop, dimensions, scale, background, capacity)
 }
@@ -547,18 +547,16 @@ fn can_use_opaque_full_frame_fast_path<F, P: AsRef<[u8]>>(
     crop: PixelRect,
     dimensions: PixelDimensions,
     scale: IntegerScale,
-    allow_opaque_full_frame_fast_path: bool,
+    allow_opaque_crop_fast_path: bool,
 ) -> bool {
-    if !allow_opaque_full_frame_fast_path
-        || crop.x() != 0
-        || crop.y() != 0
-        || crop.width() != frame.dimensions().width()
-        || crop.height() != frame.dimensions().height()
-    {
+    if !allow_opaque_crop_fast_path {
         return false;
     }
     let expected_dimensions = match scale.direction {
-        ScaleDirection::Identity => frame.dimensions(),
+        ScaleDirection::Identity => match scaled_dimensions(crop, scale) {
+            Ok(dimensions) => dimensions,
+            Err(_) => return false,
+        },
         ScaleDirection::Down => match scaled_dimensions(crop, scale) {
             Ok(dimensions) => dimensions,
             Err(_) => return false,
@@ -572,21 +570,25 @@ fn can_use_opaque_full_frame_fast_path<F, P: AsRef<[u8]>>(
             .all(|rgba| rgba[3] == u8::MAX)
 }
 
-fn normalize_opaque_full_frame<F: Clone, P: AsRef<[u8]>>(
+fn normalize_opaque_crop<F: Clone, P: AsRef<[u8]>>(
     frame: &Frame<F, P>,
+    crop: PixelRect,
     dimensions: PixelDimensions,
     scale: IntegerScale,
     capacity: usize,
 ) -> Result<NormalizedFrame<F>> {
     match scale.direction {
-        ScaleDirection::Identity => normalize_opaque_identity(frame, dimensions, capacity),
-        ScaleDirection::Down => normalize_opaque_downscale(frame, dimensions, scale, capacity),
+        ScaleDirection::Identity => normalize_opaque_identity(frame, crop, dimensions, capacity),
+        ScaleDirection::Down => {
+            normalize_opaque_downscale(frame, crop, dimensions, scale, capacity)
+        }
         ScaleDirection::Up => unreachable!("opaque fast path excludes upscaling"),
     }
 }
 
 fn normalize_opaque_identity<F: Clone, P: AsRef<[u8]>>(
     frame: &Frame<F, P>,
+    crop: PixelRect,
     dimensions: PixelDimensions,
     capacity: usize,
 ) -> Result<NormalizedFrame<F>> {
@@ -594,11 +596,26 @@ fn normalize_opaque_identity<F: Clone, P: AsRef<[u8]>>(
     // identity geometry are established, coordinate reconstruction and alpha
     // arithmetic cannot contribute any result, so convert the packed channels
     // directly while preserving the existing transfer table and channel order.
+    let source_width =
+        usize::try_from(frame.dimensions().width()).map_err(|_| resource_limit_error())?;
+    let crop_x = usize::try_from(crop.x()).map_err(|_| resource_limit_error())?;
+    let crop_y = usize::try_from(crop.y()).map_err(|_| resource_limit_error())?;
+    let crop_width = usize::try_from(crop.width()).map_err(|_| resource_limit_error())?;
     let mut output = Vec::with_capacity(capacity);
-    for rgba in frame.pixels().chunks_exact(4) {
-        output.push(linear_channel(rgba[0]));
-        output.push(linear_channel(rgba[1]));
-        output.push(linear_channel(rgba[2]));
+    for y in 0..usize::try_from(crop.height()).map_err(|_| resource_limit_error())? {
+        let row = crop_y
+            .checked_add(y)
+            .and_then(|row| row.checked_mul(source_width))
+            .and_then(|row| row.checked_add(crop_x))
+            .and_then(|pixel| pixel.checked_mul(4))
+            .ok_or_else(resource_limit_error)?;
+        for rgba in frame.pixels()[row..row + crop_width * 4].chunks_exact(4) {
+            output.extend_from_slice(&[
+                linear_channel(rgba[0]),
+                linear_channel(rgba[1]),
+                linear_channel(rgba[2]),
+            ]);
+        }
     }
     Ok(NormalizedFrame {
         id: frame.id().clone(),
@@ -610,6 +627,7 @@ fn normalize_opaque_identity<F: Clone, P: AsRef<[u8]>>(
 
 fn normalize_opaque_downscale<F: Clone, P: AsRef<[u8]>>(
     frame: &Frame<F, P>,
+    crop: PixelRect,
     dimensions: PixelDimensions,
     scale: IntegerScale,
     capacity: usize,
@@ -625,20 +643,30 @@ fn normalize_opaque_downscale<F: Clone, P: AsRef<[u8]>>(
     let source_row_bytes = source_width
         .checked_mul(4)
         .ok_or_else(resource_limit_error)?;
-    let block_width_bytes = factor.checked_mul(4).ok_or_else(resource_limit_error)?;
     let count = u64::try_from(factor)
         .ok()
         .and_then(|factor| factor.checked_mul(factor))
         .ok_or_else(resource_limit_error)?;
     let mut output = Vec::with_capacity(capacity);
+    let crop_x = usize::try_from(crop.x()).map_err(|_| resource_limit_error())?;
+    let crop_y = usize::try_from(crop.y()).map_err(|_| resource_limit_error())?;
     for output_y in 0..output_height {
-        let source_row = output_y
-            .checked_mul(factor)
+        let source_row = crop_y
+            .checked_add(
+                output_y
+                    .checked_mul(factor)
+                    .ok_or_else(resource_limit_error)?,
+            )
             .and_then(|row| row.checked_mul(source_row_bytes))
             .ok_or_else(resource_limit_error)?;
         for output_x in 0..output_width {
-            let source_column = output_x
-                .checked_mul(block_width_bytes)
+            let source_column = crop_x
+                .checked_add(
+                    output_x
+                        .checked_mul(factor)
+                        .ok_or_else(resource_limit_error)?,
+                )
+                .and_then(|column| column.checked_mul(4))
                 .ok_or_else(resource_limit_error)?;
             let mut sums = [0_u64; 3];
             for row in 0..factor {
@@ -1064,6 +1092,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn opaque_cropped_fast_path_matches_reference() {
+        let dimensions = PixelDimensions::new(40, 24).unwrap();
+        let sequence = opaque_rectangular_sequence(dimensions);
+        for (crop, scale) in [
+            (
+                PixelRect::new(3, 2, 32, 16).unwrap(),
+                IntegerScale::IDENTITY,
+            ),
+            (
+                PixelRect::new(2, 2, 36, 20).unwrap(),
+                IntegerScale::down(NonZeroU8::new(2).unwrap()).unwrap(),
+            ),
+            (
+                PixelRect::new(4, 4, 32, 16).unwrap(),
+                IntegerScale::down(NonZeroU8::new(4).unwrap()).unwrap(),
+            ),
+        ] {
+            let parameters = NormalizationParameters::new(
+                Rgb8::new(19, 37, 73),
+                Some(crop),
+                scale,
+                ProcessingLimits::default(),
+            );
+            let optimized = normalize_sequence(&sequence, parameters).unwrap();
+            let capacity = optimized.dimensions().pixel_count().unwrap() * 3;
+            assert!(sequence.frames().iter().all(|frame| {
+                can_use_opaque_full_frame_fast_path(
+                    frame,
+                    crop,
+                    optimized.dimensions(),
+                    scale,
+                    true,
+                )
+            }));
+            let mut reference = optimized.clone();
+            reference.frames = sequence
+                .frames()
+                .iter()
+                .map(|frame| {
+                    normalize_frame_general(
+                        frame,
+                        crop,
+                        optimized.dimensions(),
+                        scale,
+                        parameters.background.channels().map(linear_channel),
+                        capacity,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()
+                .unwrap()
+                .into_boxed_slice();
+            assert_eq!(optimized, reference, "opaque crop scale {scale:?}");
+        }
+    }
+
     fn opaque_rectangular_sequence(
         dimensions: PixelDimensions,
     ) -> FrameSequence<u8, u8, u8, Box<[u8]>> {
@@ -1119,7 +1203,7 @@ mod tests {
             IntegerScale::IDENTITY,
             false,
         ));
-        assert!(!can_use_opaque_full_frame_fast_path(
+        assert!(can_use_opaque_full_frame_fast_path(
             &opaque,
             PixelRect::new(1, 0, 1, 2).unwrap(),
             PixelDimensions::new(1, 2).unwrap(),

@@ -8,7 +8,8 @@ use temporal_vision::{
     Frame, FrameSequence, IntegerScale, Marker, MeasurementParameters, NormalizationParameters,
     ParameterValue, PixelDimensions, PixelFormat, ProcessingLimits, RenderLimits, Rgb8,
     SelectionReason, StoryboardParameters, StoryboardTileLimit, TimeRange, Timestamp,
-    generate_storyboard, measure_adjacent, normalize_sequence, select_storyboard_frames,
+    analyze_adjacent_pairs, generate_storyboard, generate_storyboard_with_analysis,
+    measure_adjacent, normalize_sequence, select_storyboard_frames,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -328,6 +329,20 @@ fn public_generator_returns_traceable_deterministic_pngs_and_manifests() {
     )
     .unwrap();
     assert_eq!(first, second);
+    let shared = analyze_adjacent_pairs(&normalized, MeasurementParameters::new(0), true).unwrap();
+    let shared_result = generate_storyboard_with_analysis(
+        ArtifactId("storyboard-a".into()),
+        Some(ArtifactId("orientation-a".into())),
+        &source,
+        &normalized,
+        request(
+            StoryboardTileLimit::new(3).unwrap(),
+            RenderLimits::default(),
+        ),
+        Some(&shared),
+    )
+    .unwrap();
+    assert_eq!(first, shared_result);
     assert_eq!(first.storyboard().image().media_type(), "image/png");
     assert_eq!(
         &first.storyboard().image().bytes()[..8],

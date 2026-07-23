@@ -3,14 +3,14 @@ use std::num::NonZeroUsize;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
-    ErrorCode, NormalizationKind, NormalizationStep, NormalizedSequence, ParameterValue, PixelRect,
-    Result, VisionError, normalize::make_parameters,
+    BinaryMask, ErrorCode, NormalizationKind, NormalizationStep, NormalizedSequence,
+    ParameterValue, PixelRect, Result, VisionError, normalize::make_parameters,
 };
 
-const RED_WEIGHT: u128 = 13_933;
-const GREEN_WEIGHT: u128 = 46_871;
-const BLUE_WEIGHT: u128 = 4_732;
-const WEIGHT_SUM: u128 = 65_536;
+const RED_WEIGHT: u64 = 13_933;
+const GREEN_WEIGHT: u64 = 46_871;
+const BLUE_WEIGHT: u64 = 4_732;
+const WEIGHT_SUM: u64 = 65_536;
 
 /// Deterministic threshold settings for direct frame comparisons.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -45,12 +45,12 @@ impl MeasurementParameters {
                 (
                     "weights",
                     ParameterValue::List(vec![
-                        ParameterValue::Unsigned(RED_WEIGHT as u64),
-                        ParameterValue::Unsigned(GREEN_WEIGHT as u64),
-                        ParameterValue::Unsigned(BLUE_WEIGHT as u64),
+                        ParameterValue::Unsigned(RED_WEIGHT),
+                        ParameterValue::Unsigned(GREEN_WEIGHT),
+                        ParameterValue::Unsigned(BLUE_WEIGHT),
                     ]),
                 ),
-                ("weight_sum", ParameterValue::Unsigned(WEIGHT_SUM as u64)),
+                ("weight_sum", ParameterValue::Unsigned(WEIGHT_SUM)),
                 (
                     "below_floor_policy",
                     ParameterValue::Text("zero_all_aggregate_contributions".into()),
@@ -186,13 +186,21 @@ impl FrameComparison {
     }
 }
 
-/// Measure one ordered pair of normalized frames.
-pub fn measure_pair<F>(
-    sequence: &NormalizedSequence<F>,
+pub(crate) struct PairPixels<'a> {
+    pub(crate) earlier_frame_index: usize,
+    pub(crate) later_frame_index: usize,
+    pub(crate) earlier_timestamp: crate::Timestamp,
+    pub(crate) later_timestamp: crate::Timestamp,
+    pub(crate) earlier: &'a [u16],
+    pub(crate) later: &'a [u16],
+    pub(crate) gap_count: usize,
+}
+
+pub(crate) fn pair_pixels<'a, F>(
+    sequence: &'a NormalizedSequence<F>,
     earlier_frame_index: usize,
     later_frame_index: usize,
-    parameters: MeasurementParameters,
-) -> Result<FrameComparison> {
+) -> Result<PairPixels<'a>> {
     if earlier_frame_index >= later_frame_index || later_frame_index >= sequence.frames().len() {
         return Err(VisionError::new(
             ErrorCode::InvalidParameter,
@@ -201,37 +209,216 @@ pub fn measure_pair<F>(
     }
     let earlier = &sequence.frames()[earlier_frame_index];
     let later = &sequence.frames()[later_frame_index];
-    let elapsed_nanos = later
-        .timestamp()
+    let gap_count = intersecting_gap_count(
+        sequence.gap_ranges(),
+        earlier.timestamp(),
+        later.timestamp(),
+    );
+    Ok(PairPixels {
+        earlier_frame_index,
+        later_frame_index,
+        earlier_timestamp: earlier.timestamp(),
+        later_timestamp: later.timestamp(),
+        earlier: earlier.linear_rgb16(),
+        later: later.linear_rgb16(),
+        gap_count,
+    })
+}
+
+/// Bit-packed changed-pixel masks aligned with adjacent-pair comparison indexes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PairChangeMasks {
+    masks: Box<[Option<Box<[u8]>>]>,
+}
+
+type ComparisonAndMask = Result<(FrameComparison, Option<Box<[u8]>>)>;
+
+impl PairChangeMasks {
+    pub(crate) fn for_pair(&self, pair_index: usize) -> Option<&[u8]> {
+        self.masks.get(pair_index).and_then(Option::as_deref)
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.masks
+            .iter()
+            .filter_map(Option::as_deref)
+            .map(<[u8]>::len)
+            .sum()
+    }
+}
+
+/// Canonical adjacent-pair classification shared by artifact consumers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedAdjacentAnalysis {
+    comparisons: Box<[FrameComparison]>,
+    change_masks: Option<PairChangeMasks>,
+}
+
+impl SharedAdjacentAnalysis {
+    pub fn comparisons(&self) -> &[FrameComparison] {
+        &self.comparisons
+    }
+
+    pub fn change_masks(&self) -> Option<&PairChangeMasks> {
+        self.change_masks.as_ref()
+    }
+
+    pub(crate) fn change_mask_for_pair(&self, pair_index: usize) -> Option<&[u8]> {
+        self.change_masks
+            .as_ref()
+            .and_then(|masks| masks.for_pair(pair_index))
+    }
+
+    pub fn change_mask_bytes(&self) -> usize {
+        self.change_masks.as_ref().map_or(0, PairChangeMasks::bytes)
+    }
+}
+
+/// Classify every adjacent pair once, optionally retaining changed-pixel masks for reducers.
+pub fn analyze_adjacent_pairs<F>(
+    normalized: &NormalizedSequence<F>,
+    measurement: MeasurementParameters,
+    want_change_masks: bool,
+) -> Result<SharedAdjacentAnalysis> {
+    let pairs = (1..normalized.frames().len())
+        .map(|later| pair_pixels(normalized, later - 1, later))
+        .collect::<Result<Vec<_>>>()?;
+    let dimensions = normalized.dimensions();
+    let analysis_pixel_count = normalized.analysis_pixel_count();
+    let mask = normalized.analysis_mask();
+    let mask_bytes = if want_change_masks {
+        Some(
+            dimensions
+                .pixel_count()?
+                .checked_add(7)
+                .ok_or_else(measurement_overflow)?
+                / 8,
+        )
+    } else {
+        None
+    };
+    let result = crate::parallel::map_reduce(
+        pairs.len(),
+        Vec::new,
+        |comparisons, index| {
+            let pair = &pairs[index];
+            let elapsed_nanos = pair
+                .later_timestamp
+                .as_nanos()
+                .checked_sub(pair.earlier_timestamp.as_nanos())
+                .ok_or_else(|| {
+                    VisionError::new(
+                        ErrorCode::OutOfOrder,
+                        "comparison timestamps are not in nondecreasing order",
+                    )
+                });
+            let item = elapsed_nanos.and_then(|elapsed_nanos| {
+                if let Some(declared_gap_count) = NonZeroUsize::new(pair.gap_count) {
+                    Ok((
+                        FrameComparison {
+                            earlier_frame_index: pair.earlier_frame_index,
+                            later_frame_index: pair.later_frame_index,
+                            elapsed_nanos,
+                            outcome: ComparisonOutcome::GapBoundary { declared_gap_count },
+                        },
+                        None,
+                    ))
+                } else {
+                    let classifier = PixelClassifier::new(measurement)?;
+                    let mut change_bits =
+                        mask_bytes.map(|bytes| vec![0_u8; bytes].into_boxed_slice());
+                    let vector = measure_pixels_with_classifier(
+                        pair,
+                        dimensions,
+                        analysis_pixel_count,
+                        mask,
+                        &classifier,
+                        change_bits.as_deref_mut(),
+                    )?;
+                    Ok((
+                        FrameComparison {
+                            earlier_frame_index: pair.earlier_frame_index,
+                            later_frame_index: pair.later_frame_index,
+                            elapsed_nanos,
+                            outcome: ComparisonOutcome::Measured(vector),
+                        },
+                        change_bits,
+                    ))
+                }
+            });
+            comparisons.push(item);
+        },
+        |mut left: Vec<ComparisonAndMask>, right| {
+            left.extend(right);
+            left
+        },
+    );
+    let mut comparisons = Vec::with_capacity(result.len());
+    let mut masks = Vec::with_capacity(result.len());
+    for item in result {
+        let (comparison, mask) = item?;
+        comparisons.push(comparison);
+        masks.push(mask);
+    }
+    Ok(SharedAdjacentAnalysis {
+        comparisons: comparisons.into_boxed_slice(),
+        change_masks: mask_bytes.map(|_| PairChangeMasks {
+            masks: masks.into_boxed_slice(),
+        }),
+    })
+}
+
+fn comparison_from_pair(
+    pair: &PairPixels<'_>,
+    dimensions: crate::PixelDimensions,
+    analysis_pixel_count: u64,
+    mask: Option<&BinaryMask>,
+    parameters: MeasurementParameters,
+) -> Result<FrameComparison> {
+    let elapsed_nanos = pair
+        .later_timestamp
         .as_nanos()
-        .checked_sub(earlier.timestamp().as_nanos())
+        .checked_sub(pair.earlier_timestamp.as_nanos())
         .ok_or_else(|| {
             VisionError::new(
                 ErrorCode::OutOfOrder,
                 "comparison timestamps are not in nondecreasing order",
             )
         })?;
-    let gap_count = intersecting_gap_count(
-        sequence.gap_ranges(),
-        earlier.timestamp(),
-        later.timestamp(),
-    );
-    let outcome = if let Some(declared_gap_count) = NonZeroUsize::new(gap_count) {
+    let outcome = if let Some(declared_gap_count) = NonZeroUsize::new(pair.gap_count) {
         ComparisonOutcome::GapBoundary { declared_gap_count }
     } else {
         ComparisonOutcome::Measured(measure_pixels(
-            sequence,
-            earlier_frame_index,
-            later_frame_index,
+            pair,
+            dimensions,
+            analysis_pixel_count,
+            mask,
             parameters,
         )?)
     };
     Ok(FrameComparison {
-        earlier_frame_index,
-        later_frame_index,
+        earlier_frame_index: pair.earlier_frame_index,
+        later_frame_index: pair.later_frame_index,
         elapsed_nanos,
         outcome,
     })
+}
+
+/// Measure one ordered pair of normalized frames.
+pub fn measure_pair<F>(
+    sequence: &NormalizedSequence<F>,
+    earlier_frame_index: usize,
+    later_frame_index: usize,
+    parameters: MeasurementParameters,
+) -> Result<FrameComparison> {
+    let pair = pair_pixels(sequence, earlier_frame_index, later_frame_index)?;
+    comparison_from_pair(
+        &pair,
+        sequence.dimensions(),
+        sequence.analysis_pixel_count(),
+        sequence.analysis_mask(),
+        parameters,
+    )
 }
 
 /// Measure every adjacent captured-frame pair in declaration order.
@@ -239,22 +426,61 @@ pub fn measure_adjacent<F>(
     sequence: &NormalizedSequence<F>,
     parameters: MeasurementParameters,
 ) -> Result<Box<[FrameComparison]>> {
-    (1..sequence.frames().len())
-        .map(|later| measure_pair(sequence, later - 1, later, parameters))
+    let pairs = (1..sequence.frames().len())
+        .map(|later| pair_pixels(sequence, later - 1, later))
+        .collect::<Result<Vec<_>>>()?;
+    let mask = sequence.analysis_mask();
+    let dimensions = sequence.dimensions();
+    let analysis_pixel_count = sequence.analysis_pixel_count();
+    let result = crate::parallel::map_reduce(
+        pairs.len(),
+        Vec::new,
+        |comparisons, index| {
+            comparisons.push(comparison_from_pair(
+                &pairs[index],
+                dimensions,
+                analysis_pixel_count,
+                mask,
+                parameters,
+            ));
+        },
+        |mut left: Vec<Result<FrameComparison>>, right| {
+            left.extend(right);
+            left
+        },
+    );
+    result
+        .into_iter()
         .collect::<Result<Vec<_>>>()
         .map(Vec::into_boxed_slice)
 }
 
-fn measure_pixels<F>(
-    sequence: &NormalizedSequence<F>,
-    earlier_index: usize,
-    later_index: usize,
+fn measure_pixels(
+    pair: &PairPixels<'_>,
+    dimensions: crate::PixelDimensions,
+    analysis_pixel_count: u64,
+    mask: Option<&BinaryMask>,
     parameters: MeasurementParameters,
 ) -> Result<MeasurementVector> {
-    let earlier = sequence.frames()[earlier_index].linear_rgb16();
-    let later = sequence.frames()[later_index].linear_rgb16();
-    let dimensions = sequence.dimensions();
-    let mask = sequence.analysis_mask();
+    let classifier = PixelClassifier::new(parameters)?;
+    measure_pixels_with_classifier(
+        pair,
+        dimensions,
+        analysis_pixel_count,
+        mask,
+        &classifier,
+        None,
+    )
+}
+
+fn measure_pixels_with_classifier(
+    pair: &PairPixels<'_>,
+    dimensions: crate::PixelDimensions,
+    analysis_pixel_count: u64,
+    mask: Option<&BinaryMask>,
+    classifier: &PixelClassifier,
+    mut change_bits: Option<&mut [u8]>,
+) -> Result<MeasurementVector> {
     let mut changed = 0_u128;
     let mut absolute_sum = 0_u128;
     let mut luminance_sum = 0_u128;
@@ -264,60 +490,89 @@ fn measure_pixels<F>(
     let mut max_x = 0_u32;
     let mut max_y = 0_u32;
 
-    for (index, (before, after)) in earlier
-        .chunks_exact(3)
-        .zip(later.chunks_exact(3))
-        .enumerate()
-    {
-        let x = u32::try_from(
-            index % usize::try_from(dimensions.width()).map_err(|_| measurement_overflow())?,
-        )
-        .map_err(|_| measurement_overflow())?;
-        let y = u32::try_from(
-            index / usize::try_from(dimensions.width()).map_err(|_| measurement_overflow())?,
-        )
-        .map_err(|_| measurement_overflow())?;
-        if mask.is_some_and(|mask| mask.includes(x, y) != Some(true)) {
-            continue;
-        }
+    let width = usize::try_from(dimensions.width()).map_err(|_| measurement_overflow())?;
+    let row_stride = width.checked_mul(3).ok_or_else(measurement_overflow)?;
+    for y in 0..dimensions.height() {
+        let row = usize::try_from(y)
+            .ok()
+            .and_then(|row| row.checked_mul(row_stride))
+            .ok_or_else(measurement_overflow)?;
+        let pixel_row = row / 3;
+        let end = row
+            .checked_add(row_stride)
+            .ok_or_else(measurement_overflow)?;
+        let earlier_row = &pair.earlier[row..end];
+        let later_row = &pair.later[row..end];
+        let mut mask_cursor = mask.map(|mask| {
+            let (bits, offset) = mask
+                .row_bits(y)
+                .expect("mask dimensions match normalized frames");
+            (bits, 0_usize, 0x80_u8 >> offset)
+        });
+        for (x, (before, after)) in earlier_row
+            .chunks_exact(3)
+            .zip(later_row.chunks_exact(3))
+            .enumerate()
+        {
+            let included = if let Some((bits, byte, bit)) = mask_cursor.as_mut() {
+                let included = bits[*byte] & *bit != 0;
+                *bit >>= 1;
+                if *bit == 0 {
+                    *bit = 0x80;
+                    *byte += 1;
+                }
+                included
+            } else {
+                true
+            };
+            if !included {
+                continue;
+            }
+            let before_pixel: &[u16; 3] = before
+                .try_into()
+                .expect("chunks_exact yields three-channel pixels");
+            let after_pixel: &[u16; 3] = after
+                .try_into()
+                .expect("chunks_exact yields three-channel pixels");
+            let change = classifier.classify(before_pixel, after_pixel);
+            if !change.changed {
+                continue;
+            }
+            let x = u32::try_from(x).map_err(|_| measurement_overflow())?;
+            let pixel_index = pixel_row
+                .checked_add(usize::try_from(x).map_err(|_| measurement_overflow())?)
+                .ok_or_else(measurement_overflow)?;
+            if let Some(bits) = change_bits.as_deref_mut() {
+                set_bit(bits, pixel_index);
+            }
+            let dr = u128::from(before[0].abs_diff(after[0]));
+            let dg = u128::from(before[1].abs_diff(after[1]));
+            let db = u128::from(before[2].abs_diff(after[2]));
 
-        let before_pixel: &[u16; 3] = before
-            .try_into()
-            .expect("chunks_exact yields three-channel pixels");
-        let after_pixel: &[u16; 3] = after
-            .try_into()
-            .expect("chunks_exact yields three-channel pixels");
-        let change = classify_pixel_change(before_pixel, after_pixel, parameters)?;
-        if !change.changed {
-            continue;
+            changed = changed.checked_add(1).ok_or_else(measurement_overflow)?;
+            let channel_sum = dr
+                .checked_add(dg)
+                .and_then(|value| value.checked_add(db))
+                .ok_or_else(measurement_overflow)?;
+            absolute_sum = absolute_sum
+                .checked_add(channel_sum)
+                .ok_or_else(measurement_overflow)?;
+            weighted_square_sum = weighted_square_sum
+                .checked_add(u128::from(change.weighted_square))
+                .ok_or_else(measurement_overflow)?;
+            let before_luma = linear_luminance(before)?;
+            let after_luma = linear_luminance(after)?;
+            luminance_sum = luminance_sum
+                .checked_add(before_luma.abs_diff(after_luma))
+                .ok_or_else(measurement_overflow)?;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
         }
-        let dr = u128::from(before[0].abs_diff(after[0]));
-        let dg = u128::from(before[1].abs_diff(after[1]));
-        let db = u128::from(before[2].abs_diff(after[2]));
-
-        changed = changed.checked_add(1).ok_or_else(measurement_overflow)?;
-        let channel_sum = dr
-            .checked_add(dg)
-            .and_then(|value| value.checked_add(db))
-            .ok_or_else(measurement_overflow)?;
-        absolute_sum = absolute_sum
-            .checked_add(channel_sum)
-            .ok_or_else(measurement_overflow)?;
-        weighted_square_sum = weighted_square_sum
-            .checked_add(change.weighted_square)
-            .ok_or_else(measurement_overflow)?;
-        let before_luma = linear_luminance(before)?;
-        let after_luma = linear_luminance(after)?;
-        luminance_sum = luminance_sum
-            .checked_add(before_luma.abs_diff(after_luma))
-            .ok_or_else(measurement_overflow)?;
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x);
-        max_y = max_y.max(y);
     }
 
-    let compared = u128::from(sequence.analysis_pixel_count());
+    let compared = u128::from(analysis_pixel_count);
     let changed_u64 = u64::try_from(changed).map_err(|_| measurement_overflow())?;
     let compared_u64 = u64::try_from(compared).map_err(|_| measurement_overflow())?;
     let changed_region_bounds = if changed == 0 {
@@ -341,7 +596,7 @@ fn measure_pixels<F>(
     let color_divisor = compared.checked_mul(3).ok_or_else(measurement_overflow)?;
     let mean_color_difference = u16::try_from(round_ratio(absolute_sum, color_divisor)?)
         .map_err(|_| measurement_overflow())?;
-    let perceptual_divisor = WEIGHT_SUM
+    let perceptual_divisor = u128::from(WEIGHT_SUM)
         .checked_mul(compared)
         .ok_or_else(measurement_overflow)?;
     let mean_weighted_square = weighted_square_sum / perceptual_divisor;
@@ -362,33 +617,56 @@ fn measure_pixels<F>(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PixelChange {
     pub(crate) changed: bool,
-    pub(crate) weighted_square: u128,
+    pub(crate) weighted_square: u64,
 }
 
 /// Canonical thresholded weighted-linear-RGB pixel classifier.
+///
+/// The per-pixel arithmetic is deliberately unchecked after construction. Each channel delta is
+/// at most `u16::MAX`, so the maximum weighted sum is
+/// `WEIGHT_SUM * u16::MAX^2` (approximately `2.815e14`), well below
+/// `2^63`. Aggregate sums remain checked `u128` at their callers because many changed pixels can
+/// exceed `u64`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PixelClassifier {
+    threshold: u64,
+}
+
+impl PixelClassifier {
+    pub(crate) fn new(parameters: MeasurementParameters) -> Result<Self> {
+        let threshold = u64::from(parameters.noise_floor)
+            .checked_pow(2)
+            .and_then(|value| value.checked_mul(WEIGHT_SUM))
+            .ok_or_else(measurement_overflow)?;
+        Ok(Self { threshold })
+    }
+
+    #[inline]
+    pub(crate) fn classify(&self, before: &[u16; 3], after: &[u16; 3]) -> PixelChange {
+        let weighted_square = weighted_square_u64(before, after);
+        debug_assert!(weighted_square < (1_u64 << 63));
+        PixelChange {
+            changed: weighted_square > self.threshold,
+            weighted_square,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn weighted_square(&self, before: &[u16; 3], after: &[u16; 3]) -> u64 {
+        let weighted_square = weighted_square_u64(before, after);
+        debug_assert!(weighted_square < (1_u64 << 63));
+        weighted_square
+    }
+}
+
+/// Compatibility wrapper for the existing unit-test seam; callers use the hoisted classifier.
+#[cfg(test)]
 pub(crate) fn classify_pixel_change(
     before: &[u16; 3],
     after: &[u16; 3],
     parameters: MeasurementParameters,
 ) -> Result<PixelChange> {
-    let threshold = u128::from(parameters.noise_floor)
-        .checked_pow(2)
-        .and_then(|value| value.checked_mul(WEIGHT_SUM))
-        .ok_or_else(measurement_overflow)?;
-    let dr = u128::from(before[0].abs_diff(after[0]));
-    let dg = u128::from(before[1].abs_diff(after[1]));
-    let db = u128::from(before[2].abs_diff(after[2]));
-    let red_square = weighted_channel_square(RED_WEIGHT, dr)?;
-    let green_square = weighted_channel_square(GREEN_WEIGHT, dg)?;
-    let blue_square = weighted_channel_square(BLUE_WEIGHT, db)?;
-    let weighted_square = red_square
-        .checked_add(green_square)
-        .and_then(|value| value.checked_add(blue_square))
-        .ok_or_else(measurement_overflow)?;
-    Ok(PixelChange {
-        changed: weighted_square > threshold,
-        weighted_square,
-    })
+    PixelClassifier::new(parameters).map(|classifier| classifier.classify(before, after))
 }
 
 /// Count declared gaps intersecting an inclusive comparison interval.
@@ -403,29 +681,35 @@ pub(crate) fn intersecting_gap_count(
         .count()
 }
 
-fn weighted_channel_square(weight: u128, delta: u128) -> Result<u128> {
-    delta
-        .checked_mul(delta)
-        .and_then(|square| weight.checked_mul(square))
-        .ok_or_else(measurement_overflow)
+#[inline]
+fn weighted_square_u64(before: &[u16; 3], after: &[u16; 3]) -> u64 {
+    let red = u64::from(before[0].abs_diff(after[0]));
+    let green = u64::from(before[1].abs_diff(after[1]));
+    let blue = u64::from(before[2].abs_diff(after[2]));
+    RED_WEIGHT * red * red + GREEN_WEIGHT * green * green + BLUE_WEIGHT * blue * blue
 }
 
 pub(crate) fn linear_luminance(pixel: &[u16]) -> Result<u128> {
-    let red = RED_WEIGHT
+    let red = u128::from(RED_WEIGHT)
         .checked_mul(u128::from(pixel[0]))
         .ok_or_else(measurement_overflow)?;
-    let green = GREEN_WEIGHT
+    let green = u128::from(GREEN_WEIGHT)
         .checked_mul(u128::from(pixel[1]))
         .ok_or_else(measurement_overflow)?;
-    let blue = BLUE_WEIGHT
+    let blue = u128::from(BLUE_WEIGHT)
         .checked_mul(u128::from(pixel[2]))
         .ok_or_else(measurement_overflow)?;
     let weighted = red
         .checked_add(green)
         .and_then(|value| value.checked_add(blue))
-        .and_then(|value| value.checked_add(WEIGHT_SUM / 2))
+        .and_then(|value| value.checked_add(u128::from(WEIGHT_SUM / 2)))
         .ok_or_else(measurement_overflow)?;
-    Ok(weighted / WEIGHT_SUM)
+    Ok(weighted / u128::from(WEIGHT_SUM))
+}
+
+#[inline]
+fn set_bit(bits: &mut [u8], index: usize) {
+    bits[index / 8] |= 0x80 >> (index % 8);
 }
 
 fn round_ratio(numerator: u128, denominator: u128) -> Result<u128> {
@@ -512,6 +796,52 @@ mod tests {
         assert_eq!(integer_sqrt(16), 4);
         assert_eq!(integer_sqrt(17), 4);
         assert_eq!(integer_sqrt(u128::MAX), u64::MAX as u128);
+    }
+
+    #[test]
+    fn hoisted_classifier_matches_u128_reference_at_full_u16_bounds() {
+        let parameters = MeasurementParameters::new(512);
+        let classifier = PixelClassifier::new(parameters).unwrap();
+        let threshold = u128::from(parameters.noise_floor()).pow(2) * u128::from(WEIGHT_SUM);
+        for deltas in [
+            [0_u16, 0, 0],
+            [1, 2, 3],
+            [u16::MAX, 0, 0],
+            [0, u16::MAX, 0],
+            [0, 0, u16::MAX],
+            [u16::MAX, u16::MAX, u16::MAX],
+        ] {
+            let before = [0_u16; 3];
+            let after = deltas;
+            let expected = u128::from(RED_WEIGHT) * u128::from(deltas[0]).pow(2)
+                + u128::from(GREEN_WEIGHT) * u128::from(deltas[1]).pow(2)
+                + u128::from(BLUE_WEIGHT) * u128::from(deltas[2]).pow(2);
+            let actual = classifier.classify(&before, &after);
+            assert_eq!(actual.weighted_square, u64::try_from(expected).unwrap());
+            assert_eq!(actual.changed, expected > threshold);
+        }
+    }
+
+    #[test]
+    fn shared_analysis_matches_adjacent_comparisons_and_masks() {
+        let sequence = normalized(vec![
+            (1, 1, [0, 0, 0, 255]),
+            (2, 2, [20, 0, 0, 255]),
+            (3, 3, [20, 20, 20, 255]),
+        ]);
+        let parameters = MeasurementParameters::new(0);
+        let expected = measure_adjacent(&sequence, parameters).unwrap();
+        let shared = analyze_adjacent_pairs(&sequence, parameters, true).unwrap();
+        assert_eq!(shared.comparisons(), expected.as_ref());
+        let masks = shared.change_masks().unwrap();
+        for (pair_index, comparison) in expected.iter().enumerate() {
+            let changed = matches!(
+                comparison.outcome(),
+                ComparisonOutcome::Measured(vector)
+                    if vector.changed_pixel_proportion().changed() > 0
+            );
+            assert_eq!(masks.for_pair(pair_index).unwrap()[0] & 0x80 != 0, changed);
+        }
     }
 
     #[test]

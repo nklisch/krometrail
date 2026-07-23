@@ -10,8 +10,9 @@ use temporal_vision::{
     ArtifactKind, ArtifactLabels, ArtifactManifest, BinaryMask, DeclaredGap, ErrorCode,
     EvidenceClass, Frame, FrameSequence, IntegerScale, Marker, MeasurementParameters, MotionDecay,
     MotionHistoryParameters, NormalizationParameters, ParameterValue, PixelDimensions, PixelFormat,
-    ProcessingLimits, RenderLimits, Rgb8, TimeRange, Timestamp, build_motion_history_plan,
-    generate_motion_history, normalize_sequence,
+    ProcessingLimits, RenderLimits, Rgb8, TimeRange, Timestamp, analyze_adjacent_pairs,
+    build_motion_history_plan, generate_motion_history, generate_motion_history_with_analysis,
+    normalize_sequence,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -163,6 +164,16 @@ fn public_plan_and_render_are_traceable_gap_aware_and_deterministic() {
     )
     .unwrap();
     assert_eq!(first, second);
+    let shared = analyze_adjacent_pairs(&normalized, MeasurementParameters::new(0), true).unwrap();
+    let shared_result = generate_motion_history_with_analysis(
+        ArtifactId("motion-a".into()),
+        &source,
+        &normalized,
+        parameters(RenderLimits::default()),
+        Some(&shared),
+    )
+    .unwrap();
+    assert_eq!(first, shared_result);
 
     let manifest = first.manifest();
     assert_eq!(manifest.artifact_kind(), ArtifactKind::MotionHistory);

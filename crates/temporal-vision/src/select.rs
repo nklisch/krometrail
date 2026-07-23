@@ -393,6 +393,24 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     tile_limit: StoryboardTileLimit,
     measurement: MeasurementParameters,
 ) -> Result<StoryboardSelection<F>> {
+    select_storyboard_frames_with_analysis(
+        source,
+        normalized,
+        anchor,
+        tile_limit,
+        measurement,
+        None,
+    )
+}
+
+pub fn select_storyboard_frames_with_analysis<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
+    source: &FrameSequence<F, M, G, P>,
+    normalized: &NormalizedSequence<F>,
+    anchor: Timestamp,
+    tile_limit: StoryboardTileLimit,
+    measurement: MeasurementParameters,
+    shared: Option<&crate::SharedAdjacentAnalysis>,
+) -> Result<StoryboardSelection<F>> {
     validate_alignment(source, normalized)?;
     if !source.range().contains(anchor) {
         return Err(VisionError::new(
@@ -402,8 +420,14 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     }
 
     let frame_count = source.frames().len();
-    let adjacent = measure_adjacent(normalized, measurement)?;
-    let analysis = SelectionAnalysis::new(&adjacent, source, frame_count)?;
+    let adjacent_owned;
+    let adjacent = if let Some(shared) = shared {
+        shared.comparisons()
+    } else {
+        adjacent_owned = measure_adjacent(normalized, measurement)?;
+        &adjacent_owned
+    };
+    let analysis = SelectionAnalysis::new(adjacent, source, frame_count)?;
     let baseline = source
         .frames()
         .iter()
@@ -413,14 +437,14 @@ pub fn select_storyboard_frames<F: Clone + Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         .frames()
         .iter()
         .position(|frame| frame.timestamp() > anchor);
-    let first_change_comparison = first_change_comparison(&adjacent, normalized, anchor);
+    let first_change_comparison = first_change_comparison(adjacent, normalized, anchor);
     let first_change = first_change_comparison.map(crate::FrameComparison::later_frame_index);
     let peak_baseline_comparison =
         peak_baseline_comparison(normalized, baseline, &analysis, measurement)?;
     let peak = peak_baseline_comparison
         .as_ref()
         .map(crate::FrameComparison::later_frame_index);
-    let peak_adjacent_comparison = peak_adjacent_changed_area_comparison(&adjacent);
+    let peak_adjacent_comparison = peak_adjacent_changed_area_comparison(adjacent);
     let visual_summary = StoryboardVisualSummary {
         first_change: first_change_comparison
             .map(|comparison| visual_moment(source, comparison.clone())),

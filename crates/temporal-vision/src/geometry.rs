@@ -171,6 +171,18 @@ impl BinaryMask {
         &self.bits
     }
 
+    pub(crate) fn row_bits(&self, y: u32) -> Option<(&[u8], u8)> {
+        if y >= self.dimensions.height() {
+            return None;
+        }
+        let width = usize::try_from(self.dimensions.width()).ok()?;
+        let start_bit = usize::try_from(y).ok()?.checked_mul(width)?;
+        let start_byte = start_bit / 8;
+        let bit_offset = u8::try_from(start_bit % 8).ok()?;
+        let byte_count = (usize::from(bit_offset) + width).checked_add(7)? / 8;
+        Some((&self.bits[start_byte..start_byte + byte_count], bit_offset))
+    }
+
     pub fn includes(&self, x: u32, y: u32) -> Option<bool> {
         if x >= self.dimensions.width() || y >= self.dimensions.height() {
             return None;

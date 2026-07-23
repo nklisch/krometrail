@@ -47,3 +47,11 @@ the parent feature body for Units 2.1–2.2 and the correctness proof.
 - [ ] New `region_filmstrip_perf.rs` bench shows ~389 ms → ~80 ms; 120-frame
       success regression green.
 - [ ] `cargo test -p temporal-vision` green; clippy clean.
+
+## Implementation notes
+
+The filmstrip now normalizes only the selected tile subsequence and its separate
+locator, then remaps rendering by subsequence position. Cropped opaque identity
+and box-downscale fast paths match the general reference. The release benchmark
+measured 135,429 µs for the 120-frame 1224×958 case, retaining 5,111,808 bytes
+for 12 tiles plus the locator; the bounded 120-frame success regression passes.

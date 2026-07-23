@@ -48,3 +48,12 @@ floats). No `unsafe`; no shared mutable hot-path state.
       (via the scaffold's `PERF_PAIR_WORKERS` knob).
 - [ ] 4-artifact identity suite well under 1 s combined with opt-1.
 - [ ] `cargo test -p temporal-vision` green; clippy clean.
+
+## Implementation notes
+
+Added scoped `std::thread` chunking with a 16-worker ceiling, private worker
+reducers, positional pair ordering, and fixed-order merges. The internal worker
+equivalence test covers 1, 2, and 16 workers; the release scaffold produced the
+same normalized/artifact/output digests at worker 1 and worker 16. On this host,
+the 30-frame 1920×1080 sample measured 1,066,098 µs at worker 1 and 1,113,817 µs
+at worker 16, indicating scheduler overhead rather than a correctness issue.
