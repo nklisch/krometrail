@@ -1,7 +1,7 @@
 ---
 id: story-source-frames-concise-page
 kind: story
-stage: implementing
+stage: done
 tags: [mcp]
 parent: null
 depends_on: []
@@ -59,3 +59,10 @@ acquisition, preserve outcomes and drill-down authority):
   clippy with `-D warnings`. The test gate required the permission-enabled
   rerun because four CDP tests need local networking/process permissions in this
   environment.
+
+## Review
+
+Bounded fresh-context review: accepted, no blockers. Non-blocking notes: full
+detail covered by code shape rather than a direct assertion; no explicit
+drill-down note added at concise (drill-down authority preserved via per-row
+frame ids and next_offset).

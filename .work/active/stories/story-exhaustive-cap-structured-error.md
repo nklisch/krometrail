@@ -1,7 +1,7 @@
 ---
 id: story-exhaustive-cap-structured-error
 kind: story
-stage: implementing
+stage: done
 tags: [temporal]
 parent: null
 depends_on: []
@@ -52,3 +52,12 @@ diagnostics correlation. Keep the exact plan numbers in the explanation.
 - Full gate passed: `cargo fmt --all -- --check`,
   `bash scripts/check-wire-enum-schemas.sh`, locked workspace check/test, and
   clippy with `-D warnings`.
+
+## Review
+
+Bounded fresh-context review: accepted, no blockers. Non-blocking note kept for
+a future wording pass: when the effective cap is byte-limited
+(`analysis_effective_max_frames` below `max_source_frames` for large frames),
+the recovery's "at most 120 frames" can overstate what a narrowed range admits;
+the decoded-byte limit in the message and the uniform_bounded remedy remain
+exact.
