@@ -1,9 +1,19 @@
 ---
-id: idea-container-text-generic-ancestors
+id: feature-container-text-generic-ancestors
+kind: feature
+stage: drafting
+tags: [browser, agent-ux]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-22
 updated: 2026-07-22
-tags: [browser, agent-ux]
 ---
+
+# container_text works on generic-div markup
+
+## Brief
 
 `container_text` role queries silently fail on generic-div markup. The
 qualifier only consults ancestors whose role is in `LOCAL_CONTAINER_ROLES`
@@ -23,3 +33,10 @@ Directions to consider: surface an explicit "matched controls exist but no
 eligible container ancestor" outcome or hint; or extend eligibility with a
 bounded generic-ancestor fallback; and align the skill doc's "nearest
 matching ancestor's rendered text" wording with the actual allowlist rule.
+
+## Simplification opportunity
+
+The fix may let the plugin skill doc drop its implicit "works on any
+markup" promise or, conversely, keep one matching rule with no special
+cases. Whichever eligibility rule wins, the doc wording and the
+implementation must converge to a single stated contract.
