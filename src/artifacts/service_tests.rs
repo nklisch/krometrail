@@ -21,7 +21,7 @@ use krometrail_core::{
     RegionFilmstripRequest, ResolvedRange, SessionId, SessionRange, SessionTime, StoredArtifact,
     StoryboardRequest, TargetId, TemporalRangeAnchorKind,
 };
-use temporal_vision::{FrequencyMode, RegionDefinition, Rgb8, SignedPixelRect};
+use temporal_vision::{ArtifactKind, FrequencyMode, RegionDefinition, Rgb8, SignedPixelRect};
 use uuid::Uuid;
 
 use super::{
@@ -1500,6 +1500,87 @@ fn one_generator_request(
         ArtifactFailurePolicy::RequireAll,
     )
     .unwrap()
+}
+
+fn published_bytes(
+    rig: &TestRig,
+    result: &krometrail_core::ArtifactGenerationResult,
+    kind: ArtifactKind,
+) -> Vec<u8> {
+    let artifact_id = result
+        .outcomes
+        .iter()
+        .find_map(|outcome| match outcome {
+            ArtifactOutcome::Available { artifact, .. }
+                if artifact.manifest.artifact_kind() == kind =>
+            {
+                Some(*artifact.manifest.artifact_id())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{kind} output was not available"));
+    rig.artifacts
+        .by_id
+        .lock()
+        .unwrap()
+        .get(&artifact_id)
+        .unwrap_or_else(|| panic!("{kind} output was not stored"))
+        .encoded_bytes
+        .to_vec()
+}
+
+async fn mixed_plan_order_matches_unshared(order: [usize; 3]) {
+    let base_rig =
+        rig_with_transition_and_frame_count(6, false, false, ArtifactWorkLimits::default());
+    let mut base_generators = base_rig.request.generators().to_vec();
+    let ArtifactGeneratorRequest::Storyboard(storyboard) = &mut base_generators[0] else {
+        unreachable!()
+    };
+    storyboard.include_orientation = false;
+    storyboard.tile_limit = 3;
+    let generators = order
+        .into_iter()
+        .map(|index| base_generators[index].clone())
+        .collect::<Vec<_>>();
+    let mixed_request = ArtifactGenerationRequest::new(
+        base_rig.request.range().clone(),
+        vec![],
+        generators.clone(),
+        ArtifactFailurePolicy::RequireAll,
+    )
+    .unwrap();
+    let mixed_result = base_rig
+        .service
+        .generate(mixed_request, ArtifactGenerationContext::default())
+        .await
+        .expect("mixed sampled plans must generate all artifacts");
+
+    for generator in generators {
+        let single_rig =
+            rig_with_transition_and_frame_count(6, false, false, ArtifactWorkLimits::default());
+        let kind = generator.output_kinds()[0];
+        let single_result = single_rig
+            .service
+            .generate(
+                one_generator_request(&single_rig, generator, vec![]),
+                ArtifactGenerationContext::default(),
+            )
+            .await
+            .expect("unshared generator must succeed");
+        assert_eq!(
+            published_bytes(&base_rig, &mixed_result, kind),
+            published_bytes(&single_rig, &single_result, kind),
+            "mixed-plan {kind} output differs from its unshared path",
+        );
+    }
+}
+
+#[tokio::test]
+async fn mixed_sampled_plans_fall_back_in_either_generator_order() {
+    // The storyboard is bounded to three frames while difference and motion use all six.
+    // Both orders exercise the historical short-analysis and out-of-range failure modes.
+    mixed_plan_order_matches_unshared([0, 1, 3]).await;
+    mixed_plan_order_matches_unshared([3, 1, 0]).await;
 }
 
 #[tokio::test]

@@ -8,8 +8,8 @@ use krometrail_core::{
     ArtifactCacheDisposition, ArtifactEpochSelection, ArtifactGeneration,
     ArtifactGenerationContext, ArtifactGenerationRequest, ArtifactGenerationResult, ArtifactHandle,
     ArtifactId, ArtifactLookup, ArtifactOutcome, ArtifactPublication, ArtifactPublish,
-    ArtifactSourceFingerprint, ArtifactStore, ErrorCode, FrameSource, IdSource, KrometrailError,
-    NonEmptyText, PortFuture, Result,
+    ArtifactSourceFingerprint, ArtifactStore, ErrorCode, FrameId, FrameSource, IdSource,
+    KrometrailError, NonEmptyText, PortFuture, Result,
 };
 use temporal_vision::{
     ArtifactKind, SharedAdjacentAnalysis, analyze_adjacent_pairs, generator_descriptor,
@@ -55,6 +55,8 @@ struct Slot {
 
 #[derive(Clone)]
 struct WorkSlot(Slot);
+
+type AnalysisCohortKey = (usize, Vec<u8>, u16, Vec<(FrameId, usize)>);
 
 struct Available {
     artifact: FlightArtifact,
@@ -374,8 +376,8 @@ impl TemporalVisionArtifactService {
                 .push(slot);
         }
 
-        let mut cohort_counts = BTreeMap::<(usize, Vec<u8>, u16), usize>::new();
-        let mut cohort_wants_masks = BTreeMap::<(usize, Vec<u8>, u16), bool>::new();
+        let mut cohort_counts = BTreeMap::<AnalysisCohortKey, usize>::new();
+        let mut cohort_wants_masks = BTreeMap::<AnalysisCohortKey, bool>::new();
         for group in groups.values() {
             let prepared = &group[0].0.prepared;
             let Some(noise_floor) = analysis_noise_floor(prepared) else {
@@ -384,12 +386,17 @@ impl TemporalVisionArtifactService {
             let Some(identity) = normalization_identity(prepared)? else {
                 continue;
             };
-            let key = (group[0].0.epoch_index, identity.to_vec(), noise_floor);
+            let key = (
+                group[0].0.epoch_index,
+                identity.to_vec(),
+                noise_floor,
+                analysis_plan_identity(&group[0].0.plan),
+            );
             *cohort_counts.entry(key.clone()).or_default() += 1;
             *cohort_wants_masks.entry(key).or_default() |= needs_change_masks(prepared);
         }
         let mut shared_analyses =
-            BTreeMap::<(usize, Vec<u8>, u16), Arc<SharedAdjacentAnalysis>>::new();
+            BTreeMap::<AnalysisCohortKey, Arc<SharedAdjacentAnalysis<FrameId>>>::new();
         // Change masks remain live as long as their cohort can be reused. Keep their
         // corresponding scheduler permits for the same lifetime so the shared-analysis cache
         // cannot grow outside the combined-request memory budget.
@@ -425,7 +432,12 @@ impl TemporalVisionArtifactService {
                 analysis_noise_floor(prepared)
                     .zip(normalization_identity(prepared)?)
                     .map(|(noise_floor, identity)| {
-                        (group[0].0.epoch_index, identity.to_vec(), noise_floor)
+                        (
+                            group[0].0.epoch_index,
+                            identity.to_vec(),
+                            noise_floor,
+                            analysis_plan_identity(&group[0].0.plan),
+                        )
                     })
             };
             let estimated_mask_bytes = if cohort_key
@@ -873,6 +885,14 @@ fn estimated_change_mask_bytes(plan: &EpochPlan) -> Result<usize> {
         .saturating_sub(1)
         .checked_mul(bytes_per_pair)
         .ok_or_else(|| limit_error("change-mask byte estimate overflows"))
+}
+
+fn analysis_plan_identity(plan: &EpochPlan) -> Vec<(FrameId, usize)> {
+    plan.frames
+        .iter()
+        .zip(&plan.source_indices)
+        .map(|(frame, source_index)| (frame.metadata().id(), *source_index))
+        .collect()
 }
 
 impl ArtifactGeneration for TemporalVisionArtifactService {

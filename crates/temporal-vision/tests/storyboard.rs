@@ -343,6 +343,21 @@ fn public_generator_returns_traceable_deterministic_pngs_and_manifests() {
     )
     .unwrap();
     assert_eq!(first, shared_result);
+    let mismatched =
+        analyze_adjacent_pairs(&normalized, MeasurementParameters::new(1), true).unwrap();
+    let mismatched_result = generate_storyboard_with_analysis(
+        ArtifactId("storyboard-a".into()),
+        Some(ArtifactId("orientation-a".into())),
+        &source,
+        &normalized,
+        request(
+            StoryboardTileLimit::new(3).unwrap(),
+            RenderLimits::default(),
+        ),
+        Some(&mismatched),
+    )
+    .unwrap();
+    assert_eq!(first, mismatched_result);
     assert_eq!(first.storyboard().image().media_type(), "image/png");
     assert_eq!(
         &first.storyboard().image().bytes()[..8],

@@ -148,7 +148,7 @@ impl DifferenceAccumulators {
     }
 
     #[cfg(test)]
-    pub(crate) fn accumulate<F>(
+    pub(crate) fn accumulate<F: Eq>(
         normalized: &NormalizedSequence<F>,
         measurement: MeasurementParameters,
         limits: DifferenceMapLimits,
@@ -156,12 +156,15 @@ impl DifferenceAccumulators {
         Self::accumulate_with_analysis(normalized, measurement, limits, None)
     }
 
-    pub(crate) fn accumulate_with_analysis<F>(
+    pub(crate) fn accumulate_with_analysis<F: Eq>(
         normalized: &NormalizedSequence<F>,
         measurement: MeasurementParameters,
         limits: DifferenceMapLimits,
-        shared: Option<&SharedAdjacentAnalysis>,
+        shared: Option<&SharedAdjacentAnalysis<F>>,
     ) -> Result<Self> {
+        // A shared result is an optimization only. Fall back to this consumer's own
+        // classification when its sampled frame plan or threshold does not match.
+        let shared = shared.filter(|analysis| analysis.is_compatible_with(normalized, measurement));
         let pixel_count = normalized.dimensions().pixel_count()?;
         let accumulator_bytes = pixel_count
             .checked_mul(ACCUMULATOR_BYTES_PER_PIXEL)
@@ -178,6 +181,13 @@ impl DifferenceAccumulators {
             .collect::<Result<Vec<_>>>()?;
         let classifier =
             PixelClassifier::new(measurement).map_err(|_| accumulator_limit_error())?;
+        let shared_change_masks = shared.map(|analysis| {
+            pairs
+                .iter()
+                .enumerate()
+                .map(|(index, _)| analysis.change_mask_for_pair(index))
+                .collect::<Vec<_>>()
+        });
         crate::parallel::map_reduce(
             pairs.len(),
             || Self::empty(dimensions),
@@ -192,7 +202,7 @@ impl DifferenceAccumulators {
                         range_start,
                         mask,
                         &classifier,
-                        shared.and_then(|analysis| analysis.change_mask_for_pair(index)),
+                        shared_change_masks.as_ref().and_then(|masks| masks[index]),
                     ),
                     Err(_) => Ok(()),
                 };
@@ -365,17 +375,17 @@ pub(crate) struct DifferenceMapData {
 
 impl DifferenceMapData {
     #[cfg(test)]
-    pub(crate) fn build<F>(
+    pub(crate) fn build<F: Eq>(
         normalized: &NormalizedSequence<F>,
         parameters: DifferenceMapParameters,
     ) -> Result<Self> {
         Self::build_with_analysis(normalized, parameters, None)
     }
 
-    pub(crate) fn build_with_analysis<F>(
+    pub(crate) fn build_with_analysis<F: Eq>(
         normalized: &NormalizedSequence<F>,
         parameters: DifferenceMapParameters,
-        shared: Option<&SharedAdjacentAnalysis>,
+        shared: Option<&SharedAdjacentAnalysis<F>>,
     ) -> Result<Self> {
         let accumulators = DifferenceAccumulators::accumulate_with_analysis(
             normalized,
@@ -600,7 +610,7 @@ pub fn render_difference_map_with_analysis<A, F, M, G, P>(
     sequence: &FrameSequence<F, M, G, P>,
     normalized: &NormalizedSequence<F>,
     parameters: DifferenceMapParameters,
-    shared: Option<&SharedAdjacentAnalysis>,
+    shared: Option<&SharedAdjacentAnalysis<F>>,
 ) -> Result<DifferenceMapArtifact<A, F, M, G>>
 where
     F: Clone + Eq,

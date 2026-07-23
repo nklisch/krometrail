@@ -409,7 +409,7 @@ pub fn select_storyboard_frames_with_analysis<F: Clone + Eq, M: Eq, G: Eq, P: As
     anchor: Timestamp,
     tile_limit: StoryboardTileLimit,
     measurement: MeasurementParameters,
-    shared: Option<&crate::SharedAdjacentAnalysis>,
+    shared: Option<&crate::SharedAdjacentAnalysis<F>>,
 ) -> Result<StoryboardSelection<F>> {
     validate_alignment(source, normalized)?;
     if !source.range().contains(anchor) {
@@ -419,6 +419,9 @@ pub fn select_storyboard_frames_with_analysis<F: Clone + Eq, M: Eq, G: Eq, P: As
         ));
     }
 
+    // A shared result is an optimization only. Never let a stale or differently sampled
+    // analysis authorize indexes into this consumer's plan.
+    let shared = shared.filter(|analysis| analysis.is_compatible_with(normalized, measurement));
     let frame_count = source.frames().len();
     let adjacent_owned;
     let adjacent = if let Some(shared) = shared {

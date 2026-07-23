@@ -221,7 +221,7 @@ pub fn generate_storyboard_with_analysis<A, F, M, G, P>(
     source: &FrameSequence<F, M, G, P>,
     normalized: &NormalizedSequence<F>,
     parameters: StoryboardParameters,
-    shared: Option<&crate::SharedAdjacentAnalysis>,
+    shared: Option<&crate::SharedAdjacentAnalysis<F>>,
 ) -> Result<StoryboardArtifacts<A, F, M, G>>
 where
     F: Clone + Eq + Display,

@@ -389,7 +389,7 @@ fn build_output_with_analysis(
     source: &Source,
     normalized: Normalized,
     config: Config,
-    shared: Option<&temporal_vision::SharedAdjacentAnalysis>,
+    shared: Option<&temporal_vision::SharedAdjacentAnalysis<u32>>,
 ) -> PipelineOutput {
     let accounting = accounting(source, &normalized, config);
     assert_accounting(&accounting, config.generators.includes_motion());

@@ -195,7 +195,7 @@ pub(crate) fn generate(
     prepared: &PreparedGenerator,
     artifact_ids: &[ArtifactId],
     normalized: Option<&NormalizedSequence<FrameId>>,
-    shared: Option<&SharedAdjacentAnalysis>,
+    shared: Option<&SharedAdjacentAnalysis<FrameId>>,
     limits: ArtifactWorkLimits,
 ) -> Result<Vec<GeneratedOutput>> {
     let outputs = match &prepared.request {

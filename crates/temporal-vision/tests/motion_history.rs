@@ -174,6 +174,17 @@ fn public_plan_and_render_are_traceable_gap_aware_and_deterministic() {
     )
     .unwrap();
     assert_eq!(first, shared_result);
+    let mismatched =
+        analyze_adjacent_pairs(&normalized, MeasurementParameters::new(1), true).unwrap();
+    let mismatched_result = generate_motion_history_with_analysis(
+        ArtifactId("motion-a".into()),
+        &source,
+        &normalized,
+        parameters(RenderLimits::default()),
+        Some(&mismatched),
+    )
+    .unwrap();
+    assert_eq!(first, mismatched_result);
 
     let manifest = first.manifest();
     assert_eq!(manifest.artifact_kind(), ArtifactKind::MotionHistory);

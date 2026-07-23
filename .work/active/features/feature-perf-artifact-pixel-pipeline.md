@@ -635,3 +635,27 @@ The adjacent-pair baseline and original filmstrip failure values are the measure
 design evidence above; the after runs used the checked-in ignored release
 scaffolds. Hardware scheduling made the 16-worker sample slower than the pinned
 single-worker sample on this host, while determinism remained exact.
+
+## Review fixes
+
+- Accepted material finding: shared-analysis cohorts now include the ordered sampled source
+  frame identity (`FrameId` plus source index), in addition to epoch, normalization identity, and
+  noise floor. A storyboard plan cannot reuse analysis built for a longer difference or motion
+  plan, while genuinely identical plans retain sharing.
+- `SharedAdjacentAnalysis` now retains its normalized frame IDs, timestamps, noise floor, and
+  comparison shape. Select, difference-map, and motion-history validate those values at every
+  shared-analysis entry point and fall back to their local measurement path on mismatch.
+- Added service integration coverage for six-frame mixed plans in both storyboard-first and
+  motion/difference-first order. Each artifact's published PNG is compared with a fresh
+  single-generator (unshared) run; this covers the former short-analysis and storyboard
+  out-of-range failures.
+- Extended the storyboard, difference-map, and motion-history equivalence tests with mismatched
+  noise-floor shared analyses, asserting each consumer falls back to its independent result.
+- Re-ran the identical-plan release scaffold on 2026-07-23 with Rust 1.85, 120 frames at
+  1224×958 identity scale, `PERF_PAIR_WORKERS=1`, and all three generator families: 2,091,115 µs
+  wall time, duplicate digest equality, and `M+B = 119 + 80 = 199` classified passes (`M=119`
+  shared adjacent pairs, `B=80` storyboard baseline pairs). The shared classifier performed 119
+  pair passes. The region-filmstrip scaffold also passed at 136,865 µs with 12 tiles and
+  5,111,808 normalized bytes. The production default policy can intentionally produce different
+  storyboard and difference sampling plans; those are now separate cohorts rather than being
+  counted as shared passes.

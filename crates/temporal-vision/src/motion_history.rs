@@ -231,7 +231,7 @@ pub fn build_motion_history_plan_with_analysis<F, M, G, P>(
     source: &FrameSequence<F, M, G, P>,
     normalized: &NormalizedSequence<F>,
     parameters: &MotionHistoryParameters,
-    shared: Option<&SharedAdjacentAnalysis>,
+    shared: Option<&SharedAdjacentAnalysis<F>>,
 ) -> Result<MotionHistoryPlan<F>>
 where
     F: Clone + Eq,
@@ -244,6 +244,10 @@ where
     let pixel_count = dimensions.pixel_count()?;
     ensure_plan_memory_fits(pixel_count, parameters.limits)?;
 
+    // A shared result is an optimization only. A mismatched sampled plan or threshold
+    // must use the local measurement path so it cannot shorten or misaddress this plan.
+    let shared =
+        shared.filter(|analysis| analysis.is_compatible_with(normalized, parameters.measurement));
     let comparisons_owned;
     let comparisons = if let Some(shared) = shared {
         shared.comparisons()
@@ -387,7 +391,7 @@ fn accumulate_segment<F>(
     comparison_start: usize,
     normalized: &NormalizedSequence<F>,
     parameters: &MotionHistoryParameters,
-    shared: Option<&SharedAdjacentAnalysis>,
+    shared: Option<&SharedAdjacentAnalysis<F>>,
     segment_accumulation: &mut [u16],
     accumulation: &mut [u16],
     ever_changed_bits: &mut [u8],
@@ -413,6 +417,13 @@ fn accumulate_segment<F>(
     let mask = normalized.analysis_mask();
     let classifier =
         PixelClassifier::new(parameters.measurement).map_err(|_| motion_limit_error())?;
+    let shared_change_masks = shared.map(|analysis| {
+        comparisons
+            .iter()
+            .enumerate()
+            .map(|(offset, _)| analysis.change_mask_for_pair(comparison_start + offset))
+            .collect::<Vec<_>>()
+    });
     let (local_accumulation, local_ever_changed) = crate::parallel::map_reduce(
         pairs.len(),
         || {
@@ -454,8 +465,9 @@ fn accumulate_segment<F>(
                     .ok()
                     .and_then(|row| row.checked_mul(width))
                     .expect("normalized dimensions fit the change-mask index space");
-                let mut change_cursor = shared
-                    .and_then(|analysis| analysis.change_mask_for_pair(comparison_start + offset))
+                let mut change_cursor = shared_change_masks
+                    .as_ref()
+                    .and_then(|masks| masks[offset])
                     .map(|bits| (bits, change_start / 8, 0x80_u8 >> (change_start % 8)));
                 for (x, (before, after)) in pair.earlier[byte_row..end]
                     .chunks_exact(3)
@@ -634,7 +646,7 @@ pub fn generate_motion_history_with_analysis<A, F, M, G, P>(
     source: &FrameSequence<F, M, G, P>,
     normalized: &NormalizedSequence<F>,
     parameters: MotionHistoryParameters,
-    shared: Option<&SharedAdjacentAnalysis>,
+    shared: Option<&SharedAdjacentAnalysis<F>>,
 ) -> Result<MotionHistoryArtifact<A, F, M, G>>
 where
     F: Clone + Eq + Display,

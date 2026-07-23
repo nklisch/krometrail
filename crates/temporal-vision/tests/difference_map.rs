@@ -131,6 +131,17 @@ fn browser_free_public_contract_is_traceable_bounded_and_deterministic() {
     )
     .unwrap();
     assert_eq!(first, shared_result);
+    let mismatched =
+        analyze_adjacent_pairs(&normalized, MeasurementParameters::new(1), true).unwrap();
+    let mismatched_result = render_difference_map_with_analysis(
+        ArtifactId("difference-a".into()),
+        &source,
+        &normalized,
+        parameters(DifferenceMapLimits::default()),
+        Some(&mismatched),
+    )
+    .unwrap();
+    assert_eq!(first, mismatched_result);
 
     let manifest = first.manifest();
     assert_eq!(manifest.artifact_kind(), ArtifactKind::DifferenceMap);

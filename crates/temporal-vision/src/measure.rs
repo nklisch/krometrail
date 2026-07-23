@@ -249,12 +249,23 @@ impl PairChangeMasks {
 
 /// Canonical adjacent-pair classification shared by artifact consumers.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SharedAdjacentAnalysis {
+pub struct SharedAdjacentAnalysis<FrameId> {
+    frame_ids: Box<[FrameId]>,
+    frame_timestamps: Box<[crate::Timestamp]>,
+    noise_floor: u16,
     comparisons: Box<[FrameComparison]>,
     change_masks: Option<PairChangeMasks>,
 }
 
-impl SharedAdjacentAnalysis {
+impl<FrameId> SharedAdjacentAnalysis<FrameId> {
+    pub fn frame_ids(&self) -> &[FrameId] {
+        &self.frame_ids
+    }
+
+    pub const fn noise_floor(&self) -> u16 {
+        self.noise_floor
+    }
+
     pub fn comparisons(&self) -> &[FrameComparison] {
         &self.comparisons
     }
@@ -274,12 +285,44 @@ impl SharedAdjacentAnalysis {
     }
 }
 
+impl<FrameId: Eq> SharedAdjacentAnalysis<FrameId> {
+    /// A shared result is usable only for the exact normalized plan and threshold that built it.
+    /// Callers deliberately fall back to their local measurement path when this check fails.
+    pub(crate) fn is_compatible_with(
+        &self,
+        normalized: &NormalizedSequence<FrameId>,
+        measurement: MeasurementParameters,
+    ) -> bool {
+        self.noise_floor == measurement.noise_floor()
+            && self.frame_ids.len() == normalized.frames().len()
+            && self
+                .frame_ids
+                .iter()
+                .zip(self.frame_timestamps.iter())
+                .zip(normalized.frames())
+                .all(|((id, timestamp), frame)| id == frame.id() && *timestamp == frame.timestamp())
+            && self.comparisons.len() == normalized.frames().len().saturating_sub(1)
+            && self
+                .comparisons
+                .iter()
+                .enumerate()
+                .all(|(index, comparison)| {
+                    comparison.earlier_frame_index() == index
+                        && comparison.later_frame_index() == index + 1
+                })
+            && self
+                .change_masks
+                .as_ref()
+                .is_none_or(|masks| masks.masks.len() == self.comparisons.len())
+    }
+}
+
 /// Classify every adjacent pair once, optionally retaining changed-pixel masks for reducers.
-pub fn analyze_adjacent_pairs<F>(
+pub fn analyze_adjacent_pairs<F: Clone>(
     normalized: &NormalizedSequence<F>,
     measurement: MeasurementParameters,
     want_change_masks: bool,
-) -> Result<SharedAdjacentAnalysis> {
+) -> Result<SharedAdjacentAnalysis<F>> {
     let pairs = (1..normalized.frames().len())
         .map(|later| pair_pixels(normalized, later - 1, later))
         .collect::<Result<Vec<_>>>()?;
@@ -361,6 +404,17 @@ pub fn analyze_adjacent_pairs<F>(
         masks.push(mask);
     }
     Ok(SharedAdjacentAnalysis {
+        frame_ids: normalized
+            .frames()
+            .iter()
+            .map(|frame| frame.id().clone())
+            .collect(),
+        frame_timestamps: normalized
+            .frames()
+            .iter()
+            .map(|frame| frame.timestamp())
+            .collect(),
+        noise_floor: measurement.noise_floor(),
         comparisons: comparisons.into_boxed_slice(),
         change_masks: mask_bytes.map(|_| PairChangeMasks {
             masks: masks.into_boxed_slice(),
