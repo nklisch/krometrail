@@ -16,12 +16,12 @@ use krometrail_core::{
     BatchStepStatus, BrowserConnectRequest, BrowserConnector, BrowserOperationRequest,
     BrowserOperationResult, CancellationSignal, ClickRequest, CoordinateSpace, CssPoint,
     DocumentReadiness, ElementLocator, ElementState, ErrorCode, EvaluationValue, InteractionAnchor,
-    InteractionEvidenceSink, InteractionLocator, InteractionRecord, LaunchBrowser,
-    ListPageContextsRequest, ManagedProfile, Modifiers, MouseButton, NavigationId, ObservationPart,
-    ObservedTime, PageSelection, PortFuture, ReadOnlyEvaluationRequest, SemanticQuery,
-    SemanticQueryOutcome, SemanticTextMatch, SemanticTextMatchMode, SnapshotPageRequest, UrlMatch,
-    WaitCondition, WaitForPageRequest, WaitOutcome, WaitPresence, WaitProbe, WaitRequest,
-    WaitTextMatch,
+    InteractionEvidenceSink, InteractionLocator, InteractionOutcome, InteractionRecord,
+    LaunchBrowser, ListPageContextsRequest, ManagedProfile, Modifiers, MouseButton, NavigationId,
+    ObservationPart, ObservedTime, PageSelection, PortFuture, ReadOnlyEvaluationRequest,
+    SemanticQuery, SemanticQueryOutcome, SemanticTextMatch, SemanticTextMatchMode,
+    SnapshotPageRequest, UrlMatch, WaitCondition, WaitForPageRequest, WaitOutcome, WaitPresence,
+    WaitProbe, WaitRequest, WaitTextMatch,
 };
 use serde_json::{Value, json};
 use support::scripted_cdp::ScriptedCdp;
@@ -1064,6 +1064,84 @@ async fn batch_deadline_after_dispatch_preserves_and_persists_degraded_record() 
         3,
         "input was dispatched exactly once before observation degraded"
     );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn batch_deadline_caps_popup_side_channel_poll_and_preserves_dispatch() {
+    let transport = ScriptedCdp::chrome();
+    let sink = Arc::new(support::RecordingEvidenceFake::default());
+    let session = scripted_session_with_sink(
+        transport.clone(),
+        Arc::clone(&sink) as Arc<dyn InteractionEvidenceSink>,
+    )
+    .await;
+    let target = session.status().await.unwrap().selected_target_id.unwrap();
+    script_coordinate_click(&transport);
+    live_observation_script(&transport);
+    let runtime_evaluations = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Runtime.evaluate")
+        .count();
+    transport.hold_method_after("Runtime.evaluate", runtime_evaluations + 3);
+    let request = BatchRequest::new(
+        PageSelection::Target(target),
+        vec![coordinate_click(target)],
+        std::time::Duration::from_millis(80),
+        BatchOptions::default(),
+    )
+    .unwrap();
+    let operation = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Batch(request),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        }
+    });
+    transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    transport
+        .wait_for_command_count("Runtime.evaluate", runtime_evaluations + 4)
+        .await;
+    transport.push_scoped_event(
+        "Page.windowOpen",
+        Some("session-a"),
+        json!({"url":"http://fixture/popup","windowName":"popup","windowFeatures":[],"userGesture":true}),
+    );
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(std::time::Duration::from_millis(80)).await;
+    tokio::task::yield_now().await;
+
+    let BrowserOperationResult::Batch(result) = operation.await.unwrap().unwrap() else {
+        panic!("batch result")
+    };
+    assert_eq!(result.outcome, BatchOutcome::TimedOut);
+    let BrowserOperationResult::Click(click) = result.steps[0].result.as_ref().unwrap() else {
+        panic!("preserved click result")
+    };
+    assert_eq!(click.record.outcome, InteractionOutcome::Dispatched);
+    assert_eq!(
+        click.record.postcondition.signals.window_open_attempts,
+        Some(1)
+    );
+    assert!(
+        click.record.postcondition.new_pages.is_none()
+            || click
+                .record
+                .postcondition
+                .new_pages
+                .as_ref()
+                .is_some_and(|facts| facts.pages.is_empty())
+    );
+    assert_eq!(sink.records().len(), 1);
     session.stop().await.unwrap();
 }
 

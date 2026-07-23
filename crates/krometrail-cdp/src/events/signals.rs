@@ -93,6 +93,29 @@ impl PageSignalReceiver {
             }
         }
     }
+
+    /// Awaits the next signal of this receiver's kind stamped at or after
+    /// `floor`. Pre-floor signals (late deliveries from earlier activity) are
+    /// skipped. Lag and closure surface as errors so callers disarm.
+    pub(crate) async fn recv_after(
+        &mut self,
+        floor: ObservedTime,
+    ) -> Result<(), PageSignalReceiveError> {
+        loop {
+            match self.receiver.recv().await {
+                Ok(signal) if signal.kind == self.kind && signal.observed_at >= floor => {
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    return Err(PageSignalReceiveError::Lagged);
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(PageSignalReceiveError::Closed);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +179,31 @@ mod tests {
             .unwrap();
         let (floor, ceiling) = window(10, 20);
         assert_eq!(committed.observed_count_between(floor, ceiling), 1);
+    }
+
+    #[tokio::test]
+    async fn recv_after_skips_pre_floor_and_other_kind_signals() {
+        let (sender, receiver) = broadcast::channel(8);
+        let mut window_open = PageSignalReceiver::new(PageSignalKind::WindowOpen, receiver);
+        sender.send(signal(PageSignalKind::WindowOpen, 5)).unwrap();
+        sender.send(signal(PageSignalKind::Lifecycle, 15)).unwrap();
+        sender.send(signal(PageSignalKind::WindowOpen, 25)).unwrap();
+
+        assert_eq!(
+            window_open.recv_after(ObservedTime::from_nanos(10)).await,
+            Ok(())
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_after_reports_closed_receiver() {
+        let (sender, receiver) = broadcast::channel(8);
+        let mut window_open = PageSignalReceiver::new(PageSignalKind::WindowOpen, receiver);
+        drop(sender);
+
+        assert_eq!(
+            window_open.recv_after(ObservedTime::from_nanos(0)).await,
+            Err(PageSignalReceiveError::Closed)
+        );
     }
 }

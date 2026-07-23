@@ -8,10 +8,10 @@ pub(crate) struct OperationExecutionContext {
     pub(crate) parent_batch: Option<krometrail_core::InteractionId>,
 }
 
-/// Ceiling for the post-interaction side-channel reconciliation pull. On
-/// timeout the interaction result keeps `new_pages: None` (reconciliation
-/// unavailable) and is never failed or delayed further.
+/// Ceiling for post-interaction side-channel reconciliation. The page and
+/// download waits share this one batch-deadline-capped window.
 const SIDE_CHANNEL_RECONCILE_WINDOW: Duration = Duration::from_secs(2);
+const SIDE_CHANNEL_RECONCILE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) async fn execute_operation(
     page_control: &mut PageControl,
@@ -420,75 +420,111 @@ fn finalize_expectation_note(result: &mut BrowserOperationResult) {
     }
 }
 
-/// Post-dispatch new-page delta: one bounded reconciliation pull, then the
-/// pages adopted after the pre-action cursor become observed facts on the
-/// record before evidence persistence. Every failure leaves `new_pages: None`
-/// (reconciliation unavailable — never a claim that nothing opened) and the
-/// proven interaction result is never failed or delayed beyond the window.
-async fn attach_new_page_facts(
+/// Post-dispatch side-channel delta assembly. Pull-based target
+/// reconciliation observes the browser inventory directly; when the drained
+/// signals announce a window-open or download attempt, the pull repeats on a
+/// short interval until the corresponding delta materializes or the bounded
+/// ceiling (batch-deadline capped) elapses. Every failure degrades to absent
+/// facts — never a claim that nothing opened — and the proven interaction
+/// result is never failed by this enrichment phase.
+async fn attach_side_channel_facts(
     result: &mut BrowserOperationResult,
     state: &mut SupervisorState,
     transport: &Arc<dyn CdpTransport>,
     shared: &Arc<SessionShared>,
-    cursor_before: krometrail_core::PageSequence,
+    baselines: crate::control::InteractionDispatchBaselines,
     deadline: Option<tokio::time::Instant>,
 ) {
-    let Some(acting_target) = interaction_record_mut(result).map(|record| record.context.target_id)
-    else {
+    let Some((acting_target, attempts, requests)) = interaction_record_mut(result).map(|record| {
+        (
+            record.context.target_id,
+            record.postcondition.signals.window_open_attempts,
+            record.postcondition.signals.download_requests,
+        )
+    }) else {
         return;
     };
-    let infos = tokio::time::timeout_at(
-        crate::control::bounded_deadline(deadline, SIDE_CHANNEL_RECONCILE_WINDOW),
-        fetch_target_infos(transport),
-    )
-    .await;
-    let Ok(Ok(infos)) = infos else {
-        return;
-    };
-    if apply_target_reconciliation(state, transport, shared, infos)
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let Ok(inventory) = state.page_contexts() else {
-        return;
-    };
-    let mut pages = inventory
-        .pages
-        .into_iter()
-        .filter(|page| page.sequence > cursor_before)
-        .map(|page| krometrail_core::NewPageFact {
-            target_id: page.page.target.target.id(),
-            sequence: page.sequence,
-            opener_matched: page.opener_target_id == Some(acting_target),
-        })
-        .collect::<Vec<_>>();
-    pages.sort_by_key(|fact| fact.sequence);
-    if let Some(record) = interaction_record_mut(result) {
-        record.postcondition.attach_new_pages(
-            krometrail_core::NewPagePostcondition::from_observed(cursor_before, pages),
-        );
-    }
-}
 
-/// Post-dispatch download delta: downloads whose begin was recorded after the
-/// pre-action cursor become observed facts on the record before evidence
-/// persistence. Reads only the already-active authority — no browser
-/// round-trip — so this never delays the interaction.
-fn attach_download_facts(
-    result: &mut BrowserOperationResult,
-    shared: &Arc<SessionShared>,
-    cursor_before: krometrail_core::DownloadSequence,
-) {
-    let Some(control) = shared.downloads.as_ref() else {
-        return;
-    };
-    let facts = control.begun_after(cursor_before);
-    if let Some(record) = interaction_record_mut(result) {
-        record.postcondition.attach_downloads(
-            krometrail_core::DownloadPostcondition::from_observed(cursor_before, facts),
-        );
+    let ceiling = crate::control::bounded_deadline(deadline, SIDE_CHANNEL_RECONCILE_WINDOW);
+    let mut page_delta = None;
+    let mut download_delta = baselines.download_cursor_before.and_then(|cursor| {
+        shared
+            .downloads
+            .as_ref()
+            .map(|control| control.begun_after(cursor))
+    });
+    let mut first_iteration = baselines.page_cursor_before.is_some();
+
+    loop {
+        let page_pending =
+            attempts.unwrap_or(0) > 0 && page_delta.as_ref().is_some_and(Vec::is_empty);
+        if let (Some(cursor_before), true) = (
+            baselines.page_cursor_before,
+            first_iteration || page_pending,
+        ) {
+            first_iteration = false;
+            let infos = tokio::time::timeout_at(ceiling, fetch_target_infos(transport)).await;
+            let Ok(Ok(infos)) = infos else {
+                break;
+            };
+            if apply_target_reconciliation(state, transport, shared, infos)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            let Ok(inventory) = state.page_contexts() else {
+                break;
+            };
+            let mut pages = inventory
+                .pages
+                .into_iter()
+                .filter(|page| page.sequence > cursor_before)
+                .map(|page| krometrail_core::NewPageFact {
+                    target_id: page.page.target.target.id(),
+                    sequence: page.sequence,
+                    opener_matched: page.opener_target_id == Some(acting_target),
+                })
+                .collect::<Vec<_>>();
+            pages.sort_by_key(|fact| fact.sequence);
+            page_delta = Some(pages);
+        } else {
+            first_iteration = false;
+        }
+
+        if let (Some(cursor), Some(control)) =
+            (baselines.download_cursor_before, shared.downloads.as_ref())
+        {
+            download_delta = Some(control.begun_after(cursor));
+        }
+
+        let page_pending =
+            attempts.unwrap_or(0) > 0 && page_delta.as_ref().is_some_and(Vec::is_empty);
+        let download_pending =
+            requests.unwrap_or(0) > 0 && download_delta.as_ref().is_some_and(Vec::is_empty);
+        if !(page_pending || download_pending) || tokio::time::Instant::now() >= ceiling {
+            break;
+        }
+        tokio::time::sleep(
+            SIDE_CHANNEL_RECONCILE_POLL_INTERVAL
+                .min(ceiling.saturating_duration_since(tokio::time::Instant::now())),
+        )
+        .await;
+    }
+
+    if let (Some(cursor_before), Some(pages)) = (baselines.page_cursor_before, page_delta) {
+        if let Some(record) = interaction_record_mut(result) {
+            record.postcondition.attach_new_pages(
+                krometrail_core::NewPagePostcondition::from_observed(cursor_before, pages),
+            );
+        }
+    }
+    if let (Some(cursor_before), Some(facts)) = (baselines.download_cursor_before, download_delta) {
+        if let Some(record) = interaction_record_mut(result) {
+            record.postcondition.attach_downloads(
+                krometrail_core::DownloadPostcondition::from_observed(cursor_before, facts),
+            );
+        }
     }
 }
 
@@ -558,20 +594,15 @@ async fn execute_non_local_operation(
                 &dispatch_baselines,
             )
             .await?;
-        if let Some(cursor_before) = baselines.page_cursor_before {
-            attach_new_page_facts(
-                &mut result,
-                state,
-                &transport,
-                shared,
-                cursor_before,
-                context.deadline,
-            )
-            .await;
-        }
-        if let Some(cursor_before) = baselines.download_cursor_before {
-            attach_download_facts(&mut result, shared, cursor_before);
-        }
+        attach_side_channel_facts(
+            &mut result,
+            state,
+            &transport,
+            shared,
+            baselines,
+            context.deadline,
+        )
+        .await;
         finalize_expectation_note(&mut result);
         if let Some(visibility) = observed_visibility {
             commit_observed_visibility(

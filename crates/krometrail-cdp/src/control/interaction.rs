@@ -27,6 +27,7 @@ use crate::{
 
 const NAVIGATION_AWARE_WINDOW: std::time::Duration = std::time::Duration::from_millis(750);
 const INTERACTION_PHASE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+const POPUP_STALL_COMPLETION_GRACE: std::time::Duration = std::time::Duration::from_millis(750);
 /// Ceiling for the silent post-action state probe. It runs concurrently with
 /// the compositor rendezvous and live observation, so this bounds the
 /// concurrent read without adding serial latency; a stalled renderer degrades
@@ -220,6 +221,13 @@ impl PageControl {
         let mut window_open_signals = browser_events
             .page_signal(&event_binding, PageSignalKind::WindowOpen)
             .ok();
+        let mut popup_stall_watch = (plan.kind != BrowserOperationKind::HandleDialog)
+            .then(|| {
+                browser_events
+                    .page_signal(&event_binding, PageSignalKind::WindowOpen)
+                    .ok()
+            })
+            .flatten();
         let mut download_request_signals = browser_events
             .page_signal(&event_binding, PageSignalKind::DownloadRequested)
             .ok();
@@ -284,35 +292,76 @@ impl PageControl {
                 generation,
                 deadline,
             );
-            let completion_result =
+            let completion_deadline = bounded_deadline(deadline, INTERACTION_PHASE_WINDOW);
+            let (completion_result, popup_stall_degraded) =
                 if plan.kind == BrowserOperationKind::HandleDialog && deadline.is_none() {
-                    Ok(completion.await)
+                    (Ok(completion.await), false)
+                } else if let Some(mut popup_stall_watch) = popup_stall_watch.take() {
+                    let mut completion = Box::pin(completion);
+                    let popup_wait = async {
+                        match cancel
+                            .race(
+                                generation,
+                                bound.target_id,
+                                popup_stall_watch.recv_after(signal_floor),
+                            )
+                            .await
+                        {
+                            Ok(Ok(())) => {
+                                tokio::time::sleep(POPUP_STALL_COMPLETION_GRACE).await;
+                                true
+                            }
+                            Ok(Err(_)) | Err(_) => false,
+                        }
+                    };
+                    let raced = tokio::time::timeout_at(completion_deadline, async {
+                        tokio::select! {
+                            biased;
+                            result = &mut completion => Ok::<_, bool>(result),
+                            grace = popup_wait => Err::<_, _>(grace),
+                        }
+                    })
+                    .await;
+                    match raced {
+                        Ok(Ok(result)) => (Ok(result), false),
+                        Ok(Err(true)) => (Ok(Ok(false)), true),
+                        Ok(Err(false)) => (
+                            tokio::time::timeout_at(completion_deadline, completion.as_mut()).await,
+                            false,
+                        ),
+                        Err(error) => (Err(error), false),
+                    }
                 } else {
-                    tokio::time::timeout_at(
-                        bounded_deadline(deadline, INTERACTION_PHASE_WINDOW),
-                        completion,
+                    (
+                        tokio::time::timeout_at(completion_deadline, completion).await,
+                        false,
                     )
-                    .await
                 };
-            observation_blocked = match completion_result {
-                Ok(result) => match result {
-                    Ok(blocked) => blocked,
-                    Err(_) => {
-                        completion_degraded = Some(operation_error(
-                            ErrorCode::PageObservationFailed,
-                            bound.target_id,
-                            "interaction was dispatched but completion evidence is unavailable",
-                        ));
+            observation_blocked = if popup_stall_degraded {
+                completion_degraded = Some(popup_stall_completion_error(bound.target_id));
+                false
+            } else {
+                match completion_result {
+                    Ok(result) => match result {
+                        Ok(blocked) => blocked,
+                        Err(_) => {
+                            completion_degraded = Some(operation_error(
+                                ErrorCode::PageObservationFailed,
+                                bound.target_id,
+                                "interaction was dispatched but completion evidence is unavailable",
+                            ));
+                            false
+                        }
+                    },
+                    Err(_)
+                        if deadline
+                            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline) =>
+                    {
+                        completion_degraded = Some(post_dispatch_budget_error(bound.target_id));
                         false
                     }
-                },
-                Err(_)
-                    if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) =>
-                {
-                    completion_degraded = Some(post_dispatch_budget_error(bound.target_id));
-                    false
+                    Err(_) => true,
                 }
-                Err(_) => true,
             };
         }
 
@@ -1009,6 +1058,20 @@ fn post_dispatch_budget_error(target_id: TargetId) -> krometrail_core::Krometrai
         ErrorCode::PageObservationFailed,
         target_id,
         "post-dispatch observation budget exhausted; observation is unavailable",
+    )
+}
+
+fn popup_stall_completion_error(target_id: TargetId) -> krometrail_core::KrometrailError {
+    operation_error(
+        ErrorCode::PageObservationFailed,
+        target_id,
+        "a window-open attempt left the renderer unresponsive; completion evidence is unavailable",
+    )
+    .with_recovery(
+        NonEmptyText::new(
+            "chain wait_for_page from the postcondition's new_pages.cursor_before to observe the opened page, then retry observation",
+        )
+        .expect("popup-stall recovery is non-empty"),
     )
 }
 

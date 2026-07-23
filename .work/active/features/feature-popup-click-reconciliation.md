@@ -1,7 +1,7 @@
 ---
 id: feature-popup-click-reconciliation
 kind: feature
-stage: implementing
+stage: review
 tags: [browser, side-channel]
 parent: null
 depends_on: []
@@ -458,3 +458,28 @@ the test log for future bound tuning.
   integrity requires completing the input command sequence, so the popup
   worst case keeps a ~3s component that cannot be shortened without
   redesigning gesture dispatch. Documented here as the accepted floor.
+
+## Implementation notes
+
+- Execution capability: inline implementation, with the feature body used as
+  the authoritative design and the current sibling-feature code treated as
+  the source of truth for symbol locations.
+- Units 1–3 are complete. `recv_after` now enforces the observed-time fence;
+  interaction completion has an independent 750ms popup-stall watcher; and
+  page/download side-channel enrichment is one shared, 50ms-polled loop under
+  the existing two-second bounded deadline. The dispatch acknowledgement
+  floor, wire shape, error codes, and cursor semantics remain unchanged.
+- Unit 4 is complete with paused-clock `ScriptedCdp` coverage for late popup
+  adoption, popup non-materialization, popup-grace completion, popup-free
+  completion, download delivery between polls, batch deadline capping, and
+  existing reconciliation fault behavior. The opt-in real-Chrome
+  qualification now logs same-click popup attach latency and asserts the
+  popup fact on the click result.
+- Unit 5 verification passed the full workspace gates. No compatibility shim,
+  migration path, configuration knob, or unrelated `.work` item was added.
+- Deviations: the current real-Chrome qualification already contained the
+  same-click popup assertion described by the design, so the implementation
+  retained that assertion and added the requested latency diagnostic. Batch
+  deadline behavior is covered by a dedicated deterministic test in the
+  existing batch suite.
+- Adjacent issues parked: none.

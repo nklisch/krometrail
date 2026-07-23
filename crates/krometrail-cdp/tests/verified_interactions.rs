@@ -1306,6 +1306,151 @@ async fn timed_out_gesture_acknowledgement_is_treated_as_dispatched() {
     session.stop().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn popup_signal_caps_a_held_completion_settle_at_the_grace_window() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"BUTTON","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let runtime_evaluations = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Runtime.evaluate")
+        .count();
+    // The hit-test and pre-dispatch URL read complete; the next evaluation is
+    // the completion settle and remains pending until the popup grace wins.
+    transport.hold_method_after("Runtime.evaluate", runtime_evaluations + 2);
+
+    let operation = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(coordinate_click(target)),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        }
+    });
+    transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    transport
+        .wait_for_command_count("Runtime.evaluate", runtime_evaluations + 3)
+        .await;
+    transport.push_scoped_event(
+        "Page.windowOpen",
+        Some("session-a"),
+        json!({"url":"http://fixture/popup","windowName":"popup","windowFeatures":[],"userGesture":true}),
+    );
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(std::time::Duration::from_millis(750)).await;
+    tokio::task::yield_now().await;
+    // Releasing the scripted settle after the grace must not resurrect healthy
+    // completion: the completion future was safely canceled by the race.
+    transport.release_method("Runtime.evaluate");
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+
+    let result = operation
+        .await
+        .unwrap()
+        .expect("popup grace preserves a dispatched interaction");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(result.record.outcome, InteractionOutcome::Dispatched);
+    assert_eq!(
+        result.record.postcondition.signals.window_open_attempts,
+        Some(1)
+    );
+    macro_rules! assert_popup_observation {
+        ($observation:expr) => {
+            let ObservationPart::Unavailable(error) = $observation else {
+                panic!("popup-stalled observation must be unavailable")
+            };
+            assert_eq!(error.code, ErrorCode::PageObservationFailed);
+            assert!(
+                error.message.as_str().contains("window-open attempt"),
+                "unexpected popup-grace error: {error:?}"
+            );
+            assert!(
+                error
+                    .recovery
+                    .as_ref()
+                    .is_some_and(|recovery| recovery.as_str().contains("wait_for_page"))
+            );
+        };
+    }
+    assert_popup_observation!(&result.observation.page);
+    assert_popup_observation!(&result.observation.snapshot);
+    assert_popup_observation!(&result.observation.screenshot);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_completion_without_popup_keeps_the_existing_phase_window() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"BUTTON","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let runtime_evaluations = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Runtime.evaluate")
+        .count();
+    transport.hold_method_after("Runtime.evaluate", runtime_evaluations + 2);
+
+    let operation = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(coordinate_click(target)),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        }
+    });
+    transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    tokio::time::advance(std::time::Duration::from_millis(750)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        !operation.is_finished(),
+        "popup-free settle keeps its phase window"
+    );
+
+    tokio::time::advance(std::time::Duration::from_secs(10)).await;
+    tokio::task::yield_now().await;
+    let result = operation
+        .await
+        .unwrap()
+        .expect("popup-free timeout preserves the dispatched interaction");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(result.record.outcome, InteractionOutcome::Dispatched);
+    let ObservationPart::Unavailable(error) = result.observation.page else {
+        panic!("held completion must degrade observation")
+    };
+    assert_eq!(error.code, ErrorCode::PageObservationFailed);
+    assert!(!error.message.as_str().contains("window-open attempt"));
+    session.stop().await.unwrap();
+}
+
 /// A side-channel event delivered while the interaction is still resolving its
 /// target belongs to the preflight interval, not to the dispatched action.
 #[tokio::test]
@@ -3772,6 +3917,11 @@ async fn interaction_reports_the_new_page_delta_with_opener_match() {
     let session = scripted_session_with_evidence(transport.clone(), evidence.clone()).await;
     let target = session.status().await.unwrap().pages[0].target.target.id();
     let cursor_before = page_cursor(&session).await;
+    let target_pulls_before = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Target.getTargets")
+        .count();
     // The post-dispatch reconciliation pull observes a page the browser
     // adopted during the click, opened by the acting target.
     transport.push_response(
@@ -3804,6 +3954,16 @@ async fn interaction_reports_the_new_page_delta_with_opener_match() {
     assert!(new_pages.pages[0].opener_matched);
     assert!(new_pages.pages[0].sequence > cursor_before);
     assert_eq!(new_pages.omitted, 0);
+    assert_eq!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Target.getTargets")
+            .count()
+            - target_pulls_before,
+        1,
+        "a click without an attempt signal performs only the first reconciliation pull"
+    );
     // The retained record and the live response carry identical facts.
     let persisted = evidence.records();
     let persisted = persisted.last().expect("persisted interaction record");
@@ -3811,6 +3971,284 @@ async fn interaction_reports_the_new_page_delta_with_opener_match() {
         persisted.postcondition.new_pages,
         result.record.postcondition.new_pages
     );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn window_open_reconciliation_polls_until_a_late_popup_inventory() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let evidence = Arc::new(support::RecordingEvidenceFake::default());
+    let session = scripted_session_with_evidence(transport.clone(), evidence.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let cursor_before = page_cursor(&session).await;
+    let target_pulls_before = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Target.getTargets")
+        .count();
+    let runtime_evaluations = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Runtime.evaluate")
+        .count();
+    transport.hold_method_after("Runtime.evaluate", runtime_evaluations + 2);
+    transport.push_response(
+        "Target.getTargets",
+        json!({"targetInfos":[
+            {"targetId":"target-a","type":"page","url":"http://fixture/","title":"fixture"}
+        ]}),
+    );
+    transport.push_response(
+        "Target.getTargets",
+        json!({"targetInfos":[
+            {"targetId":"target-a","type":"page","url":"http://fixture/","title":"fixture"},
+            {"targetId":"target-b","type":"page","url":"http://popup/","title":"popup","openerId":"target-a"}
+        ]}),
+    );
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+
+    let operation = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(coordinate_click(target)),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        }
+    });
+    transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    transport
+        .wait_for_command_count("Runtime.evaluate", runtime_evaluations + 3)
+        .await;
+    transport.push_scoped_event(
+        "Page.windowOpen",
+        Some("session-a"),
+        json!({"url":"http://popup/","windowName":"popup","windowFeatures":[],"userGesture":true}),
+    );
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    transport.release_method("Runtime.evaluate");
+    transport
+        .wait_for_command_count("Target.getTargets", target_pulls_before + 1)
+        .await;
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(std::time::Duration::from_millis(100)).await;
+    tokio::task::yield_now().await;
+    assert!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Target.getTargets")
+            .count()
+            >= target_pulls_before + 2,
+        "the second inventory pull must occur within the bounded poll"
+    );
+
+    let result = operation
+        .await
+        .unwrap()
+        .expect("late popup reconciliation preserves the click");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    let new_pages = result
+        .record
+        .postcondition
+        .new_pages
+        .as_ref()
+        .expect("late inventory is attached to the click");
+    assert_eq!(new_pages.cursor_before, cursor_before);
+    assert_eq!(new_pages.pages.len(), 1);
+    assert!(new_pages.pages[0].opener_matched);
+    assert!(new_pages.pages[0].sequence > cursor_before);
+    assert_eq!(
+        evidence.records().last().unwrap().postcondition.new_pages,
+        result.record.postcondition.new_pages
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn popup_attempt_that_never_materializes_finishes_with_honest_empty_facts() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let session = scripted_session(transport.clone()).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let target_pulls_before = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Target.getTargets")
+        .count();
+    let runtime_evaluations = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Runtime.evaluate")
+        .count();
+    transport.hold_method_after("Runtime.evaluate", runtime_evaluations + 2);
+    let operation = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(coordinate_click(target)),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        }
+    });
+    transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    transport
+        .wait_for_command_count("Runtime.evaluate", runtime_evaluations + 3)
+        .await;
+    transport.push_scoped_event(
+        "Page.windowOpen",
+        Some("session-a"),
+        json!({"url":"http://fixture/blocked","windowName":"blocked","windowFeatures":[],"userGesture":true}),
+    );
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    transport.release_method("Runtime.evaluate");
+    transport
+        .wait_for_command_count("Target.getTargets", target_pulls_before + 1)
+        .await;
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(std::time::Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+
+    let result = operation
+        .await
+        .unwrap()
+        .expect("blocked popup does not fail the click");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(result.record.outcome, InteractionOutcome::Dispatched);
+    assert_eq!(
+        result.record.postcondition.signals.window_open_attempts,
+        Some(1)
+    );
+    let new_pages = result.record.postcondition.new_pages.as_ref().unwrap();
+    assert!(new_pages.pages.is_empty());
+    assert_eq!(new_pages.omitted, 0);
+    assert!(
+        transport
+            .command_calls()
+            .iter()
+            .filter(|call| call.method == "Target.getTargets")
+            .count()
+            - target_pulls_before
+            >= 2
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn download_begin_between_polls_is_attached_with_the_shared_side_channel_ceiling() {
+    let transport = ScriptedCdp::chrome();
+    startup_script(&transport);
+    transport.push_response("Page.getLayoutMetrics", layout());
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{"tagName":"A","x":0,"y":0,"width":20,"height":20}}}),
+    );
+    observation_script(&transport);
+    let evidence = Arc::new(support::RecordingEvidenceFake::default());
+    let session = managed_scripted_session(transport.clone(), evidence).await;
+    let target = session.status().await.unwrap().pages[0].target.target.id();
+    let target_pulls_before = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Target.getTargets")
+        .count();
+    let runtime_evaluations = transport
+        .command_calls()
+        .iter()
+        .filter(|call| call.method == "Runtime.evaluate")
+        .count();
+    transport.hold_method_after("Runtime.evaluate", runtime_evaluations + 2);
+
+    let operation = tokio::spawn({
+        let session = Arc::clone(&session);
+        async move {
+            session
+                .execute(
+                    BrowserOperationRequest::Click(coordinate_click(target)),
+                    krometrail_core::BrowserOperationContext::default(),
+                )
+                .await
+        }
+    });
+    transport
+        .wait_for_command_count("Input.dispatchMouseEvent", 3)
+        .await;
+    transport
+        .wait_for_command_count("Runtime.evaluate", runtime_evaluations + 3)
+        .await;
+    transport.push_scoped_event(
+        "Page.frameRequestedNavigation",
+        Some("session-a"),
+        json!({"frameId":"main","url":"http://fixture/file.txt","reason":"anchorClick","disposition":"download"}),
+    );
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    transport.release_method("Runtime.evaluate");
+    transport
+        .wait_for_command_count("Target.getTargets", target_pulls_before + 1)
+        .await;
+    transport.push_event(
+        "Browser.downloadWillBegin",
+        json!({"frameId":"main","guid":"download-1","url":"http://fixture/file.txt","suggestedFilename":"file.txt","mimeType":"text/plain"}),
+    );
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(std::time::Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
+
+    let result = operation
+        .await
+        .unwrap()
+        .expect("download side-channel enrichment preserves the click");
+    let BrowserOperationResult::Click(result) = result else {
+        panic!("click result")
+    };
+    assert_eq!(
+        result.record.postcondition.signals.download_requests,
+        Some(1)
+    );
+    let downloads = result
+        .record
+        .postcondition
+        .downloads
+        .as_ref()
+        .expect("managed session attaches download facts");
+    assert_eq!(downloads.downloads.len(), 1);
     session.stop().await.unwrap();
 }
 
@@ -4124,6 +4562,7 @@ async fn opt_in_real_chrome_qualifies_download_and_popup_side_channel_facts() {
     // (b) The window.open click reports the attempt signal and the adopted
     // popup with an opener match — through the postcondition delta or, under
     // adoption latency, through the cursor it anchors.
+    let popup_click_started_at = Instant::now();
     let result = session
         .execute(
             BrowserOperationRequest::Click(selector_click(target, "#open-button")),
@@ -4134,6 +4573,17 @@ async fn opt_in_real_chrome_qualifies_download_and_popup_side_channel_facts() {
     let BrowserOperationResult::Click(click) = result else {
         panic!("click result")
     };
+    let popup_click_latency = popup_click_started_at.elapsed();
+    eprintln!(
+        "real Chrome popup postcondition latency: {:?}, new_page_count={}",
+        popup_click_latency,
+        click
+            .record
+            .postcondition
+            .new_pages
+            .as_ref()
+            .map_or(0, |facts| facts.pages.len())
+    );
     let postcondition = &click.record.postcondition;
     assert!(
         postcondition.signals.window_open_attempts.unwrap_or(0) >= 1,
