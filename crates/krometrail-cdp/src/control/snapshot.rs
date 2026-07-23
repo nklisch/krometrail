@@ -9,7 +9,7 @@ use krometrail_core::{
     SemanticQuery, SemanticQueryOutcome, SnapshotGeneration, SnapshotNode, SnapshotNodeId,
     SnapshotPageAnchor, SnapshotPageRequest, TargetId, normalize_semantic_text,
 };
-use serde::Deserialize;
+use serde::{Deserialize, de::IgnoredAny};
 use serde_json::{Value, json};
 
 use super::{BoundTarget, PageControl, malformed, operation_error, transport_error};
@@ -799,24 +799,20 @@ impl SnapshotRegistry {
         let mut match_count = 0_u32;
         for node in &snapshot.nodes {
             let metadata = active.semantic.get(&node.id).unwrap_or(&default_metadata);
-            if evaluator.matches(
+            let (matches, relaxed_matches) = evaluator.matches_with_relaxed(
                 query,
                 &prepared,
                 node,
                 metadata,
-                &mut primary_container_memo,
-            ) {
+                relaxed.as_ref().zip(prepared_relaxed.as_ref()),
+                &mut SemanticQueryMemos {
+                    primary: &mut primary_container_memo,
+                    relaxed: &mut relaxed_container_memo,
+                },
+            );
+            if matches {
                 match_count = match_count.saturating_add(1);
-            } else if let (Some(relaxed), Some(prepared_relaxed)) = (&relaxed, &prepared_relaxed)
-                && relaxed_count < limit
-                && evaluator.matches(
-                    relaxed,
-                    prepared_relaxed,
-                    node,
-                    metadata,
-                    &mut relaxed_container_memo,
-                )
-            {
+            } else if relaxed_matches && relaxed_count < limit {
                 relaxed_count += 1;
             }
         }
@@ -1054,6 +1050,11 @@ struct SemanticQueryEvaluator<'a> {
     scratch: String,
 }
 
+struct SemanticQueryMemos<'a> {
+    primary: &'a mut HashMap<SnapshotNodeId, bool>,
+    relaxed: &'a mut HashMap<SnapshotNodeId, bool>,
+}
+
 impl<'a> SemanticQueryEvaluator<'a> {
     fn new(
         parents: &'a HashMap<SnapshotNodeId, Option<SnapshotNodeId>>,
@@ -1138,6 +1139,161 @@ impl<'a> SemanticQueryEvaluator<'a> {
                 .is_some_and(|candidate| candidate == value.as_str()),
         }
     }
+
+    /// Evaluate the primary query and its relaxed form from one candidate preparation.
+    ///
+    /// The relaxed result is deliberately returned even when the primary result is true; the
+    /// caller preserves the old diagnostic rule and counts it only after a primary miss. Text
+    /// candidates are prepared once, while each matcher still receives its own exact/contains
+    /// verdict and container memo.
+    fn matches_with_relaxed(
+        &mut self,
+        query: &SemanticQuery,
+        prepared: &PreparedSemanticQuery,
+        node: &SnapshotNode,
+        metadata: &SemanticNodeMetadata,
+        relaxed: Option<(&SemanticQuery, &PreparedSemanticQuery)>,
+        memos: &mut SemanticQueryMemos<'_>,
+    ) -> (bool, bool) {
+        let Some((relaxed_query, prepared_relaxed)) = relaxed else {
+            return (
+                self.matches(query, prepared, node, metadata, memos.primary),
+                false,
+            );
+        };
+
+        match (query, relaxed_query) {
+            (
+                SemanticQuery::Role {
+                    role,
+                    name,
+                    container_text,
+                },
+                SemanticQuery::Role {
+                    name: relaxed_name,
+                    container_text: relaxed_container_text,
+                    ..
+                },
+            ) => {
+                if node.role != role.as_str() {
+                    return (false, false);
+                }
+                let candidate = node
+                    .name
+                    .as_deref()
+                    .map(|value| precomputed_candidate(value, &metadata.normalized_name));
+                let primary_name = prepared_text_candidate_matches(
+                    name.as_ref(),
+                    prepared.name.as_ref(),
+                    candidate.as_deref(),
+                    &mut self.scratch,
+                );
+                let relaxed_name_matches = prepared_text_candidate_matches(
+                    relaxed_name.as_ref(),
+                    prepared_relaxed.name.as_ref(),
+                    candidate.as_deref(),
+                    &mut self.scratch,
+                );
+                let primary = primary_name
+                    && self.container_matches(
+                        container_text.as_ref(),
+                        prepared.container_text.as_ref(),
+                        node.id,
+                        memos.primary,
+                    );
+                let relaxed = relaxed_name_matches
+                    && self.container_matches(
+                        relaxed_container_text.as_ref(),
+                        prepared_relaxed.container_text.as_ref(),
+                        node.id,
+                        memos.relaxed,
+                    );
+                (primary, relaxed)
+            }
+            (SemanticQuery::Label { .. }, SemanticQuery::Label { .. }) => {
+                let mut primary = false;
+                let mut relaxed = false;
+                for (index, label) in metadata.labels.iter().enumerate() {
+                    let candidate = metadata
+                        .normalized_labels
+                        .get(index)
+                        .filter(|candidate| !candidate.is_empty())
+                        .map_or_else(
+                            || precomputed_candidate(label, ""),
+                            |candidate| std::borrow::Cow::Borrowed(candidate.as_str()),
+                        );
+                    if !primary {
+                        primary = prepared.label.as_ref().is_some_and(|needle| {
+                            needle.matches_prenormalized(&candidate, &mut self.scratch)
+                        });
+                    }
+                    if !relaxed {
+                        relaxed = prepared_relaxed.label.as_ref().is_some_and(|needle| {
+                            needle.matches_prenormalized(&candidate, &mut self.scratch)
+                        });
+                    }
+                    if primary && relaxed {
+                        break;
+                    }
+                }
+                (primary, relaxed)
+            }
+            (SemanticQuery::Text { .. }, SemanticQuery::Text { .. }) => {
+                let candidate =
+                    precomputed_candidate(&metadata.rendered_text, &metadata.normalized_match_text);
+                let primary = prepared.text.as_ref().is_some_and(|needle| {
+                    needle.matches_prenormalized(&candidate, &mut self.scratch)
+                });
+                let relaxed = prepared_relaxed.text.as_ref().is_some_and(|needle| {
+                    needle.matches_prenormalized(&candidate, &mut self.scratch)
+                });
+                (primary, relaxed)
+            }
+            (SemanticQuery::TestId { .. }, SemanticQuery::TestId { .. }) => (
+                self.matches(query, prepared, node, metadata, memos.primary),
+                false,
+            ),
+            _ => (
+                self.matches(query, prepared, node, metadata, memos.primary),
+                false,
+            ),
+        }
+    }
+
+    fn container_matches(
+        &mut self,
+        query_match: Option<&krometrail_core::SemanticTextMatch>,
+        needle: Option<&NormalizedTextNeedle>,
+        node: SnapshotNodeId,
+        memo: &mut HashMap<SnapshotNodeId, bool>,
+    ) -> bool {
+        query_match.is_none_or(|_| {
+            needle.is_some_and(|needle| {
+                nearest_container_text_matches_prenormalized(
+                    node,
+                    needle,
+                    self.parents,
+                    self.semantic,
+                    self.nodes_by_id,
+                    memo,
+                    &mut self.scratch,
+                )
+            })
+        })
+    }
+}
+
+fn prepared_text_candidate_matches(
+    query_match: Option<&krometrail_core::SemanticTextMatch>,
+    needle: Option<&NormalizedTextNeedle>,
+    candidate: Option<&str>,
+    scratch: &mut String,
+) -> bool {
+    query_match.is_none_or(|_| {
+        needle.is_some_and(|needle| {
+            candidate.is_some_and(|candidate| needle.matches_prenormalized(candidate, scratch))
+        })
+    })
 }
 
 fn precomputed_candidate<'a>(raw: &'a str, normalized: &'a str) -> std::borrow::Cow<'a, str> {
@@ -2622,7 +2778,7 @@ fn decode_ax_tree(
 #[derive(Deserialize)]
 struct AxTreeResponse {
     #[serde(default)]
-    nodes: Option<Vec<AxNodeWire>>,
+    nodes: OptionalNodes,
     #[serde(default)]
     result: Option<AxTreeResultWire>,
 }
@@ -2630,17 +2786,35 @@ struct AxTreeResponse {
 #[derive(Deserialize)]
 struct AxTreeResultWire {
     #[serde(default)]
-    nodes: Option<Vec<AxNodeWire>>,
+    nodes: OptionalNodes,
 }
 
-#[derive(Deserialize)]
+#[derive(Default)]
+struct OptionalNodes(Option<Option<Vec<AxNodeWire>>>);
+
+impl<'de> Deserialize<'de> for OptionalNodes {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Ok(Self(Some(
+            Option::<Vec<TolerantAxNode>>::deserialize(deserializer)?.map(|nodes| {
+                nodes
+                    .into_iter()
+                    .filter_map(|node| node.0)
+                    .collect::<Vec<AxNodeWire>>()
+            }),
+        )))
+    }
+}
+
+#[derive(Deserialize, Default)]
 struct AxNodeWire {
     #[serde(rename = "nodeId", default)]
-    node_id: String,
+    node_id: TolerantString,
     #[serde(rename = "frameId", default)]
-    frame_id: Option<String>,
+    frame_id: TolerantString,
     #[serde(default)]
-    ignored: bool,
+    ignored: TolerantBool,
     #[serde(default)]
     role: Option<AxValueWire>,
     #[serde(default)]
@@ -2650,31 +2824,444 @@ struct AxNodeWire {
     #[serde(default)]
     description: Option<AxValueWire>,
     #[serde(rename = "backendDOMNodeId", default)]
-    backend_dom_node_id: Option<i64>,
-    #[serde(rename = "childIds", default)]
+    backend_dom_node_id: TolerantI64,
+    #[serde(
+        rename = "childIds",
+        default,
+        deserialize_with = "deserialize_child_ids"
+    )]
     child_ids: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_properties")]
     properties: Vec<AxPropertyWire>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default)]
 struct AxValueWire {
-    #[serde(default)]
-    value: Option<String>,
+    value: Option<Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct AxPropertyWire {
     #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
+    name: TolerantString,
+    #[serde(default, deserialize_with = "deserialize_property_value")]
     value: Option<AxPropertyValueWire>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default)]
 struct AxPropertyValueWire {
-    #[serde(default)]
     value: Option<Value>,
+}
+
+struct TolerantAxNode(Option<AxNodeWire>);
+
+impl<'de> Deserialize<'de> for TolerantAxNode {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = TolerantAxNode;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an accessibility node object or tolerated non-object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                AxNodeWire::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(|node| TolerantAxNode(Some(node)))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(TolerantAxNode(None))
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(TolerantAxNode(None))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(TolerantAxNode(None))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(TolerantAxNode(None))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(TolerantAxNode(None))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(TolerantAxNode(None))
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(TolerantAxNode(None))
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(TolerantAxNode(None))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for AxValueWire {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = AxValueWire;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an AX value object or tolerated non-object")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut value = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key == "value" {
+                        // Preserve the polymorphic CDP value. The semantic decoder below only
+                        // extracts strings, matching the old Value traversal.
+                        value = Some(map.next_value::<Value>()?);
+                    } else {
+                        map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                Ok(AxValueWire { value })
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(AxValueWire::default())
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(AxValueWire::default())
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(AxValueWire::default())
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(AxValueWire::default())
+            }
+
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(AxValueWire::default())
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(AxValueWire::default())
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(AxValueWire::default())
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(AxValueWire::default())
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct TolerantString(Option<String>);
+
+impl<'de> Deserialize<'de> for TolerantString {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = TolerantString;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a tolerated optional string")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(TolerantString(Some(value.to_owned())))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(TolerantString(Some(value)))
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(TolerantString(None))
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(TolerantString(None))
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(TolerantString(None))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(TolerantString(None))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(TolerantString(None))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(TolerantString(None))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(TolerantString(None))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(TolerantString(None))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TolerantBool(bool);
+
+impl<'de> Deserialize<'de> for TolerantBool {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = TolerantBool;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a tolerated optional boolean")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(TolerantBool(value))
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(TolerantBool(false))
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(TolerantBool(false))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(TolerantBool(false))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(TolerantBool(false))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(TolerantBool(false))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(TolerantBool(false))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(TolerantBool(false))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(TolerantBool(false))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TolerantI64(Option<i64>);
+
+impl<'de> Deserialize<'de> for TolerantI64 {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = TolerantI64;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a tolerated optional integer")
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(TolerantI64(Some(value)))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(TolerantI64(i64::try_from(value).ok()))
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(TolerantI64(None))
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(TolerantI64(None))
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(TolerantI64(None))
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(TolerantI64(None))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(TolerantI64(None))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence.next_element::<IgnoredAny>()?.is_some() {}
+                Ok(TolerantI64(None))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(TolerantI64(None))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+fn deserialize_property_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<AxPropertyValueWire>, D::Error> {
+    Ok(Option::<Value>::deserialize(deserializer)?.map(|value| {
+        let Value::Object(mut object) = value else {
+            return AxPropertyValueWire::default();
+        };
+        AxPropertyValueWire {
+            value: object.remove("value"),
+        }
+    }))
+}
+
+fn deserialize_child_ids<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error> {
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("an accessibility child id array")
+        }
+
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut child_ids = Vec::new();
+            while let Some(value) = sequence.next_element::<TolerantString>()? {
+                if let Some(value) = value.0 {
+                    child_ids.push(value);
+                }
+            }
+            Ok(child_ids)
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+            Ok(Vec::new())
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+    deserializer.deserialize_any(Visitor)
+}
+
+fn deserialize_properties<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<AxPropertyWire>, D::Error> {
+    Ok(Option::<Value>::deserialize(deserializer)?
+        .and_then(|value| value.as_array().cloned())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
 }
 
 fn decode_ax_tree_with_ids(
@@ -2689,18 +3276,21 @@ fn decode_ax_tree_with_ids(
         .map_err(|_| malformed(target_id, "accessibility tree response is malformed"))?;
     let raw_nodes = response
         .nodes
-        .or_else(|| response.result.and_then(|result| result.nodes))
+        .0
+        .or_else(|| response.result.and_then(|result| result.nodes.0))
+        .flatten()
         .ok_or_else(|| malformed(target_id, "accessibility tree response is malformed"))?;
     let observed_frame_ids = raw_nodes
         .iter()
-        .filter_map(|node| node.frame_id.as_deref())
+        .filter_map(|node| node.frame_id.0.as_deref())
         .map(str::to_owned)
         .collect::<HashSet<_>>();
-    let mut nodes: Vec<AxNodeWire> = raw_nodes
+    let nodes: Vec<AxNodeWire> = raw_nodes
         .into_iter()
         .filter(|node| {
             expected_frame_id.is_none_or(|expected| {
                 node.frame_id
+                    .0
                     .as_deref()
                     .is_none_or(|actual| actual == expected)
             })
@@ -2717,50 +3307,35 @@ fn decode_ax_tree_with_ids(
     }
     let mut has_node_id = vec![false; nodes.len()];
     let mut by_id = HashMap::with_capacity(nodes.len());
-    for (index, node) in nodes.iter_mut().enumerate() {
-        if !node.node_id.is_empty() {
-            let id = std::mem::take(&mut node.node_id);
-            has_node_id[index] = true;
-            by_id.insert(id, index);
-        }
-    }
-    let mut has_parent = vec![false; nodes.len()];
-    let mut children = Vec::with_capacity(nodes.len());
-    for node in &nodes {
-        let Some(child_ids) = (!node.child_ids.is_empty()).then_some(&node.child_ids) else {
-            children.push(None);
+    let mut referenced_ids = HashSet::new();
+    for (index, node) in nodes.iter().enumerate() {
+        referenced_ids.extend(node.child_ids.iter().cloned());
+        let Some(id) = node.node_id.0.as_deref() else {
             continue;
         };
-        let child_indexes = child_ids
-            .iter()
-            .map(|child| {
-                by_id
-                    .get(child)
-                    .copied()
-                    .ok_or_else(|| malformed(target_id, "accessibility child node is missing"))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        for &child in &child_indexes {
-            has_parent[child] = true;
-        }
-        children.push(Some(child_indexes));
+        has_node_id[index] = true;
+        // Keep the old decoder's last-definition authority for duplicate node ids.
+        by_id.insert(id.to_owned(), index);
     }
-    let roots = nodes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, node)| {
-            has_node_id[index]
-                .then_some(node)
-                .filter(|_| !has_parent[index])
-                .map(|_| index)
-        })
-        .collect::<Vec<_>>();
+    let mut roots = Vec::new();
+    let mut seen_root_ids = HashSet::new();
+    for node in &nodes {
+        let Some(id) = node.node_id.0.as_deref() else {
+            continue;
+        };
+        if !referenced_ids.contains(id)
+            && seen_root_ids.insert(id)
+            && let Some(&index) = by_id.get(id)
+        {
+            roots.push(index);
+        }
+    }
     let mut decoder = Decoder {
         target_id,
         generation,
         wire_nodes: nodes,
+        by_id,
         nodes: Vec::with_capacity(has_node_id.len()),
-        children,
         bindings: HashMap::with_capacity(has_node_id.len()),
         text_bytes: 0,
         omitted: 0,
@@ -2773,7 +3348,7 @@ fn decode_ax_tree_with_ids(
         decoder.visit(root, None, 0)?;
     }
     for (index, &has_id) in has_node_id.iter().enumerate() {
-        if has_id && !decoder.visited[index] {
+        if has_id {
             decoder.visit(index, None, 0)?;
         }
     }
@@ -2787,8 +3362,8 @@ struct Decoder<'a> {
     target_id: TargetId,
     generation: SnapshotGeneration,
     wire_nodes: Vec<AxNodeWire>,
+    by_id: HashMap<String, usize>,
     nodes: Vec<SnapshotNode>,
-    children: Vec<Option<Vec<usize>>>,
     bindings: HashMap<SnapshotNodeId, NodeBinding>,
     text_bytes: usize,
     omitted: u32,
@@ -2800,12 +3375,18 @@ struct Decoder<'a> {
 
 impl<'a> Decoder<'a> {
     fn visit(&mut self, index: usize, parent: Option<SnapshotNodeId>, depth: u16) -> Result<()> {
-        if self.visited[index] {
+        let canonical_index = self
+            .wire_nodes
+            .get(index)
+            .and_then(|node| node.node_id.0.as_deref())
+            .and_then(|id| self.by_id.get(id).copied())
+            .unwrap_or(index);
+        if self.visited[canonical_index] {
             return Ok(());
         }
-        self.visited[index] = true;
-        let node = &mut self.wire_nodes[index];
-        let ignored = node.ignored;
+        self.visited[canonical_index] = true;
+        let node = &mut self.wire_nodes[canonical_index];
+        let ignored = node.ignored.0;
         let role = ax_string(node.role.as_ref())
             .unwrap_or("generic")
             .to_owned();
@@ -2828,7 +3409,7 @@ impl<'a> Decoder<'a> {
             {
                 self.omitted = self.omitted.saturating_add(1);
             } else {
-                let backend = node.backend_dom_node_id;
+                let backend = node.backend_dom_node_id.0;
                 let node_id = if let Some(backend_node_id) = backend {
                     self.seen_backends.insert(backend_node_id);
                     if let Some(id) = self.node_by_backend.get(&backend_node_id) {
@@ -2890,7 +3471,12 @@ impl<'a> Decoder<'a> {
                     .ok_or_else(|| malformed(self.target_id, "snapshot depth exceeds u16"))?;
             }
         }
-        for child in self.children[index].take().into_iter().flatten() {
+        let child_ids = std::mem::take(&mut node.child_ids);
+        for child_id in child_ids {
+            let child =
+                self.by_id.get(&child_id).copied().ok_or_else(|| {
+                    malformed(self.target_id, "accessibility child node is missing")
+                })?;
             self.visit(child, next_parent, next_depth)?;
         }
         Ok(())
@@ -2906,15 +3492,15 @@ fn decode_properties(
     let mut hidden = false;
     let mut signal = false;
     for property in wire_properties {
-        let Some(name) = property.name else {
+        let Some(name) = property.name.0.as_deref() else {
             continue;
         };
         let value = property.value.and_then(|value| value.value);
         let bool_value = value.as_ref().and_then(Value::as_bool);
         disabled |= name == "disabled" && bool_value == Some(true);
         hidden |= name == "hidden" && bool_value == Some(true);
-        signal |= ACTIONABLE_SIGNALS.contains(&name.as_str()) && bool_value == Some(true);
-        if !ACCESSIBLE_PROPERTIES.contains(&name.as_str())
+        signal |= ACTIONABLE_SIGNALS.contains(&name) && bool_value == Some(true);
+        if !ACCESSIBLE_PROPERTIES.contains(&name)
             || properties.len() >= MAX_ACCESSIBLE_PROPERTY_COUNT
         {
             continue;
@@ -2934,7 +3520,7 @@ fn decode_properties(
                 _ => 0,
             };
         properties.push(AccessibleProperty {
-            name,
+            name: name.to_owned(),
             value: accessible,
         });
     }
@@ -2942,10 +3528,19 @@ fn decode_properties(
 }
 
 fn ax_string(value: Option<&AxValueWire>) -> Option<&str> {
-    value.and_then(|value| value.value.as_deref())
+    value
+        .and_then(|value| value.value.as_ref())
+        .and_then(Value::as_str)
 }
 fn ax_owned(value: Option<AxValueWire>) -> Option<String> {
-    value.and_then(|value| value.value.filter(|value| !value.is_empty()))
+    value.and_then(|value| {
+        value.value.and_then(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        })
+    })
 }
 fn stale(target_id: TargetId, message: &'static str) -> krometrail_core::KrometrailError {
     operation_error(ErrorCode::StaleReference, target_id, message)
@@ -2974,6 +3569,31 @@ mod tests {
     const UUID: &str = "123e4567-e89b-12d3-a456-426614174000";
     fn target() -> TargetId {
         TargetId::from_uuid(UUID.parse().unwrap())
+    }
+
+    type NodeSummary = (
+        u32,
+        Option<u32>,
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+    );
+
+    fn node_summary(nodes: &[SnapshotNode]) -> Vec<NodeSummary> {
+        nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.id.get(),
+                    node.parent.map(SnapshotNodeId::get),
+                    node.role.clone(),
+                    node.name.clone(),
+                    node.value.clone(),
+                    node.actionable,
+                )
+            })
+            .collect()
     }
 
     #[derive(Default)]
@@ -3156,6 +3776,101 @@ mod tests {
         SemanticQuery::role("status", name).unwrap()
     }
 
+    fn text_probe_fixture(
+        entries: &[(&str, bool)],
+    ) -> (SnapshotRegistry, BoundTarget, PageSnapshot) {
+        let generation = SnapshotGeneration::new(1).unwrap();
+        let root = SnapshotNodeId::new(1).unwrap();
+        let nodes = std::iter::once(SnapshotNode {
+            id: root,
+            parent: None,
+            depth: 0,
+            role: "document".into(),
+            name: None,
+            value: None,
+            description: None,
+            properties: vec![],
+            actionable: false,
+            reference: None,
+            document_rect: None,
+        })
+        .chain(
+            entries
+                .iter()
+                .enumerate()
+                .map(|(index, (_text, actionable))| {
+                    let id = SnapshotNodeId::new(u32::try_from(index + 2).unwrap()).unwrap();
+                    SnapshotNode {
+                        id,
+                        parent: Some(root),
+                        depth: 1,
+                        role: if *actionable { "button" } else { "status" }.into(),
+                        name: None,
+                        value: None,
+                        description: None,
+                        properties: vec![],
+                        actionable: *actionable,
+                        reference: actionable.then_some(NodeReference {
+                            target_id: target(),
+                            generation,
+                            node_id: id,
+                        }),
+                        document_rect: None,
+                    }
+                }),
+        )
+        .collect::<Vec<_>>();
+        let context = ObservationContext::new(
+            krometrail_core::SessionId::from_uuid(uuid::Uuid::from_u128(13)),
+            target(),
+            1,
+            krometrail_core::SessionTime::ZERO,
+            krometrail_core::SessionTime::ZERO,
+        )
+        .unwrap();
+        let snapshot = PageSnapshot::new(context, generation, nodes, 0).unwrap();
+        let bound = frame_bound();
+        let semantic = entries
+            .iter()
+            .enumerate()
+            .map(|(index, (text, _))| {
+                let rendered_text = (*text).to_owned();
+                (
+                    SnapshotNodeId::new(u32::try_from(index + 2).unwrap()).unwrap(),
+                    SemanticNodeMetadata {
+                        normalized_match_text: normalize_semantic_text(&rendered_text, true),
+                        rendered_text,
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+        let mut registry = SnapshotRegistry::default();
+        registry.install(
+            target(),
+            ActiveSnapshot {
+                generation,
+                attachment_generation: bound.attachment_generation,
+                document: DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                frame: None,
+                bindings: HashMap::new(),
+                node_by_backend: HashMap::new(),
+                semantic,
+                parent_by_node: snapshot
+                    .nodes
+                    .iter()
+                    .map(|node| (node.id, node.parent))
+                    .collect(),
+                dom_semantics_captured: true,
+                next_node_id: u32::try_from(snapshot.nodes.len()).unwrap(),
+            },
+        );
+        (registry, bound, snapshot)
+    }
+
     #[test]
     fn semantic_presence_probe_counts_full_tree_while_query_stays_actionable_only() {
         for (status_names, expected_outcome, expected_count) in [
@@ -3218,6 +3933,53 @@ mod tests {
                 saturated: true,
             })
         );
+    }
+
+    #[test]
+    fn semantic_presence_probe_fuses_primary_and_relaxed_verdicts_across_actionability() {
+        let query = SemanticQuery::Text {
+            text: krometrail_core::SemanticTextMatch::new(
+                "Save",
+                krometrail_core::SemanticTextMatchMode::Exact,
+                false,
+            )
+            .unwrap(),
+        };
+        let cases = [
+            (
+                "mixed actionable and non-actionable primary matches",
+                vec![("Save", true), ("Save", false)],
+                SemanticQueryOutcome::Ambiguous,
+                2,
+                None,
+            ),
+            (
+                "contains-only relaxed candidate",
+                vec![("Save now", false), ("Other", true)],
+                SemanticQueryOutcome::NoMatch,
+                0,
+                Some(RelaxedMatchCandidates {
+                    count: 1,
+                    saturated: false,
+                }),
+            ),
+            (
+                "primary hit suppresses relaxed diagnostics",
+                vec![("Save", true), ("Save now", false)],
+                SemanticQueryOutcome::Unique,
+                1,
+                None,
+            ),
+        ];
+        for (label, entries, outcome, match_count, relaxed) in cases {
+            let (registry, bound, snapshot) = text_probe_fixture(&entries);
+            let probe = registry
+                .probe_presence(&bound, &query, &snapshot)
+                .unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            assert_eq!(probe.outcome, outcome, "{label}");
+            assert_eq!(probe.match_count, match_count, "{label}");
+            assert_eq!(probe.relaxed_match_candidates, relaxed, "{label}");
+        }
     }
 
     #[test]
@@ -3591,6 +4353,112 @@ mod tests {
         assert_eq!(bindings.len(), 1);
         assert_eq!(node_by_backend.len(), 1);
         assert!(node_by_backend.contains_key(&107));
+    }
+
+    #[test]
+    fn ax_decoder_preserves_tolerant_polymorphic_optional_fields() {
+        // These shapes were ignored/defaulted by the old Value traversal. In particular, AX
+        // values are not strings in general: sliders, spinbuttons, and progressbars commonly
+        // report numeric or boolean values. The malformed-shape outcome remains a valid snapshot.
+        let response = json!({"nodes":[
+            {"nodeId":"root","ignored":"not-a-bool","role":{"value":42},"childIds":["control"]},
+            {"nodeId":"control","role":{"value":"slider"},"name":{"value":7},
+             "value":{"value":true},"description":{"value":{}},"backendDOMNodeId":9,
+             "childIds":{},"properties":[{"name":true,"value":7},{"name":"focusable","value":{"value":true}}]}
+        ]});
+        let (nodes, bindings, omitted) =
+            decode_ax_tree(response, target(), SnapshotGeneration::new(1).unwrap()).unwrap();
+
+        assert_eq!(
+            node_summary(&nodes),
+            vec![
+                (1, None, "generic".into(), None, None, false),
+                (2, Some(1), "slider".into(), None, None, true),
+            ]
+        );
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn ax_decoder_duplicate_ids_use_one_last_definition_and_preserve_identity_order() {
+        let response = json!({"nodes":[
+            {"nodeId":"root","role":{"value":"document"},"childIds":["duplicate"]},
+            {"nodeId":"duplicate","role":{"value":"button"},"name":{"value":"first"},"backendDOMNodeId":10},
+            {"nodeId":"duplicate","role":{"value":"link"},"name":{"value":"last"},"backendDOMNodeId":11}
+        ]});
+        let (nodes, bindings, omitted) =
+            decode_ax_tree(response, target(), SnapshotGeneration::new(1).unwrap()).unwrap();
+
+        assert_eq!(
+            node_summary(&nodes),
+            vec![
+                (1, None, "document".into(), None, None, false),
+                (2, Some(1), "link".into(), Some("last".into()), None, true),
+            ]
+        );
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn ax_decoder_cycles_are_visited_once_and_dangling_children_keep_the_old_error_shape() {
+        let cycle = json!({"nodes":[
+            {"nodeId":"root","role":{"value":"document"},"childIds":["control"]},
+            {"nodeId":"control","role":{"value":"button"},"backendDOMNodeId":1,"childIds":["root"]}
+        ]});
+        let (nodes, _, _) = decode_ax_tree(cycle, target(), SnapshotGeneration::new(1).unwrap())
+            .expect("a child cycle was already tolerated by the Value traversal");
+        assert_eq!(nodes.len(), 2);
+
+        let dangling = json!({"nodes":[
+            {"nodeId":"root","role":{"value":"document"},"childIds":["missing"]}
+        ]});
+        let error = decode_ax_tree(dangling, target(), SnapshotGeneration::new(1).unwrap())
+            .expect_err("a visited dangling child is a genuine malformed tree");
+        assert_eq!(error.code, ErrorCode::PageObservationFailed);
+        assert_eq!(
+            error.message.as_str(),
+            "accessibility child node is missing"
+        );
+    }
+
+    #[test]
+    fn ax_decoder_optional_field_shapes_are_table_driven_and_tolerant() {
+        let cases = [
+            ("non-object node entry is ignored", json!({"nodes":[7]}), 0),
+            (
+                "non-string node id is ignored",
+                json!({"nodes":[{"nodeId":7,"role":{"value":"button"},"backendDOMNodeId":1}]}),
+                0,
+            ),
+            (
+                "non-boolean ignored defaults false",
+                json!({"nodes":[{"nodeId":"root","ignored":"yes","role":{"value":"document"}}]}),
+                1,
+            ),
+            (
+                "non-integer backend id is ignored",
+                json!({"nodes":[{"nodeId":"root","role":{"value":"button"},"backendDOMNodeId":1.5}]}),
+                1,
+            ),
+            (
+                "non-array child ids are ignored",
+                json!({"nodes":[{"nodeId":"root","role":{"value":"document"},"childIds":7}]}),
+                1,
+            ),
+            (
+                "non-array properties are ignored",
+                json!({"nodes":[{"nodeId":"root","role":{"value":"document"},"properties":{}}]}),
+                1,
+            ),
+        ];
+
+        for (label, response, expected_nodes) in cases {
+            let result = decode_ax_tree(response, target(), SnapshotGeneration::new(1).unwrap());
+            let (nodes, _, _) = result.unwrap_or_else(|error| panic!("{label}: {error:?}"));
+            assert_eq!(nodes.len(), expected_nodes, "{label}");
+        }
     }
 
     #[tokio::test]
@@ -6349,6 +7217,41 @@ mod tests {
             metadata.normalized_match_text,
             normalize_semantic_text(&metadata.rendered_text, true)
         );
+    }
+
+    #[test]
+    fn dom_precomputed_match_key_table_preserves_utf8_bounds_and_whitespace_semantics() {
+        let cases = [
+            (
+                "multibyte character crossing the retained bound",
+                format!("{}🙂tail", "a".repeat(MAX_SEMANTIC_QUERY_TEXT_BYTES - 1)),
+                MAX_SEMANTIC_QUERY_TEXT_BYTES - 1,
+            ),
+            ("whitespace-only text", " \t\n\u{200b} ".to_owned(), 0),
+        ];
+        for (label, rendered, expected_bytes) in cases {
+            let metadata = decode_dom_snapshot(
+                &dom_snapshot_with_text(rendered),
+                &DocumentFingerprint {
+                    frame_id: "main".into(),
+                    loader_id: "loader".into(),
+                },
+                target(),
+            )
+            .unwrap()
+            .remove(&2)
+            .unwrap_or_else(|| panic!("{label}: text metadata missing"));
+            assert_eq!(
+                metadata.normalized_match_text.len(),
+                expected_bytes,
+                "{label}"
+            );
+            assert_eq!(
+                metadata.normalized_match_text,
+                normalize_semantic_text(&metadata.rendered_text, true),
+                "{label}"
+            );
+        }
     }
 
     fn benchmark_snapshot_context() -> ObservationContext {

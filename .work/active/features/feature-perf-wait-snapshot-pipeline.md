@@ -617,3 +617,24 @@ within measurement noise of the requested twofold reduction and remains about
 0.1 ms above the scaffold's strict ≤34 ms target on this host; probe and
 container matching also remain above their aspirational low-single-digit and
 2–3 ms targets, while both simulated poll paths remain below their miss targets.
+
+## Review fixes
+
+- Fixed AX wire tolerance: `AxValueWire.value` retains arbitrary JSON and only
+  extracts strings, while roles, names, descriptions, ignored flags, backend
+  ids, child ids, properties, and malformed node entries preserve the old
+  decoder's ignored/defaulted behavior and genuine malformed error shape.
+- Canonicalized duplicate-node traversal through the last-definition
+  `nodeId` map, with logical-id visitation and lazy child validation so cycles,
+  dangling children, and SnapshotNodeId assignment match the prior decoder.
+- Fused primary and relaxed probe evaluation into one prepared candidate pass,
+  returning both verdicts while retaining the existing primary-miss counting
+  and diagnostic surfacing rules.
+- Added table-driven boundary parity tests for UTF-8 retained-text bounds,
+  whitespace-only text, mixed actionable/non-actionable and relaxed probe
+  cases, polymorphic AX values, duplicate ids, cycles, dangling children, and
+  malformed optional fields.
+- Re-measured release benchmarks with one benchmark thread:
+  `perf_probe_text_miss_50k` **8.595 ms/op** (previously ~8.8 ms/op);
+  decode **46.341 ms/op**, container contains **4.824 ms/op**, role poll
+  **44.954 ms/op**, and text poll **56.045 ms/op**.
