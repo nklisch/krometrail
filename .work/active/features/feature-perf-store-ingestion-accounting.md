@@ -1,7 +1,7 @@
 ---
 id: feature-perf-store-ingestion-accounting
 kind: feature
-stage: implementing
+stage: review
 tags: [perf]
 parent: null
 depends_on: []
