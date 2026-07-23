@@ -1,9 +1,19 @@
 ---
-id: idea-popup-click-observation-degrades
+id: feature-popup-click-reconciliation
+kind: feature
+stage: drafting
+tags: [browser, side-channel]
+parent: null
+depends_on: []
+release_binding: null
+gate_origin: null
 created: 2026-07-22
 updated: 2026-07-22
-tags: [browser, side-channel, bug]
 ---
+
+# Popup-opening clicks keep observation and new-page facts
+
+## Brief
 
 A click that opens a popup degrades the entire post-action observation and
 misses the new-page postcondition fact. Repro (v1.5.0 shakedown, correlation
@@ -25,3 +35,10 @@ targeted; (b) the primary observation should not spend ~6s failing when a
 popup steals rendering/visibility. `window_open_attempts` + `cursor_before`
 still let a caller recover via `wait_for_page`, but the concise result reads
 as "no popup appeared".
+
+## Simplification opportunity
+
+If reconciliation moves to a bounded post-dispatch wait keyed on observed
+`window_open_attempts > 0`, the current always-run pull pass may simplify to
+one conditional path. No compatibility shims: the postcondition shape stays
+as shipped; only the facts get more complete.
