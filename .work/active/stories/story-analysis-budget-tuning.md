@@ -64,3 +64,28 @@ limits so realistic windows fit, with benchmark evidence.
       generates within wall-time.
 - [ ] Before/after benchmark numbers recorded in this story body.
 - [ ] Full workspace gate green.
+
+## Implementation notes
+
+- Selected limits: `ArtifactWorkLimits::default()` now permits 240 source
+  frames, 1536 MiB decoded bytes, and a 2 GiB combined request; the 512 MiB
+  normalized-byte limit remains because it was not the binding constraint.
+  `MAX_VIDEO_SOURCE_FRAMES` is 480. The 30 s source-duration and output
+  geometry caps are unchanged.
+- On this machine, the existing exhaustive `difference_map` overlap harness
+  (one sequential permit, one repetition) measured 120 frames at 5.010488 s,
+  with a 1,740,096 KiB peak RSS delta, before the change. At 240 frames it
+  measured 5.728628 s and a 1,886,812 KiB peak RSS delta, leaving about
+  9.27 s under the 15 s artifact wall-time limit. The harness exercised the
+  full difference-map workload; peak RSS includes process and harness
+  overhead in addition to the scheduler's decoded-byte budget.
+- The production video service benchmark uses 430 full-rate frames at
+  1224×958 over about 5.2 s, with the bounded 640×502 output request. The
+  pre-change 120-frame run measured 496 ms wall time and 24,368 KiB peak RSS;
+  the post-change 430-frame run measured 2,598 ms and 62,728 KiB peak RSS.
+  This leaves about 27.4 s under the 30 s video wall-time limit, so 480 is
+  retained as the cap with margin for the 430-frame shakedown. The benchmark
+  required exact balanced PTS lookup and an explicit single-threaded
+  ultrafast H.264 policy; its argument identity is now `h264-v2`.
+- Limit-message tests and schemas use the current values directly; no old
+  limit aliases or compatibility paths were retained.

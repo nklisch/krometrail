@@ -636,7 +636,7 @@ mod tests {
             None,
             RecordingBudgetState::Available,
             krometrail_core::RecordingTrimState::Steady,
-            false,
+            None,
             false,
             false,
             0,

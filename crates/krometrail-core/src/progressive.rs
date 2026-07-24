@@ -2292,7 +2292,7 @@ mod tests {
             None,
             RecordingBudgetState::Available,
             crate::RecordingTrimState::Steady,
-            false,
+            None,
             false,
             false,
             0,

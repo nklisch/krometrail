@@ -458,12 +458,12 @@ mod tests {
 
     #[test]
     fn exhaustive_cap_refusal_keeps_plan_numbers_recovery_and_correlation() {
-        let recovery = "narrow the resolved range so at most 120 frames fall inside it, or use uniform_bounded sampling which analyzes a bounded subset of any range";
+        let recovery = "narrow the resolved range so at most 240 frames fall inside it, or use uniform_bounded sampling which analyzes a bounded subset of any range";
         let error = KrometrailError::limit_exceeded(
             ErrorCode::ResourceLimitExceeded,
             "exhaustive analysis source plan",
-            "121 frames and 1936 decoded bytes",
-            "120 frames and 805306368 decoded bytes",
+            "241 frames and 3856 decoded bytes",
+            "240 frames and 1610612736 decoded bytes",
             None::<String>,
         )
         .with_recovery(NonEmptyText::new(recovery).unwrap());
@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(structured["error"]["code"], "resource_limit_exceeded");
         assert_eq!(
             structured["error"]["message"],
-            "exhaustive analysis source plan: 121 frames and 1936 decoded bytes exceeds limit 120 frames and 805306368 decoded bytes"
+            "exhaustive analysis source plan: 241 frames and 3856 decoded bytes exceeds limit 240 frames and 1610612736 decoded bytes"
         );
         assert_eq!(structured["error"]["recovery"], recovery);
         assert_eq!(
@@ -586,7 +586,7 @@ mod tests {
             None,
             krometrail_core::RecordingBudgetState::PausedBudget,
             krometrail_core::RecordingTrimState::Steady,
-            false,
+            None,
             true,
             true,
             0,
@@ -622,8 +622,12 @@ mod tests {
         assert_eq!(concise.response.result["retention"]["live_instances"], 1);
         assert_eq!(concise.response.result["retention"]["trim_state"], "steady");
         assert_eq!(
-            concise.response.result["retention"]["grace_override_active"],
-            false
+            concise.response.result["retention"]["grace_overridden_through"],
+            Value::Null
+        );
+        assert_eq!(
+            concise.response.result["server_version"],
+            env!("CARGO_PKG_VERSION")
         );
         assert!(concise.response.result.get("compatibility").is_none());
 
@@ -637,6 +641,10 @@ mod tests {
         )
         .unwrap();
         assert!(full.response.result.get("compatibility").is_some());
+        assert_eq!(
+            full.response.result["server_version"],
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     impl BrowserConnector for UnusedConnector {
@@ -2587,7 +2595,7 @@ mod tests {
                 Some(newest),
                 krometrail_core::RecordingBudgetState::Available,
                 krometrail_core::RecordingTrimState::Steady,
-                false,
+                None,
                 false,
                 false,
                 0,

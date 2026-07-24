@@ -817,7 +817,7 @@ fn temporal_video_limit_refusals_name_frame_and_duration_values() {
     assert_eq!(frame_error.code, ErrorCode::ResourceLimitExceeded);
     assert_eq!(
         frame_error.message.as_str(),
-        "temporal video source plan: 121 frames over 5.227 s exceeds limit 120 frames"
+        "temporal video source plan: 481 frames over 5.227 s exceeds limit 480 frames"
     );
     assert_eq!(frame_error.retry, crate::RetryAdvice::Never);
     assert!(frame_error.recovery.as_ref().is_some_and(|recovery| {

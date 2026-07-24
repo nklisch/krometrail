@@ -125,6 +125,8 @@ managed="$STATE/managed"
 cold_stdout=$(run_launcher "$STATE/plugin-100" "$managed" mcp 2>"$STATE/cold.stderr")
 [[ "$cold_stdout" == 'managed-1.0.0:mcp' ]] || fail "cold start leaked bootstrap output or ran the wrong binary"
 grep -Fq 'installing managed release v1.0.0' "$STATE/cold.stderr" || fail "cold start did not report bootstrap on stderr"
+grep -Fq 'reinstalling because: krometrail plugin install error: managed release v1.0.0 is not staged yet' \
+  "$STATE/cold.stderr" || fail "cold start did not report the neutral unstaged reason"
 [[ "$(wc -l <"$STATE/network.log" | tr -d ' ')" -eq 2 ]] || fail "cold start must fetch one asset and one checksum file"
 [[ "$("$managed/versions/1.0.0/krometrail" --version)" == 'krometrail 1.0.0' ]] || fail "cold start did not publish v1.0.0"
 [[ "$(stat -c '%a' "$managed/versions/1.0.0/krometrail")" == '700' ]] || fail "managed binary is not private"

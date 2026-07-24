@@ -184,7 +184,7 @@ pub struct RecordingStore {
     /// Set when a trim walk found nothing to reclaim; cleared by any later
     /// reclamation so trimming resumes once the store can make progress again.
     trim_exhausted: StdMutex<bool>,
-    grace_override_active: StdMutex<bool>,
+    grace_overridden_through: StdMutex<Option<krometrail_core::RetainedPoint>>,
     /// Live-instance count that divides one total budget across concurrent
     /// instances. Absent when this store is not part of a multi-instance data
     /// directory, in which case the configured budget is enforced directly.
@@ -262,7 +262,7 @@ impl RecordingStore {
             retention,
             budget_state: StdMutex::new(RecordingBudgetState::Available),
             trim_exhausted: StdMutex::new(false),
-            grace_override_active: StdMutex::new(false),
+            grace_overridden_through: StdMutex::new(None),
             census,
             availability,
             #[cfg(test)]
@@ -638,7 +638,7 @@ impl RecordingStore {
             snapshot.newest_retained,
             state,
             trim_state,
-            self.grace_override_active(),
+            self.grace_overridden_through()?,
             state == RecordingBudgetState::PausedBudget,
             state == RecordingBudgetState::PausedBudget,
             snapshot.open_segment_count,
@@ -736,17 +736,14 @@ impl RecordingStore {
             Some(cutoff) => self.index.expired_object_count(cutoff)? != 0,
             None => false,
         };
-        if total_bytes < high_water {
-            self.set_grace_override_active(false);
-            if !expired_pending {
-                return Ok(());
-            }
+        if total_bytes < high_water && !expired_pending {
+            return Ok(());
         }
         if self.trim_exhausted() && !expired_pending {
             return Ok(());
         }
         let outcome = self.reclaim(high_water, None).await?;
-        self.record_reclaim_outcome(outcome);
+        self.record_reclaim_outcome(outcome)?;
         if outcome.reclaimed_anything() {
             tracing::info!(
                 event = "retention.trimmed",
@@ -778,26 +775,24 @@ impl RecordingStore {
             .expect("trim exhaustion lock poisoned") = value;
     }
 
-    fn grace_override_active(&self) -> bool {
-        *self
-            .grace_override_active
+    fn grace_overridden_through(
+        &self,
+    ) -> krometrail_core::Result<Option<krometrail_core::RetainedPoint>> {
+        Ok(*self
+            .grace_overridden_through
             .lock()
-            .expect("grace override lock poisoned")
+            .expect("grace override lock poisoned"))
     }
 
-    fn set_grace_override_active(&self, value: bool) {
-        *self
-            .grace_override_active
-            .lock()
-            .expect("grace override lock poisoned") = value;
-    }
-
-    fn record_reclaim_outcome(&self, outcome: ReclaimOutcome) {
+    fn record_reclaim_outcome(&self, outcome: ReclaimOutcome) -> krometrail_core::Result<()> {
         if outcome.artifact_grace_overridden {
-            self.set_grace_override_active(true);
-        } else if outcome.reclaimed_anything() {
-            self.set_grace_override_active(false);
+            let boundary = self.index.live_usage_snapshot()?.newest_retained;
+            *self
+                .grace_overridden_through
+                .lock()
+                .expect("grace override lock poisoned") = boundary;
         }
+        Ok(())
     }
 
     async fn enforce_locked(&self) -> krometrail_core::Result<RetentionStatus> {
@@ -846,7 +841,7 @@ impl RecordingStore {
         protected_artifact: Option<krometrail_core::ArtifactId>,
     ) -> krometrail_core::Result<ReclaimOutcome> {
         let outcome = self.reclaim(target_bytes, protected_artifact).await?;
-        self.record_reclaim_outcome(outcome);
+        self.record_reclaim_outcome(outcome)?;
         Ok(outcome)
     }
 
@@ -2846,6 +2841,40 @@ mod tests {
         )
         .unwrap();
         (index, writer, store)
+    }
+
+    #[tokio::test]
+    async fn grace_override_boundary_stays_visible_after_clean_reclaim() {
+        let directory = TempDir::new().unwrap();
+        let (index, _writer, store) = fixture(&directory);
+        let session = SessionId::from_uuid(Uuid::from_u128(1));
+        let source = frame(1, 2, 3, 1);
+        store.append_frame(source).await.unwrap();
+        store.flush(session).await.unwrap();
+        let boundary = index.live_usage_snapshot().unwrap().newest_retained;
+        assert!(boundary.is_some());
+
+        store
+            .record_reclaim_outcome(ReclaimOutcome {
+                artifact_grace_overridden: true,
+                ..ReclaimOutcome::default()
+            })
+            .unwrap();
+        assert_eq!(
+            store.status().await.unwrap().grace_overridden_through,
+            boundary
+        );
+
+        store
+            .record_reclaim_outcome(ReclaimOutcome {
+                segments: 1,
+                ..ReclaimOutcome::default()
+            })
+            .unwrap();
+        assert_eq!(
+            store.status().await.unwrap().grace_overridden_through,
+            boundary
+        );
     }
 
     fn artifact_publication(source: &EncodedFrame) -> ArtifactPublication {

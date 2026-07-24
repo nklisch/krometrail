@@ -2,7 +2,7 @@ use std::{ffi::OsString, time::Duration};
 
 use krometrail_core::VideoOutputGeometry;
 
-pub const FFMPEG_ARGUMENT_POLICY_VERSION: &str = "krometrail-ffmpeg-h264-v1";
+pub const FFMPEG_ARGUMENT_POLICY_VERSION: &str = "krometrail-ffmpeg-h264-v2";
 pub const FFMPEG_ENCODER_ALLOWLIST: &[&str] = &["libx264"];
 pub const MAX_FFMPEG_VERSION_REPORT_BYTES: usize = 64 * 1024;
 pub const MAX_FFMPEG_STDERR_BYTES: usize = 64 * 1024;
@@ -38,7 +38,7 @@ impl H264Encoder {
         let canvas = geometry.canvas();
         let presentation_timestamps = presentation_timestamps_filter(presentation_pts_micros);
         let filter = format!(
-            "settb=expr=1/{FFMPEG_TIMEBASE_HZ},setpts={presentation_timestamps}/{FFMPEG_TIMEBASE_HZ}/TB,scale=w={}:h={}:flags=lanczos,pad=w={}:h={}:x=0:y=0:color=black",
+            "settb=expr=1/{FFMPEG_TIMEBASE_HZ},setpts={presentation_timestamps},scale=w={}:h={}:flags=lanczos,pad=w={}:h={}:x=0:y=0:color=black",
             scaled.width(),
             scaled.height(),
             canvas.width(),
@@ -72,6 +72,8 @@ impl H264Encoder {
             "yuv420p".into(),
             "-c:v".into(),
             self.name().into(),
+            "-preset".into(),
+            "ultrafast".into(),
             "-threads".into(),
             "1".into(),
             "-g".into(),
@@ -127,16 +129,20 @@ pub(crate) fn encode_arguments(
 }
 
 fn presentation_timestamps_filter(presentation_pts_micros: &[u64]) -> String {
-    let (terminal_micros, source_pts_micros) = presentation_pts_micros
-        .split_last()
-        .expect("validated presentation PTS include a terminal sentinel");
-    source_pts_micros
-        .iter()
-        .enumerate()
-        .rev()
-        .fold(terminal_micros.to_string(), |otherwise, (index, start)| {
-            format!("if(eq(N\\,{index})\\,{start}\\,{otherwise})")
-        })
+    fn balanced_lookup(values: &[u64], offset: usize) -> String {
+        if values.len() == 1 {
+            return values[0].to_string();
+        }
+        let midpoint = values.len() / 2;
+        format!(
+            "if(lt(N\\,{})\\,{}\\,{})",
+            offset + midpoint,
+            balanced_lookup(&values[..midpoint], offset),
+            balanced_lookup(&values[midpoint..], offset + midpoint),
+        )
+    }
+
+    balanced_lookup(presentation_pts_micros, 0)
 }
 
 #[cfg(test)]
@@ -145,7 +151,7 @@ mod tests {
     use krometrail_core::PixelDimensions;
 
     #[test]
-    fn v1_arguments_are_one_exact_allowlisted_sequence() {
+    fn v2_arguments_are_one_exact_allowlisted_sequence() {
         let source = PixelDimensions::new(5, 3).unwrap();
         let scaled = PixelDimensions::new(5, 3).unwrap();
         let canvas = PixelDimensions::new(6, 4).unwrap();
@@ -180,11 +186,13 @@ mod tests {
                 "-fps_mode",
                 "vfr",
                 "-vf",
-                "settb=expr=1/1000000,setpts=if(eq(N\\,0)\\,0\\,if(eq(N\\,1)\\,100000\\,350000))/1000000/TB,scale=w=5:h=3:flags=lanczos,pad=w=6:h=4:x=0:y=0:color=black",
+                "settb=expr=1/1000000,setpts=if(lt(N\\,1)\\,0\\,if(lt(N\\,2)\\,100000\\,350000)),scale=w=5:h=3:flags=lanczos,pad=w=6:h=4:x=0:y=0:color=black",
                 "-pix_fmt",
                 "yuv420p",
                 "-c:v",
                 "libx264",
+                "-preset",
+                "ultrafast",
                 "-threads",
                 "1",
                 "-g",
@@ -230,7 +238,7 @@ mod tests {
     fn presentation_filter_assigns_each_source_and_the_terminal_sentinel() {
         assert_eq!(
             presentation_timestamps_filter(&[0, 100_000, 225_000, 349_999]),
-            "if(eq(N\\,0)\\,0\\,if(eq(N\\,1)\\,100000\\,if(eq(N\\,2)\\,225000\\,349999)))"
+            "if(lt(N\\,2)\\,if(lt(N\\,1)\\,0\\,100000)\\,if(lt(N\\,3)\\,225000\\,349999))"
         );
     }
 }

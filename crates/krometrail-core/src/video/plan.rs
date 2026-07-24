@@ -12,7 +12,7 @@ use crate::{
 pub const TEMPORAL_VIDEO_PLAN_VERSION: &str = "temporal-video-plan-v1";
 pub const MAX_VIDEO_SOURCE_DURATION: Duration = Duration::from_secs(30);
 pub const MAX_VIDEO_PRESENTATION_DURATION: Duration = Duration::from_secs(60);
-pub const MAX_VIDEO_SOURCE_FRAMES: usize = 120;
+pub const MAX_VIDEO_SOURCE_FRAMES: usize = 480;
 pub const MAX_VIDEO_MEANINGFUL_FRAMES: usize = 12;
 pub const MAX_VIDEO_PRESENTATION_SEGMENTS: usize = 512;
 pub const MAX_VIDEO_WIDTH: u32 = 1_920;
@@ -475,7 +475,7 @@ impl VideoPlanInput {
     fn validate_limits(&self) -> Result<()> {
         if self.frames.len() > MAX_VIDEO_SOURCE_FRAMES {
             return Err(limit_error(
-                "video plan exceeds the 120 source frame server limit",
+                "video plan exceeds the 480 source frame server limit",
             ));
         }
         if self.meaningful_frame_ids.len() > MAX_VIDEO_MEANINGFUL_FRAMES {
@@ -731,7 +731,7 @@ fn validate_plan_parts(
     }
     if input_frame_ids.len() > MAX_VIDEO_SOURCE_FRAMES {
         return Err(limit_error(
-            "video plan exceeds the 120 source frame server limit",
+            "video plan exceeds the 480 source frame server limit",
         ));
     }
     if meaningful_frame_ids.len() > MAX_VIDEO_MEANINGFUL_FRAMES {

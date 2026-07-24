@@ -551,7 +551,7 @@ async fn analysis_generators_sample_by_default_and_disclose_their_source_counts(
         );
         assert_eq!(
             values["analyzed_frame_count"],
-            temporal_vision::ParameterValue::Unsigned(120)
+            temporal_vision::ParameterValue::Unsigned(240)
         );
         assert_eq!(
             values["mode"],
@@ -787,7 +787,7 @@ async fn exhaustive_analysis_refusal_names_a_working_sampling_lever() {
     assert!(error.recovery.as_ref().is_some_and(|recovery| {
         recovery
             .as_str()
-            .contains("narrow the resolved range so at most 120 frames")
+            .contains("narrow the resolved range so at most 240 frames")
             && recovery
                 .as_str()
                 .contains("uniform_bounded sampling which analyzes a bounded subset of any range")
@@ -819,14 +819,14 @@ async fn exhaustive_analysis_plan_cap_accepts_boundary_and_structures_next_frame
         rig
     };
 
-    let at_cap = request(120);
+    let at_cap = request(240);
     at_cap
         .service
         .generate(at_cap.request, ArtifactGenerationContext::default())
         .await
         .expect("the exhaustive analysis frame cap is inclusive");
 
-    let over_cap = request(121);
+    let over_cap = request(241);
     let error = over_cap
         .service
         .generate(over_cap.request, ArtifactGenerationContext::default())
@@ -838,14 +838,14 @@ async fn exhaustive_analysis_plan_cap_accepts_boundary_and_structures_next_frame
     );
     assert_eq!(
         error.message.as_str(),
-        "exhaustive analysis source plan: 121 frames and 1936 decoded bytes exceeds limit 120 frames and 805306368 decoded bytes"
+        "exhaustive analysis source plan: 241 frames and 3856 decoded bytes exceeds limit 240 frames and 1610612736 decoded bytes"
     );
     let recovery = error
         .recovery
         .as_ref()
         .expect("the bounded refusal carries recovery guidance")
         .as_str();
-    assert!(recovery.contains("narrow the resolved range so at most 120 frames fall inside it"));
+    assert!(recovery.contains("narrow the resolved range so at most 240 frames fall inside it"));
     assert!(
         recovery
             .contains("use uniform_bounded sampling which analyzes a bounded subset of any range")
@@ -1277,7 +1277,10 @@ fn default_limits_fit_reproduced_high_dpi_sequence_with_fixed_combined_budget() 
     )
     .unwrap();
     let limits = ArtifactWorkLimits::default();
-    assert_eq!(limits.max_combined_request_bytes.get(), 1024 * 1024 * 1024);
+    assert_eq!(
+        limits.max_combined_request_bytes.get(),
+        2 * 1024 * 1024 * 1024
+    );
     let plans = validate_and_plan(
         &range,
         frames,
@@ -1288,7 +1291,7 @@ fn default_limits_fit_reproduced_high_dpi_sequence_with_fixed_combined_budget() 
     .unwrap();
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].decoded_bytes, 717_408_000);
-    assert_eq!(limits.max_decoded_bytes.get(), 768 * 1024 * 1024);
+    assert_eq!(limits.max_decoded_bytes.get(), 1536 * 1024 * 1024);
 
     let mut peak_reservation = 0;
     for generator in
@@ -1360,7 +1363,7 @@ fn default_limits_fit_reproduced_high_dpi_sequence_with_fixed_combined_budget() 
     let ArtifactGeneratorRequest::DifferenceMap(request) = prepared.request else {
         unreachable!()
     };
-    assert_eq!(request.normalization.scale, AnalysisScale::Down(3));
+    assert_eq!(request.normalization.scale, AnalysisScale::Down(2));
 }
 
 #[tokio::test]
@@ -1920,10 +1923,10 @@ async fn sampled_analysis_manifest_counts_match_its_sampling_disclosure() {
     };
     let manifest = &artifact.manifest;
     assert_eq!(manifest.source_frame_count(), 367);
-    assert_eq!(manifest.analyzed_frame_count(), 120);
-    // 247 source frames were dropped by sampling. The single referenced frame does
-    // not make the other 119 analyzed frames omitted evidence.
-    assert_eq!(manifest.omitted_frame_count(), 247);
+    assert_eq!(manifest.analyzed_frame_count(), 240);
+    // 127 source frames were dropped by sampling. The single referenced frame does
+    // not make the other 239 analyzed frames omitted evidence.
+    assert_eq!(manifest.omitted_frame_count(), 127);
     assert_eq!(manifest.selected_frame_ids().len(), 1);
 
     let temporal_vision::ParameterValue::Object(values) = manifest

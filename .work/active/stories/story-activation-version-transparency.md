@@ -17,12 +17,13 @@ updated: 2026-07-23
 
 Two findings from the 2026-07-23 v1.6.1 activation sequence:
 
-1. **No version self-reporting on the MCP surface.** After a plugin reload
-   failed to swap the MCP server, the session silently kept serving the old
-   1.6.0 binary; the only way to discover this was inspecting the OS process
-   list. Nothing in `browser_status` (or any tool result) states the serving
-   binary version, so "am I on the version I just installed?" is unanswerable
-   in-band.
+1. **No per-tool version self-reporting.** MCP `initialize` already reports
+   `serverInfo.version` (verified live as `{"name":"krometrail","version":"1.6.1"}`),
+   but after a plugin reload failed to swap the MCP server, the session had no
+   serving-version field in `browser_status` or another ordinary tool result.
+   The only way to discover that it silently kept serving the old 1.6.0 binary
+   was inspecting the OS process list, so "am I on the version I just
+   installed?" remained unanswerable from the in-band status surface.
 2. **First-activation installer wording reads as an error.** The launcher's
    verify step (`plugin/scripts/install-managed.sh:83`) fails with "managed
    release directory is unavailable or unsafe" when the version directory
@@ -55,3 +56,15 @@ Two findings from the 2026-07-23 v1.6.1 activation sequence:
       reason; symlinked/wrong-owner destinations still fail with the safety
       wording; both pinned by hermetic tests.
 - [ ] Full workspace gate green.
+
+## Implementation notes
+
+- Added the crate version as the top-level `server_version` field on every
+  `browser_status` detail tier; the existing MCP initialize `serverInfo.version`
+  remains unchanged.
+- `verify-existing` now reports `managed release v<X> is not staged yet` for
+  missing release members, while symlink, owner, permission, and identity
+  failures retain their strict diagnostics.
+- The hermetic bootstrap fixture pins the neutral cold-start diagnostic and the
+  existing symlink/identity safety failures without network or home-directory
+  access.

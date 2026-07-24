@@ -121,7 +121,7 @@ async fn produced_contract_qualification_returns_safe_exact_identity() {
     assert_eq!(encoder.identity().encoder_name(), "libx264");
     assert_eq!(
         encoder.identity().argument_policy_version(),
-        "krometrail-ffmpeg-h264-v1"
+        "krometrail-ffmpeg-h264-v2"
     );
     assert!(!encoder.identity().implementation_version().contains('/'));
     assert!(!encoder.identity().implementation_version().contains('\\'));

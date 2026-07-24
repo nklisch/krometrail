@@ -59,3 +59,18 @@ the transparency intent:
 - [ ] Surviving-range trimmed-through note and operation-bound override
       warning behavior unchanged.
 - [ ] Schemas regenerated if shape changed; full workspace gate green.
+
+## Implementation notes
+
+- Replaced the transient boolean with the current `grace_overridden_through`
+  `Option<RetainedPoint>` wire field. The store records the newest retained
+  boundary when grace is overridden and does not clear it on a later clean
+  reclaim; `browser_status` projects the fact beside trim state.
+- Removed the status-wide synthetic grace warning. The operation-bound
+  `ArtifactGraceOverridden` warning remains attached to the operation or
+  bundle result that caused the override.
+- Fully evicted range failures keep `not_found` and now include the bounded
+  oldest-retained session-time boundary plus in-session-retention recovery
+  guidance. No page content or filesystem paths enter the message.
+- Updated `docs/SPEC.md` to describe the current sticky field and warning
+  boundary.

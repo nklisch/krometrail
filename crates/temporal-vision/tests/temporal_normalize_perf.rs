@@ -43,8 +43,8 @@ impl Config {
         let frames = env_usize("PERF_TEMPORAL_FRAMES", 30);
         let repetitions = env_usize("PERF_TEMPORAL_REPETITIONS", 1);
         assert!(
-            (2..=120).contains(&frames),
-            "frames must be between 2 and 120"
+            (2..=240).contains(&frames),
+            "frames must be between 2 and 240"
         );
         assert!(
             (1..=20).contains(&repetitions),

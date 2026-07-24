@@ -77,13 +77,28 @@ DESTINATION="$VERSION_DIR/krometrail"
 
 verify_existing_destination() {
   validate_existing_path "$MANAGED_ROOT"
+  if [ ! -e "$MANAGED_ROOT" ]; then
+    fail "managed release v$VERSION is not staged yet"
+  fi
   [ -d "$MANAGED_ROOT" ] && [ -w "$MANAGED_ROOT" ] || fail "managed data directory is not writable"
   require_private_owner "$MANAGED_ROOT" "managed data directory"
-  for directory in "$VERSIONS_DIR" "$VERSION_DIR"; do
-    [ -d "$directory" ] && [ ! -L "$directory" ] || fail "managed release directory is unavailable or unsafe"
-    require_private_owner "$directory" "managed release directory"
-  done
-  [ -f "$DESTINATION" ] && [ ! -L "$DESTINATION" ] || fail "managed binary destination is not a regular file"
+  [ ! -L "$VERSIONS_DIR" ] || fail "managed release directory is unavailable or unsafe"
+  if [ ! -e "$VERSIONS_DIR" ]; then
+    fail "managed release v$VERSION is not staged yet"
+  fi
+  [ -d "$VERSIONS_DIR" ] || fail "managed release directory is unavailable or unsafe"
+  require_private_owner "$VERSIONS_DIR" "managed release directory"
+  [ ! -L "$VERSION_DIR" ] || fail "managed release directory is unavailable or unsafe"
+  if [ ! -e "$VERSION_DIR" ]; then
+    fail "managed release v$VERSION is not staged yet"
+  fi
+  [ -d "$VERSION_DIR" ] || fail "managed release directory is unavailable or unsafe"
+  require_private_owner "$VERSION_DIR" "managed release directory"
+  [ ! -L "$DESTINATION" ] || fail "managed binary destination is not a regular file"
+  if [ ! -e "$DESTINATION" ]; then
+    fail "managed release v$VERSION is not staged yet"
+  fi
+  [ -f "$DESTINATION" ] || fail "managed binary destination is not a regular file"
   require_private_owner "$DESTINATION" "managed binary"
   identity=$("$DESTINATION" --version 2>/dev/null) || fail "managed binary could not report its version"
   [ "$identity" = "krometrail $VERSION" ] || fail "managed binary identity does not match v$VERSION"

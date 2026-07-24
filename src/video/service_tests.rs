@@ -5,7 +5,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use image::ImageEncoder as _;
@@ -1261,6 +1261,125 @@ fn frame(
         )
         .unwrap();
     EncodedFrame::new(metadata, bytes).unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires KROMETRAIL_FFMPEG_PATH to select a user-installed supported FFmpeg"]
+async fn selected_real_ffmpeg_generates_430_frame_clip_within_video_wall_time() {
+    let ffmpeg = std::env::var_os("KROMETRAIL_FFMPEG_PATH")
+        .map(std::path::PathBuf::from)
+        .expect("set KROMETRAIL_FFMPEG_PATH to the exact user-installed FFmpeg executable");
+    assert!(ffmpeg.is_file(), "selected FFmpeg path must be a file");
+    let qualification = krometrail_ffmpeg::qualify_ffmpeg(
+        krometrail_ffmpeg::FfmpegDiscoveryOptions::from_process_environment(),
+        Arc::new(ManualCancellation::default()),
+        Instant::now() + krometrail_ffmpeg::FFMPEG_QUALIFICATION_TIMEOUT,
+    )
+    .await;
+    let encoder = match qualification {
+        krometrail_ffmpeg::FfmpegQualification::Qualified(encoder) => encoder,
+        krometrail_ffmpeg::FfmpegQualification::Unavailable(unavailable) => {
+            panic!("selected FFmpeg did not qualify: {unavailable:?}")
+        }
+    };
+
+    let directory = std::env::temp_dir().join(format!("krometrail-video-perf-{}", Uuid::new_v4()));
+    let segments = directory.join("segments");
+    let index = Arc::new(
+        SqliteIndex::open(IndexStoreConfig {
+            database_path: directory.join("index.sqlite3"),
+            segments_directory: segments.clone(),
+            busy_timeout: Duration::from_secs(1),
+        })
+        .unwrap(),
+    );
+    let writer = Arc::new(
+        SegmentWriter::open(SegmentStoreConfig {
+            directory: segments,
+            rotation: RotationConfig::suggested(),
+        })
+        .unwrap(),
+    );
+    let store =
+        Arc::new(RecordingStore::new(writer, Arc::clone(&index), store_test_clock()).unwrap());
+    let session = SessionId::from_uuid(Uuid::from_u128(30_001));
+    let target = TargetId::from_uuid(Uuid::from_u128(30_002));
+    let dimensions = PixelDimensions::new(1_224, 958).unwrap();
+    let frame_count = std::env::var("VIDEO_PERF_FRAME_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(430);
+    assert!(frame_count <= krometrail_core::MAX_VIDEO_SOURCE_FRAMES);
+    let mut frames = Vec::with_capacity(frame_count);
+    for index in 0..frame_count {
+        let time = u64::try_from(index).unwrap() * 12_000_000;
+        frames.push(frame(
+            session,
+            target,
+            31_000 + u128::try_from(index).unwrap(),
+            u64::try_from(index + 1).unwrap(),
+            time,
+            dimensions,
+            [20, 80, 160, 255],
+        ));
+    }
+    for frame in &frames {
+        store.append_frame(frame.clone()).await.unwrap();
+    }
+    store.flush(session).await.unwrap();
+    let interval =
+        SessionRange::new(SessionTime::ZERO, SessionTime::from_nanos(5_200_000_000)).unwrap();
+    let range = ResolvedRange::new(
+        session,
+        target,
+        TemporalRangeAnchorKind::SessionTime,
+        interval,
+        interval,
+        frames.iter().map(|frame| frame.metadata().id()).collect(),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        RangeResolutionOptions::DEFAULT,
+    )
+    .unwrap();
+    let request = TemporalVideoGenerationRequest::new(
+        range,
+        VideoPresentationPolicy::RealTime,
+        OutputLimitsRequest::new(640, 502, 64 * 1024 * 1024).unwrap(),
+    )
+    .unwrap();
+    let service = TemporalVideoGenerationService::new(
+        Arc::clone(&index) as Arc<dyn FrameSource>,
+        Arc::clone(&store) as Arc<dyn ArtifactStore>,
+        Arc::new(FakeIds(AtomicU64::new(31_500))),
+        encoder as Arc<dyn TemporalVideoEncoder>,
+        VideoGenerationLimits::default(),
+    )
+    .unwrap();
+    let started = Instant::now();
+    service
+        .generate_video(request, ArtifactGenerationContext::default())
+        .await
+        .unwrap();
+    let wall_ms = started.elapsed().as_millis();
+    let peak_rss_kib = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("VmHWM:")
+                    .and_then(|value| value.split_whitespace().next())
+                    .and_then(|value| value.parse::<u64>().ok())
+            })
+        });
+    println!(
+        "VIDEO_PERF_REPORT {{\"frame_count\":{frame_count},\"wall_ms\":{wall_ms},\"peak_rss_kib\":{}}}",
+        peak_rss_kib.map_or_else(|| "null".into(), |value| value.to_string())
+    );
+    drop(service);
+    drop(store);
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 fn encoder_identity(seed: u8) -> VideoEncoderIdentity {

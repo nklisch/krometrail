@@ -14,7 +14,7 @@
 //! ```
 //!
 //! The production-policy request uses explicit down-2 analysis, matching the retained discovery
-//! baseline and keeping all 30/60/120 cells below the artifact output ceiling. The benchmark
+//! baseline and keeping all 30/60/120/240 cells below the artifact output ceiling. The benchmark
 //! deliberately raises only the combined
 //! request ceiling enough to make the two-permit cells observable; it does not change the
 //! decoder, generator, or publication path. The identity-scale case is kept in the design's
@@ -141,7 +141,7 @@ struct Config {
 impl Config {
     fn from_environment() -> Self {
         let frames = env_usize("PERF_OVERLAP_FRAMES", 60);
-        assert!(matches!(frames, 30 | 60 | 120));
+        assert!(matches!(frames, 30 | 60 | 120 | 240));
         let request_permits = env_usize("PERF_OVERLAP_REQUEST_PERMITS", 2);
         assert!(matches!(request_permits, 1 | 2));
         let sliding_windows = env_usize("PERF_OVERLAP_SLIDING_WINDOWS", 4);
@@ -460,7 +460,7 @@ fn request(
     let normalization = NormalizationRequest::new(
         None,
         Rgb8::new(0, 0, 0),
-        // The retained discovery baseline used explicit down-2 analysis so every 30/60/120
+        // The retained discovery baseline used explicit down-2 analysis so every 30/60/120/240
         // cell is a valid production artifact request under the 64 MiB output ceiling. Identity
         // remains a separate memory-budget case in the design below.
         AnalysisScale::Down(2),

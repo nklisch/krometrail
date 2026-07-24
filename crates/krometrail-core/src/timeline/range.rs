@@ -1349,19 +1349,18 @@ where
                 .evicted_ranges
                 .iter()
                 .any(|range| ranges_intersect(*range, seed.requested_range));
-            let (message, captured_bounds) = if intersects_eviction {
-                ("requested interval source frames were evicted", None)
-            } else {
-                (
-                    "requested interval has no captured source frames",
+            if intersects_eviction {
+                return Err(fully_evicted_range_not_found(
+                    &seed,
+                    seed.requested_range,
                     availability.retained_bounds,
-                )
-            };
+                ));
+            }
             return Err(range_not_found(
-                message,
+                "requested interval has no captured source frames",
                 &seed,
                 seed.requested_range,
-                captured_bounds,
+                availability.retained_bounds,
             ));
         }
 
@@ -1372,11 +1371,10 @@ where
             .filter(|frame| resolved_range.contains(frame.session_time()))
             .collect();
         if retained_frames.is_empty() {
-            return Err(range_not_found(
-                "requested interval source frames were evicted",
+            return Err(fully_evicted_range_not_found(
                 &seed,
                 resolved_range,
-                None,
+                availability.retained_bounds,
             ));
         }
 
@@ -1580,14 +1578,7 @@ fn classify_retention(
             seed.requested_range.end()
         },
     )
-    .map_err(|_| {
-        range_not_found(
-            "requested interval source frames were fully evicted",
-            seed,
-            seed.requested_range,
-            None,
-        )
-    })?;
+    .map_err(|_| fully_evicted_range_not_found(seed, seed.requested_range, Some(retained)))?;
     let resolved = if retained.start() > candidate.start() || retained.end() < candidate.end() {
         clamp_partial_range(candidate, retained, options).ok_or_else(|| {
             range_not_found(
@@ -1752,6 +1743,40 @@ fn range_not_found(
     error
 }
 
+fn fully_evicted_range_not_found(
+    seed: &RangeSeed,
+    range: SessionRange,
+    retained_bounds: Option<SessionRange>,
+) -> KrometrailError {
+    let Some(bounds) = retained_bounds else {
+        return range_not_found(
+            "requested interval source frames were fully evicted by in-session retention",
+            seed,
+            range,
+            None,
+        );
+    };
+    let oldest = bounds.start().as_nanos();
+    not_found(
+        format!(
+            "requested interval source frames were fully evicted by in-session retention; oldest retained boundary is session_time_nanos={oldest}"
+        ),
+        ErrorContext {
+            session_id: Some(seed.session_id),
+            target_id: Some(seed.target_id),
+            range: Some(range),
+            ..ErrorContext::default()
+        },
+    )
+    .with_retry(RetryAdvice::AfterRecovery)
+    .with_recovery(
+        NonEmptyText::new(format!(
+            "evidence before session_time_nanos={oldest} was reclaimed by in-session retention; anchor at or after session_time_nanos={oldest}"
+        ))
+        .expect("fully-evicted recovery is non-empty"),
+    )
+}
+
 fn validate_scope_match(
     scope: AnchorScope,
     session_id: SessionId,
@@ -1887,6 +1912,27 @@ mod tests {
             preloaded_frames: None,
         }
     }
+
+    #[test]
+    fn fully_evicted_range_names_boundary_and_in_session_recovery() {
+        let requested =
+            SessionRange::new(SessionTime::from_nanos(10), SessionTime::from_nanos(20)).unwrap();
+        let retained =
+            SessionRange::new(SessionTime::from_nanos(30), SessionTime::from_nanos(40)).unwrap();
+        let error =
+            fully_evicted_range_not_found(&range_seed(requested), requested, Some(retained));
+        assert_eq!(error.code, ErrorCode::NotFound);
+        assert_eq!(
+            error.message.as_str(),
+            "requested interval source frames were fully evicted by in-session retention; oldest retained boundary is session_time_nanos=30"
+        );
+        assert_eq!(
+            error.recovery.as_ref().unwrap().as_str(),
+            "evidence before session_time_nanos=30 was reclaimed by in-session retention; anchor at or after session_time_nanos=30"
+        );
+        assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+    }
+
     fn resolved(
         requested: SessionRange,
         retained: SessionRange,

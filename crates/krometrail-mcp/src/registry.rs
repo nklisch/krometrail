@@ -1107,12 +1107,6 @@ fn append_retention_warnings(
             RetentionWarning::InSessionTrimmingActive { oldest_retained },
         );
     }
-    if status.grace_override_active {
-        push_retention_warning(
-            warnings,
-            RetentionWarning::ArtifactGraceOverridden { oldest_retained },
-        );
-    }
 }
 
 fn append_artifact_generation_retention_warnings(
@@ -1329,7 +1323,7 @@ mod tests {
             Some(point),
             krometrail_core::RecordingBudgetState::Available,
             krometrail_core::RecordingTrimState::Trimming,
-            true,
+            None,
             false,
             false,
             0,
@@ -1341,15 +1335,9 @@ mod tests {
         append_retention_warnings(&mut warnings, &status, (point.session_id, point.target_id));
         assert!(matches!(
             warnings.as_slice(),
-            [
-                krometrail_core::RetentionWarning::InSessionTrimmingActive {
-                    oldest_retained
-                },
-                krometrail_core::RetentionWarning::ArtifactGraceOverridden {
-                    oldest_retained: overridden
-                }
-            ] if *oldest_retained == krometrail_core::SessionTime::from_nanos(42)
-                && *overridden == krometrail_core::SessionTime::from_nanos(42)
+            [krometrail_core::RetentionWarning::InSessionTrimmingActive {
+                oldest_retained
+            }] if *oldest_retained == krometrail_core::SessionTime::from_nanos(42)
         ));
 
         let mut mismatched_warnings = Vec::new();

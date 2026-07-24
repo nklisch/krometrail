@@ -115,7 +115,7 @@ pub(crate) struct ConciseRetentionStatus {
     pub pinned_bytes: u64,
     pub budget_state: RecordingBudgetState,
     pub trim_state: RecordingTrimState,
-    pub grace_override_active: bool,
+    pub grace_overridden_through: Option<krometrail_core::RetainedPoint>,
     pub recording_blocked: bool,
     pub retained_bounds: Option<RetainedBounds>,
 }
@@ -164,6 +164,7 @@ pub(crate) struct ConciseOpenDialog {
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ConciseBrowserStatus {
+    pub server_version: &'static str,
     pub session_id: SessionId,
     pub state: BrowserSessionState,
     pub ownership: BrowserOwnership,
@@ -700,6 +701,7 @@ pub(crate) fn map_browser_status(
         ResponseDetail::Full => {
             let bounds = RetainedBounds::project(&status.retention);
             let mut mapped = map_lifecycle_result(tool, status)?;
+            add_server_version(&mut mapped.response.result)?;
             project_retained_bounds(&mut mapped.response.result, bounds)?;
             Ok(mapped)
         }
@@ -730,13 +732,14 @@ pub(crate) fn map_browser_status(
                 pinned_bytes: status.retention.pinned_usage_bytes,
                 budget_state: status.retention.budget_state,
                 trim_state: status.retention.trim_state,
-                grace_override_active: status.retention.grace_override_active,
+                grace_overridden_through: status.retention.grace_overridden_through,
                 recording_blocked: status.retention.recording_blocked,
                 retained_bounds: RetainedBounds::project(&status.retention),
             };
             let page_count =
                 u32::try_from(status.pages.len()).map_err(|_| ResponseInvariantError)?;
             let concise = ConciseBrowserStatus {
+                server_version: env!("CARGO_PKG_VERSION"),
                 session_id: status.session_id,
                 state: status.state,
                 ownership: status.ownership,
@@ -758,18 +761,30 @@ pub(crate) fn map_browser_status(
                 every_nth_frame: status.every_nth_frame,
             };
             if response.detail == ResponseDetail::Expanded {
-                map_lifecycle_result(
+                let mut mapped = map_lifecycle_result(
                     tool,
                     ExpandedBrowserStatus {
                         concise,
                         pages: status.pages,
                     },
-                )
+                )?;
+                add_server_version(&mut mapped.response.result)?;
+                Ok(mapped)
             } else {
-                map_lifecycle_result(tool, concise)
+                let mut mapped = map_lifecycle_result(tool, concise)?;
+                add_server_version(&mut mapped.response.result)?;
+                Ok(mapped)
             }
         }
     }
+}
+
+fn add_server_version(value: &mut Value) -> Result<(), ResponseInvariantError> {
+    value.as_object_mut().ok_or(ResponseInvariantError)?.insert(
+        "server_version".into(),
+        Value::String(env!("CARGO_PKG_VERSION").into()),
+    );
+    Ok(())
 }
 
 /// Replaces the raw retained endpoints in a serialized status with the scoped projection, so no
@@ -3631,7 +3646,7 @@ mod tests {
             None,
             RecordingBudgetState::Available,
             RecordingTrimState::Steady,
-            false,
+            None,
             false,
             false,
             0,

@@ -488,6 +488,13 @@ Reclaim is driven by operations, not by a timer. There is no background schedule
 
 A segment backing an artifact published within a short grace window is skipped during budget pressure, so a freshly returned evidence link is not immediately invalidated. If every remaining segment is so protected, the grace is dropped rather than stalling capture, and the override is reported.
 
+The retention status reports `grace_overridden_through` as a sticky,
+boundary-anchored process-local fact when artifact grace has been overridden.
+It contains the newest retained point known after that override and remains
+visible across later status polls; it replaces the former transient latch.
+An operation that caused the override still
+emits its causal `ArtifactGraceOverridden` warning on that operation's result.
+
 A time range can be pinned. Pinning protects every storage segment required to reconstruct that range, against both budget pressure and age-out. If pinned data consumes the entire budget, recording pauses before deleting protected evidence and reports the condition clearly.
 
 ### Retention configuration
@@ -507,6 +514,7 @@ The status surface reports:
 - pinned usage;
 - oldest retained time;
 - newest retained time;
+- the `grace_overridden_through` boundary when artifact grace was overridden;
 - requested `every_nth_frame` stride and observed capture cadence;
 - recorded and dropped frames;
 - whether eviction or recording is blocked.
