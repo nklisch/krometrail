@@ -1768,7 +1768,7 @@ fn fully_evicted_range_not_found(
             ..ErrorContext::default()
         },
     )
-    .with_retry(RetryAdvice::AfterRecovery)
+    .with_retry(RetryAdvice::Never)
     .with_recovery(
         NonEmptyText::new(format!(
             "evidence before session_time_nanos={oldest} was reclaimed by in-session retention; anchor at or after session_time_nanos={oldest}"
@@ -1930,7 +1930,7 @@ mod tests {
             error.recovery.as_ref().unwrap().as_str(),
             "evidence before session_time_nanos=30 was reclaimed by in-session retention; anchor at or after session_time_nanos=30"
         );
-        assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+        assert_eq!(error.retry, RetryAdvice::Never);
     }
 
     fn resolved(

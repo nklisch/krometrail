@@ -580,7 +580,19 @@ async fn wrong_scope_and_retention_truth_are_explicit_and_contiguous_only() {
         .unwrap_err();
     assert_eq!(evicted_only.code, krometrail_core::ErrorCode::NotFound);
     assert_eq!(evicted_only.retry, krometrail_core::RetryAdvice::Never);
-    assert_eq!(evicted_only.recovery, None);
+    let evicted_recovery = evicted_only
+        .recovery
+        .as_ref()
+        .expect("fully-evicted range failure names the retention boundary")
+        .as_str();
+    assert!(
+        evicted_recovery.contains("reclaimed by in-session retention"),
+        "recovery names in-session retention: {evicted_recovery}"
+    );
+    assert!(
+        evicted_recovery.contains("anchor at or after session_time_nanos="),
+        "recovery names the oldest retained boundary: {evicted_recovery}"
+    );
 
     let internal = Fixture::new().await;
     internal.simulate_eviction(SessionRange::new(at(300), at(400)).unwrap());
