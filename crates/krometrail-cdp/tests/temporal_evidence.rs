@@ -315,7 +315,7 @@ fn assert_fresh_snapshot_error(error: &krometrail_core::KrometrailError, code: E
         error
             .recovery
             .as_ref()
-            .is_some_and(|value| value.as_str().contains("new structured snapshot"))
+            .is_some_and(|value| value.as_str().contains("fresh snapshot"))
     );
     let wire = serde_json::to_string(error).unwrap();
     assert!(!wire.contains("private-runtime-object"));

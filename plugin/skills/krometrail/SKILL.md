@@ -141,6 +141,10 @@ never qualify. Krometrail does not use geometric proximity. For example:
 On `no_match`, an `uncontained_match_candidates` count means the controls exist but none sits in a
 qualifying container; narrow with `scope` or revise the container text.
 
+On `no_match`, a `non_actionable_match_count` means the query text or name exists only on
+non-actionable nodes in the acquired tree. Use `snapshot_page` to inspect that content; the count
+does not provide an interaction reference.
+
 Read [browser contexts and assets](references/browser-contexts.md) before work that reuses a named
 profile, opens popups, enters frames, or diagnoses resource loading.
 

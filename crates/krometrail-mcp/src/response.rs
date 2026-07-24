@@ -585,7 +585,7 @@ pub(crate) fn map_operation_result_with_novelty(
         }
         ToolResponseStatus::Failed => projection.error.as_ref().map_or_else(
             || format!("{tool} failed"),
-            |error| format!("{tool} failed: {}", error.message),
+            |error| failed_summary(tool, error),
         ),
     };
     Ok(mapped(tool, projection, summary))
@@ -864,12 +864,28 @@ pub(crate) fn visible_error_with_capture(
     error: KrometrailError,
     capture_statuses: &[krometrail_core::TargetCaptureStatus],
 ) -> CallToolResult {
-    let summary = format!("{tool} failed: {}", error.message);
+    let summary = failed_summary(tool, &error);
     let mut projection = Projection::success(json!({}));
     projection.interaction = failure_interaction_anchor(tool, &error);
     projection.fail_with(error);
     into_call_tool_result(mapped(tool, projection, summary), capture_statuses)
         .expect("stable error envelopes always serialize")
+}
+
+fn failed_summary(tool: &str, error: &KrometrailError) -> String {
+    let mut summary = format!("{tool} failed [{}]: {}", error.code.as_str(), error.message);
+    if let Some(recovery) = &error.recovery {
+        summary.push_str(". Recovery: ");
+        summary.push_str(recovery.as_str());
+    }
+    summary.push_str(" (retry: ");
+    summary.push_str(match error.retry {
+        RetryAdvice::Never => "never",
+        RetryAdvice::Safe => "safe",
+        RetryAdvice::AfterRecovery => "after_recovery",
+    });
+    summary.push(')');
+    summary
 }
 
 fn failure_interaction_anchor(
@@ -5647,7 +5663,10 @@ mod tests {
         );
         assert_eq!(result.is_error, Some(true));
         let text = result.content[0].as_text().unwrap().text.as_str();
-        assert_eq!(text, "inspect_page failed: invalid request");
+        assert_eq!(
+            text,
+            "inspect_page failed [invalid_input]: invalid request (retry: never)"
+        );
         assert!(!text.contains("{\""));
         assert_eq!(
             result.structured_content.as_ref().unwrap()["status"],
@@ -5657,6 +5676,27 @@ mod tests {
             result.structured_content.as_ref().unwrap()["error"]["code"],
             "invalid_input"
         );
+    }
+
+    #[test]
+    fn failed_summary_includes_code_recovery_and_retry_on_one_line() {
+        let result = visible_error(
+            "press_keys",
+            error(
+                ErrorCode::StaleReference,
+                "snapshot node has no backing document node",
+            )
+            .with_recovery(
+                NonEmptyText::new("request a fresh snapshot and retry once with the new reference")
+                    .unwrap(),
+            )
+            .with_retry(RetryAdvice::Safe),
+        );
+        assert_eq!(
+            result.content[0].as_text().unwrap().text,
+            "press_keys failed [stale_reference]: snapshot node has no backing document node. Recovery: request a fresh snapshot and retry once with the new reference (retry: safe)"
+        );
+        assert!(!result.content[0].as_text().unwrap().text.contains('\n'));
     }
 
     #[test]
@@ -5838,7 +5878,7 @@ mod tests {
         // results, the failing step's index and operation, and the step's stable error code.
         assert_eq!(
             batch.summary,
-            "batch failed: batch step 0 (click) failed: step failed"
+            "batch failed [interaction_failed]: batch step 0 (click) failed: step failed (retry: never)"
         );
         let reported = batch
             .response

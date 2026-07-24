@@ -18,6 +18,7 @@ use krometrail_core::{
     TEMPORAL_RANGE_RESOLUTION_OPERATION, TEMPORAL_VIDEO_OPERATION, TargetId,
     TemporalContextOperationKind, TemporalDebugBundle, TemporalDebugBundleContext,
     TemporalDebugBundleRequest, TemporalQueryRequest, TemporalVideoGenerationRequest,
+    TemporalVideoGenerationRequestWire,
 };
 use rmcp::{
     handler::server::tool::{ToolCallContext, ToolRoute, ToolRouter},
@@ -439,7 +440,7 @@ async fn call_temporal_video(
         Ok(value) => value,
         Err(error) => return Ok(call_error_result(name, error)),
     };
-    let request = match parse_arguments::<TemporalVideoGenerationRequest>(arguments) {
+    let request = match parse_temporal_video_arguments(arguments) {
         Ok(request) => request,
         Err(error) => return Ok(call_error_result(name, error)),
     };
@@ -1183,6 +1184,14 @@ fn tagged_request(
 
 fn parse_arguments<T: DeserializeOwned>(arguments: rmcp::model::JsonObject) -> Result<T> {
     decode_value(Value::Object(arguments))
+}
+
+fn parse_temporal_video_arguments(
+    arguments: rmcp::model::JsonObject,
+) -> Result<TemporalVideoGenerationRequest> {
+    TemporalVideoGenerationRequest::from_wire(
+        parse_arguments::<TemporalVideoGenerationRequestWire>(arguments)?,
+    )
 }
 
 fn decode_value<T: DeserializeOwned>(value: Value) -> Result<T> {
@@ -2195,5 +2204,45 @@ mod tests {
 
         let error = parse_arguments::<Arguments>(serde_json::Map::new()).unwrap_err();
         assert!(error.message.as_str().contains("missing field `locator`"));
+    }
+
+    #[test]
+    fn temporal_video_limit_refusal_stays_structured_while_shape_errors_keep_schema_text() {
+        let fixture = crate::test_fixture::video_fixture();
+        let mut arguments = serde_json::to_value(&fixture.request)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        arguments["output"]["max_encoded_bytes"] =
+            json!(krometrail_core::MAX_VIDEO_ENCODED_OUTPUT_BYTES + 1);
+
+        let error = parse_temporal_video_arguments(arguments).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+        assert!(!error.message.as_str().contains("advertised input schema"));
+        let response = call_error_result("generate_temporal_video", error);
+        assert_eq!(response.is_error, Some(true));
+        assert!(
+            response.content[0]
+                .as_text()
+                .unwrap()
+                .text
+                .contains("[resource_limit_exceeded]")
+        );
+
+        let mut malformed = serde_json::to_value(&fixture.request)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        malformed.remove("output");
+        let shape_error = parse_temporal_video_arguments(malformed).unwrap_err();
+        assert_eq!(shape_error.code, ErrorCode::InvalidInput);
+        assert!(
+            shape_error
+                .message
+                .as_str()
+                .contains("advertised input schema")
+        );
     }
 }

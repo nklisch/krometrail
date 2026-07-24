@@ -1,7 +1,7 @@
 ---
 id: story-failed-response-error-detail
 kind: story
-stage: implementing
+stage: review
 tags: [mcp]
 parent: null
 depends_on: []
@@ -60,3 +60,13 @@ the new reference") if any of them currently lack it.
       and retry advice; pinned by test.
 - [ ] Degraded and succeeded summaries unchanged.
 - [ ] Full workspace gate green.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the summary formatter and stale-reference contract are localized to the MCP/CDP error boundaries.
+- Review weight: standard default; no independent review requested.
+- Files changed: `crates/krometrail-mcp/src/response.rs`, `crates/krometrail-cdp/src/control/snapshot.rs`, `crates/krometrail-core/src/error.rs`, `crates/krometrail-cdp/tests/temporal_evidence.rs`, and `crates/krometrail-cdp/src/session/reconnect.rs`.
+- Tests added/updated: `failed_summary_includes_code_recovery_and_retry_on_one_line` pins the single-line text format; `visible_errors_are_structured_without_json_text_duplication`, batch summary assertions, and stale-reference recovery assertions were updated to the current contract.
+- Simplification: both failed-response summary sites and batch step failures now use one formatter that exposes the stable code, optional recovery, and retry advice without changing structured error fields.
+- Discrepancies from design: stale-reference recovery was aligned centrally with the fresh-snapshot wording across the existing stale-reference boundary, so related current-geometry and reconnect assertions use the same contract.
+- Adjacent issues parked: none.

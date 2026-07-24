@@ -286,7 +286,7 @@ impl ErrorCode {
                 Some("select or foreground the page, then retry the pointer operation")
             }
             Self::StaleReference => {
-                Some("request a new structured snapshot and retry with its reference")
+                Some("request a fresh snapshot and retry once with the new reference")
             }
             Self::ReferenceNotActionable => Some("refresh the snapshot or choose another target"),
             Self::PageObservationFailed => {

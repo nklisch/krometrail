@@ -1033,6 +1033,10 @@ pub struct QueryPageResult {
     /// the container qualifier dropped would have matched at least one node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uncontained_match_candidates: Option<RelaxedMatchCandidates>,
+    /// Present only on `no_match` when the query matched non-actionable nodes in the acquired
+    /// tree. The count is bounded by [`MAX_SEMANTIC_RELAXED_CANDIDATES`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub non_actionable_match_count: Option<RelaxedMatchCandidates>,
 }
 
 impl QueryPageResult {
@@ -1048,10 +1052,30 @@ impl QueryPageResult {
     pub fn with_no_match_diagnostics(
         context: ObservationContext,
         generation: SnapshotGeneration,
+        matches: Vec<SemanticMatch>,
+        max_matches: u16,
+        relaxed_match_candidates: Option<RelaxedMatchCandidates>,
+        uncontained_match_candidates: Option<RelaxedMatchCandidates>,
+    ) -> Result<Self> {
+        Self::with_no_match_diagnostics_and_non_actionable(
+            context,
+            generation,
+            matches,
+            max_matches,
+            relaxed_match_candidates,
+            uncontained_match_candidates,
+            None,
+        )
+    }
+
+    pub fn with_no_match_diagnostics_and_non_actionable(
+        context: ObservationContext,
+        generation: SnapshotGeneration,
         mut matches: Vec<SemanticMatch>,
         max_matches: u16,
         relaxed_match_candidates: Option<RelaxedMatchCandidates>,
         uncontained_match_candidates: Option<RelaxedMatchCandidates>,
+        non_actionable_match_count: Option<RelaxedMatchCandidates>,
     ) -> Result<Self> {
         if !(1..=MAX_SEMANTIC_MATCH_LIMIT).contains(&max_matches) {
             return Err(invalid("semantic match limit must be between 1 and 100"));
@@ -1083,6 +1107,9 @@ impl QueryPageResult {
         let uncontained_match_candidates = uncontained_match_candidates
             .filter(|_| outcome == SemanticQueryOutcome::NoMatch)
             .filter(|candidates| candidates.count > 0);
+        let non_actionable_match_count = non_actionable_match_count
+            .filter(|_| outcome == SemanticQueryOutcome::NoMatch)
+            .filter(|candidates| candidates.count > 0);
         Ok(Self {
             context,
             generation,
@@ -1091,6 +1118,7 @@ impl QueryPageResult {
             omitted_match_count,
             relaxed_match_candidates,
             uncontained_match_candidates,
+            non_actionable_match_count,
         })
     }
 }

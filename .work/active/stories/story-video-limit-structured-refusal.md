@@ -1,7 +1,7 @@
 ---
 id: story-video-limit-structured-refusal
 kind: story
-stage: implementing
+stage: review
 tags: [temporal, mcp]
 parent: null
 depends_on: []
@@ -63,3 +63,13 @@ Two defects (2026-07-23 v1.6.1 shakedown):
 - [ ] Tests pin at least the frame-cap and duration-cap messages and the
       non-schema-mismatch surface.
 - [ ] Full workspace gate green.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the request validation and MCP routing changes share one small boundary.
+- Review weight: standard default; no independent review requested.
+- Files changed: `crates/krometrail-core/src/video/generation.rs`, `crates/krometrail-core/src/video/mod.rs`, `crates/krometrail-core/src/lib.rs`, `crates/krometrail-core/src/video/tests.rs`, and `crates/krometrail-mcp/src/registry.rs`.
+- Tests added: `temporal_video_limit_refusals_name_frame_and_duration_values` and `temporal_video_limit_refusal_stays_structured_while_shape_errors_keep_schema_text`; they pin numeric frame/duration refusals, recovery/retry, and the normal failed-tool surface while preserving schema errors for malformed shapes.
+- Simplification: video MCP decoding now parses the existing generated wire shape once and invokes the domain constructor directly, avoiding a validation error being re-framed as schema mismatch.
+- Discrepancies from design: no static checked-in MCP schema artifact exists; runtime schemas remain generated from the same wire type and the schema guard passes.
+- Adjacent issues parked: none.

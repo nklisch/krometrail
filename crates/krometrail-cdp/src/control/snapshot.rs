@@ -715,13 +715,11 @@ impl SnapshotRegistry {
         let limit = usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES);
         let mut relaxed_count = 0;
         let mut uncontained_count = 0;
+        let mut non_actionable_count = 0;
         let default_metadata = SemanticNodeMetadata::default();
         let mut matches = Vec::new();
 
         for node in &snapshot.nodes {
-            let Some(reference) = node.reference else {
-                continue;
-            };
             if !in_scope(node) {
                 continue;
             }
@@ -733,11 +731,18 @@ impl SnapshotRegistry {
                 metadata,
                 &mut primary_container_memo,
             ) {
-                matches.push(SemanticMatch {
-                    reference,
-                    role: node.role.clone(),
-                    name: node.name.clone(),
-                });
+                if let Some(reference) = node.reference {
+                    matches.push(SemanticMatch {
+                        reference,
+                        role: node.role.clone(),
+                        name: node.name.clone(),
+                    });
+                } else if non_actionable_count < limit {
+                    non_actionable_count += 1;
+                }
+                continue;
+            }
+            if node.reference.is_none() {
                 continue;
             }
             if let (Some(relaxed), Some(prepared_relaxed)) = (&relaxed, &prepared_relaxed)
@@ -780,14 +785,22 @@ impl SnapshotRegistry {
         } else {
             None
         };
+        let non_actionable_match_count = if matches.is_empty() {
+            Some(krometrail_core::RelaxedMatchCandidates::new(
+                non_actionable_count,
+            ))
+        } else {
+            None
+        };
 
-        QueryPageResult::with_no_match_diagnostics(
+        QueryPageResult::with_no_match_diagnostics_and_non_actionable(
             snapshot.context.clone(),
             snapshot.generation,
             matches,
             request.max_matches,
             relaxed_match_candidates,
             uncontained_match_candidates,
+            non_actionable_match_count,
         )
     }
 
@@ -2809,7 +2822,7 @@ fn malformed_current_geometry(target_id: TargetId) -> krometrail_core::Krometrai
         "current layout viewport geometry is malformed",
     )
     .with_recovery(
-        NonEmptyText::new("request a new structured snapshot and retry with its reference")
+        NonEmptyText::new("request a fresh snapshot and retry once with the new reference")
             .expect("static current-reference recovery is non-empty"),
     )
 }
@@ -2826,7 +2839,7 @@ fn current_reference_context(
             range: None,
         })
         .with_recovery(
-            NonEmptyText::new("request a new structured snapshot and retry with its reference")
+            NonEmptyText::new("request a fresh snapshot and retry once with the new reference")
                 .expect("static current-reference recovery is non-empty"),
         )
 }
@@ -3628,7 +3641,10 @@ fn ax_owned(value: Option<AxValueWire>) -> Option<String> {
     })
 }
 fn stale(target_id: TargetId, message: &'static str) -> krometrail_core::KrometrailError {
-    operation_error(ErrorCode::StaleReference, target_id, message)
+    operation_error(ErrorCode::StaleReference, target_id, message).with_recovery(
+        NonEmptyText::new("request a fresh snapshot and retry once with the new reference")
+            .expect("stale-reference recovery is non-empty"),
+    )
 }
 fn not_actionable(target_id: TargetId, message: &'static str) -> krometrail_core::KrometrailError {
     operation_error(ErrorCode::ReferenceNotActionable, target_id, message)
@@ -3992,6 +4008,51 @@ mod tests {
                 .unwrap()
                 .match_count,
             1
+        );
+    }
+
+    #[test]
+    fn query_no_match_reports_bounded_non_actionable_matches_only_when_present() {
+        let (registry, bound, snapshot) = status_registry_fixture(&["Ready"], false, 0);
+        let request = QueryPageRequest::new(
+            krometrail_core::PageSelection::Target(target()),
+            status_query(None),
+            None,
+            20,
+        )
+        .unwrap();
+        let result = registry.query(&bound, &request, &snapshot).unwrap();
+        assert_eq!(result.outcome, SemanticQueryOutcome::NoMatch);
+        assert_eq!(
+            result.non_actionable_match_count,
+            Some(RelaxedMatchCandidates {
+                count: 1,
+                saturated: false,
+            })
+        );
+
+        let (registry, bound, snapshot) = status_registry_fixture(&[], false, 0);
+        let result = registry.query(&bound, &request, &snapshot).unwrap();
+        assert_eq!(result.outcome, SemanticQueryOutcome::NoMatch);
+        assert!(result.non_actionable_match_count.is_none());
+        assert!(
+            !serde_json::to_value(result)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("non_actionable_match_count")
+        );
+
+        let status_names =
+            vec!["Ready"; usize::from(krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES) + 1];
+        let (registry, bound, snapshot) = status_registry_fixture(&status_names, false, 0);
+        let result = registry.query(&bound, &request, &snapshot).unwrap();
+        assert_eq!(
+            result.non_actionable_match_count,
+            Some(RelaxedMatchCandidates {
+                count: krometrail_core::MAX_SEMANTIC_RELAXED_CANDIDATES,
+                saturated: true,
+            })
         );
     }
 
@@ -7183,7 +7244,7 @@ mod tests {
                 error
                     .recovery
                     .as_ref()
-                    .is_some_and(|value| value.as_str().contains("new structured snapshot"))
+                    .is_some_and(|value| value.as_str().contains("fresh snapshot"))
             );
         };
 

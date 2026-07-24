@@ -18,9 +18,10 @@ fn temporal_video_operation_is_one_stable_registry_contract() {
 }
 use crate::{
     ArtifactId, CaptureGap, CaptureGapReason, CaptureOrdinal, CapturedFrame, DeviceScaleFactor,
-    ErrorCode, FrameId, GapId, ImageFormat, ObservedTime, PixelDimensions, RangeResolutionOptions,
-    ResolvedRange, SessionId, SessionRange, SessionTime, TargetId, TemporalRangeAnchorKind,
-    VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile, VisualEpoch,
+    ErrorCode, FrameId, GapId, ImageFormat, ObservedTime, OutputLimitsRequest, PixelDimensions,
+    RangeResolutionOptions, ResolvedRange, SessionId, SessionRange, SessionTime, TargetId,
+    TemporalRangeAnchorKind, VideoEncodedClip, VideoEncoderIdentity, VideoEncodingProfile,
+    VisualEpoch,
 };
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -800,6 +801,51 @@ fn retained_video_request_handle_and_publication_are_constructor_validated() {
     )
     .unwrap();
     assert_eq!(publication.encoded_bytes.as_ref(), encoded.encoded_bytes());
+}
+
+#[test]
+fn temporal_video_limit_refusals_name_frame_and_duration_values() {
+    let frame_ids = (0..=MAX_VIDEO_SOURCE_FRAMES)
+        .map(|index| frame_id(1_000 + index as u128))
+        .collect();
+    let frame_error = TemporalVideoGenerationRequest::new(
+        resolved(frame_ids, 5_227_000_000),
+        VideoPresentationPolicy::RealTime,
+        OutputLimitsRequest::new(4, 4, 1024).unwrap(),
+    )
+    .unwrap_err();
+    assert_eq!(frame_error.code, ErrorCode::ResourceLimitExceeded);
+    assert_eq!(
+        frame_error.message.as_str(),
+        "temporal video source plan: 121 frames over 5.227 s exceeds limit 120 frames"
+    );
+    assert_eq!(frame_error.retry, crate::RetryAdvice::Never);
+    assert!(frame_error.recovery.as_ref().is_some_and(|recovery| {
+        recovery
+            .as_str()
+            .contains("split it into consecutive clips")
+    }));
+
+    let duration_error = TemporalVideoGenerationRequest::new(
+        resolved(
+            vec![frame_id(2_000)],
+            MAX_VIDEO_SOURCE_DURATION.as_nanos() as u64 + 1,
+        ),
+        VideoPresentationPolicy::RealTime,
+        OutputLimitsRequest::new(4, 4, 1024).unwrap(),
+    )
+    .unwrap_err();
+    assert_eq!(duration_error.code, ErrorCode::ResourceLimitExceeded);
+    assert_eq!(
+        duration_error.message.as_str(),
+        "temporal video source plan: 30.000000001 s exceeds limit 30 s"
+    );
+    assert!(
+        duration_error
+            .recovery
+            .as_ref()
+            .is_some_and(|recovery| recovery.as_str().contains("narrow the resolved range"))
+    );
 }
 
 #[test]

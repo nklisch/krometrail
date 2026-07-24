@@ -18,13 +18,14 @@ pub struct TemporalVideoGenerationRequest {
     output: OutputLimitsRequest,
 }
 
+#[doc(hidden)]
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct TemporalVideoGenerationRequestWire {
-    range: ResolvedRange,
-    policy: VideoPresentationPolicy,
+pub struct TemporalVideoGenerationRequestWire {
+    pub range: ResolvedRange,
+    pub policy: VideoPresentationPolicy,
     #[schemars(with = "TemporalVideoOutputLimitsSchema")]
-    output: OutputLimitsRequest,
+    pub output: OutputLimitsRequest,
 }
 
 #[derive(schemars::JsonSchema)]
@@ -51,23 +52,75 @@ impl TemporalVideoGenerationRequest {
             .end()
             .as_nanos()
             .saturating_sub(range.resolved_range.start().as_nanos());
-        if duration > MAX_VIDEO_SOURCE_DURATION.as_nanos() as u64
-            || range.frame_ids.len() > MAX_VIDEO_SOURCE_FRAMES
-            || output.max_width() > MAX_VIDEO_WIDTH
-            || output.max_height() > MAX_VIDEO_HEIGHT
-            || output.max_width() < 2
-            || output.max_height() < 2
-            || output.max_encoded_bytes() > MAX_VIDEO_ENCODED_OUTPUT_BYTES
-        {
-            return Err(limit_error(
-                "temporal video request exceeds the fixed duration, frame, geometry, or output limit",
+        let mut violations = Vec::new();
+        let mut recovery = Vec::new();
+        if duration > MAX_VIDEO_SOURCE_DURATION.as_nanos() as u64 {
+            violations.push(format!(
+                "temporal video source plan: {} exceeds limit {}",
+                format_duration(duration),
+                format_duration(MAX_VIDEO_SOURCE_DURATION.as_nanos() as u64),
             ));
+            recovery.push("narrow the resolved range or split it into consecutive clips");
+        }
+        if range.frame_ids.len() > MAX_VIDEO_SOURCE_FRAMES {
+            violations.push(format!(
+                "temporal video source plan: {} frames over {} exceeds limit {} frames",
+                range.frame_ids.len(),
+                format_duration(duration),
+                MAX_VIDEO_SOURCE_FRAMES,
+            ));
+            recovery.push("narrow the resolved range or split it into consecutive clips");
+        }
+        if output.max_width() > MAX_VIDEO_WIDTH {
+            violations.push(format!(
+                "temporal video output width: {} px exceeds limit {} px",
+                output.max_width(),
+                MAX_VIDEO_WIDTH,
+            ));
+            recovery.push("lower output geometry or encoded bytes");
+        } else if output.max_width() < 2 {
+            violations.push(format!(
+                "temporal video output width: {} px is below minimum 2 px",
+                output.max_width(),
+            ));
+            recovery.push("use output geometry within the supported width bounds");
+        }
+        if output.max_height() > MAX_VIDEO_HEIGHT {
+            violations.push(format!(
+                "temporal video output height: {} px exceeds limit {} px",
+                output.max_height(),
+                MAX_VIDEO_HEIGHT,
+            ));
+            recovery.push("lower output geometry or encoded bytes");
+        } else if output.max_height() < 2 {
+            violations.push(format!(
+                "temporal video output height: {} px is below minimum 2 px",
+                output.max_height(),
+            ));
+            recovery.push("use output geometry within the supported height bounds");
+        }
+        if output.max_encoded_bytes() > MAX_VIDEO_ENCODED_OUTPUT_BYTES {
+            violations.push(format!(
+                "temporal video encoded output: {} bytes exceeds limit {} bytes",
+                output.max_encoded_bytes(),
+                MAX_VIDEO_ENCODED_OUTPUT_BYTES,
+            ));
+            recovery.push("lower output geometry or encoded bytes");
+        }
+        if !violations.is_empty() {
+            recovery.sort_unstable();
+            recovery.dedup();
+            return Err(limit_error(violations.join("; "), recovery.join("; ")));
         }
         Ok(Self {
             range,
             policy,
             output,
         })
+    }
+
+    pub fn from_wire(wire: TemporalVideoGenerationRequestWire) -> Result<Self> {
+        Self::new(wire.range, wire.policy, wire.output)
     }
 
     pub const fn range(&self) -> &ResolvedRange {
@@ -86,7 +139,7 @@ impl TemporalVideoGenerationRequest {
 impl<'de> Deserialize<'de> for TemporalVideoGenerationRequest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
         deserialize_validated(deserializer, |wire: TemporalVideoGenerationRequestWire| {
-            Self::new(wire.range, wire.policy, wire.output)
+            Self::from_wire(wire)
         })
     }
 }
@@ -243,9 +296,22 @@ fn invalid(message: &'static str) -> KrometrailError {
     )
 }
 
-fn limit_error(message: &'static str) -> KrometrailError {
+fn format_duration(nanos: u64) -> String {
+    let seconds = nanos / 1_000_000_000;
+    let fraction = format!("{:09}", nanos % 1_000_000_000);
+    let fraction = fraction.trim_end_matches('0');
+    if fraction.is_empty() {
+        format!("{seconds} s")
+    } else {
+        format!("{seconds}.{fraction} s")
+    }
+}
+
+fn limit_error(message: String, recovery: String) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::ResourceLimitExceeded,
         NonEmptyText::new(message).expect("video limit message is non-empty"),
     )
+    .with_recovery(NonEmptyText::new(recovery).expect("video limit recovery is non-empty"))
+    .with_retry(crate::RetryAdvice::Never)
 }

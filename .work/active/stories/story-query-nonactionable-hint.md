@@ -1,7 +1,7 @@
 ---
 id: story-query-nonactionable-hint
 kind: story
-stage: implementing
+stage: review
 tags: [mcp]
 parent: null
 depends_on: []
@@ -49,3 +49,13 @@ the page. Container queries already solve this shape with
 - [ ] Schema regenerated and wire checks green; tests pin both no_match
       variants.
 - [ ] Full workspace gate green.
+
+## Implementation notes
+
+- Execution capability: inline implementation; the query already has one bounded snapshot scan and one result-construction seam.
+- Review weight: standard default; no independent review requested.
+- Files changed: `crates/krometrail-core/src/browser/observation.rs`, `crates/krometrail-cdp/src/control/snapshot.rs`, `docs/SPEC.md`, and `plugin/skills/krometrail/SKILL.md`.
+- Tests added: `query_no_match_reports_bounded_non_actionable_matches_only_when_present` pins positive, zero-match omission, and saturation behavior from the acquired tree.
+- Simplification: the existing no-match diagnostics constructor remains the compatibility-free default while the query path supplies the additive non-actionable count through a single canonical projection.
+- Discrepancies from design: the bounded count uses the existing `RelaxedMatchCandidates` shape so saturation remains explicit alongside the count; no checked-in schema file is generated in this workspace.
+- Adjacent issues parked: none.

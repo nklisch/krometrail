@@ -189,7 +189,10 @@ matcher, when the relaxation would still match nothing, or when the query matche
 unreported nodes; callers narrow the query until it returns one unique reference before acting. A `no_match`
 result for a container-qualified role query additionally reports how many nodes the same role query would
 match with the container qualifier dropped, under the same declared candidate limit and saturation
-reporting. Plain
+reporting. When the primary query matches only non-actionable nodes in the same acquired tree, a
+`no_match` result additionally reports a bounded `non_actionable_match_count` with the same saturation
+accounting; a query with no matches anywhere omits that field. The count is informational and never
+authorizes mutation. Plain
 role/name queries acquire only the selected document's accessibility tree. Container-text, label,
 rendered-text, and test-id queries additionally acquire DOM semantics. Completeness limits apply to
 the selected acquisition, not unrelated documents, and fail with bounded narrowing guidance. Exact and
