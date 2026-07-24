@@ -1,7 +1,7 @@
 ---
 id: story-analysis-budget-tuning
 kind: story
-stage: implementing
+stage: done
 tags: [perf, temporal]
 parent: null
 depends_on: []
@@ -89,3 +89,7 @@ limits so realistic windows fit, with benchmark evidence.
   ultrafast H.264 policy; its argument identity is now `h264-v2`.
 - Limit-message tests and schemas use the current values directly; no old
   limit aliases or compatibility paths were retained.
+
+## Review
+
+Bounded fresh-context review: PASS with one accepted minor: the ignore-gated 430-frame video perf test measures and reports wall time without asserting a ceiling; it is a measurement harness backing the recorded numbers, not a regression guard. PTS filter equivalence and balanced-lookup boundary handling verified by hand; ultrafast preset affects compression only, and the h264-v2 policy identity correctly invalidates v1-cached clips.

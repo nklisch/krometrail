@@ -1,7 +1,7 @@
 ---
 id: story-query-nonactionable-hint
 kind: story
-stage: review
+stage: done
 tags: [mcp]
 parent: null
 depends_on: []
@@ -59,3 +59,7 @@ the page. Container queries already solve this shape with
 - Simplification: the existing no-match diagnostics constructor remains the compatibility-free default while the query path supplies the additive non-actionable count through a single canonical projection.
 - Discrepancies from design: the bounded count uses the existing `RelaxedMatchCandidates` shape so saturation remains explicit alongside the count; no checked-in schema file is generated in this workspace.
 - Adjacent issues parked: none.
+
+## Review
+
+Bounded fresh-context review: PASS, no findings. Count derives from the single acquired-tree pass, saturates per the relaxed-candidates convention, appears only on no_match with matches present, and stays distinct from uncontained_match_candidates in SPEC/skill wording.

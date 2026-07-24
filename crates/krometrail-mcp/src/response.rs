@@ -761,19 +761,15 @@ pub(crate) fn map_browser_status(
                 every_nth_frame: status.every_nth_frame,
             };
             if response.detail == ResponseDetail::Expanded {
-                let mut mapped = map_lifecycle_result(
+                map_lifecycle_result(
                     tool,
                     ExpandedBrowserStatus {
                         concise,
                         pages: status.pages,
                     },
-                )?;
-                add_server_version(&mut mapped.response.result)?;
-                Ok(mapped)
+                )
             } else {
-                let mut mapped = map_lifecycle_result(tool, concise)?;
-                add_server_version(&mut mapped.response.result)?;
-                Ok(mapped)
+                map_lifecycle_result(tool, concise)
             }
         }
     }

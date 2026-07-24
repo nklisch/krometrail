@@ -1,7 +1,7 @@
 ---
 id: story-activation-version-transparency
 kind: story
-stage: implementing
+stage: done
 tags: [distribution, mcp]
 parent: null
 depends_on: []
@@ -68,3 +68,7 @@ Two findings from the 2026-07-23 v1.6.1 activation sequence:
 - The hermetic bootstrap fixture pins the neutral cold-start diagnostic and the
   existing symlink/identity safety failures without network or home-directory
   access.
+
+## Review
+
+Bounded fresh-context review: PASS with two minors, both fixed by the host before done: redundant server_version double-insertion removed from the concise/expanded projection (struct field is the declared shape; the raw insert remains only on the Full tier), and a hermetic fixture now pins that a symlinked managed release directory fails with the strict wording and is never misreported as not staged.

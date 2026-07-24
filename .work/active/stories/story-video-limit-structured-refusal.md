@@ -1,7 +1,7 @@
 ---
 id: story-video-limit-structured-refusal
 kind: story
-stage: review
+stage: done
 tags: [temporal, mcp]
 parent: null
 depends_on: []
@@ -73,3 +73,7 @@ Two defects (2026-07-23 v1.6.1 shakedown):
 - Simplification: video MCP decoding now parses the existing generated wire shape once and invokes the domain constructor directly, avoiding a validation error being re-framed as schema mismatch.
 - Discrepancies from design: no static checked-in MCP schema artifact exists; runtime schemas remain generated from the same wire type and the schema guard passes.
 - Adjacent issues parked: none.
+
+## Review
+
+Bounded fresh-context review: PASS, no findings. Per-limit numeric refusals verified (including duration formatting), constructor-only validation confirmed with no unvalidated path via the range-handle route, and shape errors retained the schema-mismatch surface.

@@ -263,4 +263,24 @@ if FAKE_CURL_MODE=untrusted-redirect run_launcher "$STATE/plugin-100" "$STATE/re
 fi
 grep -Fq 'untrusted host' "$STATE/redirect.stderr" || fail "redirect rejection was not explicit"
 
+version_link_root="$STATE/version-symlink-root"
+version_link_real="$STATE/version-symlink-real"
+mkdir -p "$version_link_root/versions" "$version_link_real"
+chmod 700 "$version_link_root" "$version_link_root/versions" "$version_link_real"
+cat >"$version_link_real/krometrail" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$STATE/version-symlink-executions"
+if [ "\${1:-}" = --version ]; then printf 'krometrail 1.0.0\n'; else printf 'version-symlink\n'; fi
+EOF
+chmod 700 "$version_link_real/krometrail"
+ln -s "$version_link_real" "$version_link_root/versions/1.0.0"
+if FAKE_CURL_MODE=fail run_launcher "$STATE/plugin-100" "$version_link_root" mcp >/dev/null 2>"$STATE/version-symlink.stderr"; then
+  fail "symlinked managed release directory was accepted"
+fi
+[[ ! -e "$STATE/version-symlink-executions" ]] || fail "binary behind symlinked release directory executed before validation"
+grep -Fq 'managed release directory is unavailable or unsafe' "$STATE/version-symlink.stderr" \
+  || fail "symlinked release directory rejection was not the strict wording"
+grep -Fq 'is not staged yet' "$STATE/version-symlink.stderr" \
+  && fail "symlinked release directory was misreported as not staged" || true
+
 printf 'plugin bootstrap fixtures: ok\n'

@@ -1,7 +1,7 @@
 ---
 id: story-trim-signaling-visibility
 kind: story
-stage: implementing
+stage: done
 tags: [temporal, mcp]
 parent: null
 depends_on: []
@@ -74,3 +74,7 @@ the transparency intent:
   guidance. No page content or filesystem paths enter the message.
 - Updated `docs/SPEC.md` to describe the current sticky field and warning
   boundary.
+
+## Review
+
+Bounded fresh-context review: PASS, no findings on the sticky boundary or warning seams. Host independent gate separately caught and fixed the fully-evicted refusal advising after_recovery retry; it now keeps RetryAdvice::Never with the boundary-naming recovery (commit cdbe9c0f), pinned at core and store level.

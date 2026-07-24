@@ -1,7 +1,7 @@
 ---
 id: story-failed-response-error-detail
 kind: story
-stage: review
+stage: done
 tags: [mcp]
 parent: null
 depends_on: []
@@ -70,3 +70,7 @@ the new reference") if any of them currently lack it.
 - Simplification: both failed-response summary sites and batch step failures now use one formatter that exposes the stable code, optional recovery, and retry advice without changing structured error fields.
 - Discrepancies from design: stale-reference recovery was aligned centrally with the fresh-snapshot wording across the existing stale-reference boundary, so related current-geometry and reconnect assertions use the same contract.
 - Adjacent issues parked: none.
+
+## Review
+
+Bounded fresh-context review: PASS, no findings. Single formatter confirmed at both summary sites and batch steps with no recovery double-render; degraded/succeeded summaries unchanged; stale-binding recovery aligned across boundaries.
