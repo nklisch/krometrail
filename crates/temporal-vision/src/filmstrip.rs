@@ -786,6 +786,7 @@ impl Default for RegionFilmstripRenderLimits {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegionFilmstripParameters {
     region: RegionDefinition,
+    tracking_label: Option<String>,
     mask: Option<BinaryMask>,
     anchor: Timestamp,
     tile_limit: FilmstripTileLimit,
@@ -811,6 +812,7 @@ impl RegionFilmstripParameters {
     ) -> Self {
         Self {
             region,
+            tracking_label: None,
             mask: None,
             anchor,
             tile_limit,
@@ -838,6 +840,11 @@ impl RegionFilmstripParameters {
         }
         self.mask = Some(mask);
         Ok(self)
+    }
+
+    pub fn with_tracking_label(mut self, label: impl Into<String>) -> Self {
+        self.tracking_label = Some(label.into());
+        self
     }
 
     pub const fn region(&self) -> RegionDefinition {
@@ -1061,6 +1068,236 @@ where
             layout,
             tile_dimensions,
         )?,
+        layout.dimensions,
+        hash,
+    )?;
+    Ok(RegionFilmstripArtifact {
+        artifact: GeneratedArtifact::new(EncodedImage::new(layout.dimensions, bytes), manifest),
+        plan,
+    })
+}
+
+/// A fixed-size crop location for one source frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct TrackedRegion {
+    pub frame_index: usize,
+    pub rect: SignedPixelRect,
+}
+
+/// Parameters for a filmstrip whose crop follows a recorded region per frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrackedFilmstripParameters {
+    pub regions: Vec<TrackedRegion>,
+    pub anchor: Timestamp,
+    pub tile_limit: FilmstripTileLimit,
+    pub background: Rgb8,
+    pub padding_color: Rgb8,
+    pub display_scale: IntegerScale,
+    pub labels: RegionFilmstripLabels,
+    pub limits: RegionFilmstripRenderLimits,
+}
+
+impl TrackedFilmstripParameters {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        regions: Vec<TrackedRegion>,
+        anchor: Timestamp,
+        tile_limit: FilmstripTileLimit,
+        background: Rgb8,
+        padding_color: Rgb8,
+        display_scale: IntegerScale,
+        labels: RegionFilmstripLabels,
+        limits: RegionFilmstripRenderLimits,
+    ) -> Self {
+        Self {
+            regions,
+            anchor,
+            tile_limit,
+            background,
+            padding_color,
+            display_scale,
+            labels,
+            limits,
+        }
+    }
+}
+
+/// Generate a per-frame moving crop. All tiles share the first union crop for
+/// normalization, while their plans retain their own source rectangle/padding.
+pub fn generate_tracked_region_filmstrip<A, F, M, G, P>(
+    artifact_id: A,
+    source: &FrameSequence<F, M, G, P>,
+    parameters: TrackedFilmstripParameters,
+) -> Result<RegionFilmstripArtifact<A, F, M, G>>
+where
+    F: Clone + Eq + Display,
+    M: Clone + Eq,
+    G: Clone + Eq,
+    P: AsRef<[u8]>,
+{
+    if parameters.regions.is_empty() {
+        return Err(VisionError::new(
+            ErrorCode::InvalidParameter,
+            "tracked filmstrip requires regions",
+        ));
+    }
+    let selected = select_indices(
+        source.frames().len(),
+        usize::from(parameters.tile_limit.get()),
+    );
+    let mut by_frame = std::collections::BTreeMap::new();
+    for region in parameters.regions {
+        by_frame.insert(region.frame_index, region.rect);
+    }
+    let first = *by_frame.get(&selected[0]).ok_or_else(|| {
+        VisionError::new(
+            ErrorCode::InvalidParameter,
+            "tracked region missing selected frame",
+        )
+    })?;
+    let mut union = first;
+    for index in &selected {
+        let rect = *by_frame.get(index).ok_or_else(|| {
+            VisionError::new(
+                ErrorCode::InvalidParameter,
+                "tracked region missing selected frame",
+            )
+        })?;
+        if rect.width() != first.width() || rect.height() != first.height() {
+            return Err(VisionError::new(
+                ErrorCode::InvalidRegion,
+                "tracked crop dimensions must remain fixed",
+            ));
+        }
+        let left = union.x().min(rect.x());
+        let top = union.y().min(rect.y());
+        let right = union.right_exclusive()?.max(rect.right_exclusive()?);
+        let bottom = union.bottom_exclusive()?.max(rect.bottom_exclusive()?);
+        union = SignedPixelRect::from_outward_f64_bounds(
+            left as f64,
+            top as f64,
+            right as f64,
+            bottom as f64,
+        )?;
+    }
+    let tile_dims = PixelDimensions::new(first.width(), first.height())?;
+    let mut tiles = Vec::with_capacity(selected.len());
+    for index in &selected {
+        let frame = &source.frames()[*index];
+        let rect = *by_frame.get(index).unwrap();
+        let (source_rect, padding) = intersect_region(rect, source.dimensions())?;
+        tiles.push(FilmstripTilePlan {
+            frame_id: frame.id().clone(),
+            frame_index: *index,
+            timestamp: frame.timestamp(),
+            anchor_offset_nanos: i128::from(frame.timestamp().as_nanos())
+                - i128::from(parameters.anchor.as_nanos()),
+            source_rect,
+            padding,
+            gap_after: false,
+        });
+    }
+    let plan = RegionFilmstripPlan {
+        tiles: tiles.into_boxed_slice(),
+        locator_frame_index: selected[0],
+        coordinate_space: RegionCoordinateSpace::SourceImage,
+        declared_region: union,
+        resolved_source_region: union,
+        tile_source_dimensions: tile_dims,
+        omitted_frame_count: (source.frames().len() - selected.len()) as u64,
+    };
+    let tile_source = FrameSequence::new(
+        selected
+            .iter()
+            .map(|i| source.frames()[*i].to_owned())
+            .collect(),
+        Vec::<Marker<M>>::new(),
+        Vec::<DeclaredGap<G>>::new(),
+        source.region(),
+        source.mask().cloned(),
+    )?;
+    let normalized = normalize_sequence(
+        &tile_source,
+        NormalizationParameters::new(
+            parameters.background,
+            Some(
+                intersect_region(union, source.dimensions())?
+                    .0
+                    .unwrap_or(PixelRect::new(0, 0, 1, 1)?),
+            ),
+            IntegerScale::IDENTITY,
+            parameters.limits.processing_limits(),
+        ),
+    )?;
+    let locator_source = FrameSequence::new(
+        vec![source.frames()[selected[0]].to_owned()],
+        Vec::<Marker<M>>::new(),
+        Vec::<DeclaredGap<G>>::new(),
+        None,
+        None,
+    )?;
+    let locator = normalize_sequence(
+        &locator_source,
+        NormalizationParameters::new(
+            parameters.background,
+            None,
+            IntegerScale::IDENTITY,
+            parameters.limits.processing_limits(),
+        ),
+    )?;
+    let display_dims = scaled_tile_dimensions(tile_dims, parameters.display_scale)?;
+    let layout = FilmstripLayout::new(display_dims, selected.len(), parameters.limits)?;
+    let mut canvas = Canvas::new(
+        layout.dimensions,
+        BLACK,
+        parameters.limits.max_canvas_bytes(),
+    )?;
+    let fixed = RegionFilmstripParameters::new(
+        RegionDefinition::FixedSourceImage { rect: union },
+        parameters.anchor,
+        parameters.tile_limit,
+        parameters.background,
+        parameters.padding_color,
+        parameters.display_scale,
+        parameters.labels,
+        parameters.limits,
+    )
+    .with_tracking_label("TRACKING NODE | PER-FRAME REGION");
+    render_filmstrip(
+        &mut canvas,
+        layout,
+        source,
+        &normalized,
+        &locator,
+        &plan,
+        &fixed,
+    )?;
+    let (bytes, hash) = crate::encode::encode_png(
+        layout.dimensions,
+        canvas.pixels(),
+        parameters.limits.max_encoded_bytes(),
+    )?;
+    let manifest = ArtifactManifest::from_sequence_with_domain(
+        artifact_id,
+        ArtifactKind::RegionFilmstrip,
+        EvidenceClass::SourceDerived,
+        {
+            let d = generator_descriptor(ArtifactKind::RegionFilmstrip);
+            AlgorithmDescriptor::new(d.name, d.version)?
+        },
+        source,
+        manifest_region(
+            RegionDefinition::FixedSourceImage { rect: union },
+            source.dimensions(),
+        )?,
+        None,
+        selected
+            .iter()
+            .map(|i| source.frames()[*i].id().clone())
+            .collect(),
+        crate::provenance::SequenceConsumption::SelectedFramesOnly,
+        Vec::new(),
+        Parameters::new(BTreeMap::new())?,
         layout.dimensions,
         hash,
     )?;
@@ -1294,14 +1531,22 @@ fn draw_header<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
     )?;
     let status = if source.gaps().is_empty() {
         format!(
-            "SOURCE-DERIVED | FIXED {} | TRACKING NONE | STRIP OMITTED {}",
+            "SOURCE-DERIVED | FIXED {} | {} | STRIP OMITTED {}",
             plan.coordinate_space().as_str(),
+            parameters
+                .tracking_label
+                .as_deref()
+                .unwrap_or("TRACKING NONE"),
             plan.omitted_frame_count()
         )
     } else {
         format!(
-            "GAP - UNSEEN BEHAVIOR MAY HAVE OCCURRED | FIXED {} | TRACKING NONE",
-            plan.coordinate_space().as_str()
+            "GAP - UNSEEN BEHAVIOR MAY HAVE OCCURRED | FIXED {} | {}",
+            plan.coordinate_space().as_str(),
+            parameters
+                .tracking_label
+                .as_deref()
+                .unwrap_or("TRACKING NONE")
         )
     };
     draw_clipped_text(

@@ -131,8 +131,9 @@ pub use error::{ErrorCode, Result, VisionError};
 pub use filmstrip::{
     FilmstripTileLimit, FilmstripTilePlan, PaddingInsets, RationalScale, RegionCoordinateSpace,
     RegionDefinition, RegionFilmstripArtifact, RegionFilmstripLabels, RegionFilmstripParameters,
-    RegionFilmstripPlan, RegionFilmstripRenderLimits, SignedPixelRect, ViewportMapping,
-    generate_region_filmstrip, plan_region_filmstrip, select_indices,
+    RegionFilmstripPlan, RegionFilmstripRenderLimits, SignedPixelRect, TrackedFilmstripParameters,
+    TrackedRegion, ViewportMapping, generate_region_filmstrip, generate_tracked_region_filmstrip,
+    plan_region_filmstrip, select_indices,
 };
 pub use frame::{BorrowedFrame, Frame, OwnedFrame, PixelDimensions, PixelFormat, Timestamp};
 pub use geometry::{BinaryMask, FrameRegion, PixelRect};
