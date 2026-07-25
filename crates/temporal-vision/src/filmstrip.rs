@@ -1149,20 +1149,14 @@ where
     for region in parameters.regions {
         by_frame.insert(region.frame_index, region.rect);
     }
-    let first = *by_frame.get(&selected[0]).ok_or_else(|| {
+    let first = by_frame.values().next().copied().ok_or_else(|| {
         VisionError::new(
             ErrorCode::InvalidParameter,
-            "tracked region missing selected frame",
+            "tracked filmstrip requires regions",
         )
     })?;
     let mut union = first;
-    for index in &selected {
-        let rect = *by_frame.get(index).ok_or_else(|| {
-            VisionError::new(
-                ErrorCode::InvalidParameter,
-                "tracked region missing selected frame",
-            )
-        })?;
+    for rect in by_frame.values().copied() {
         if rect.width() != first.width() || rect.height() != first.height() {
             return Err(VisionError::new(
                 ErrorCode::InvalidRegion,
@@ -1184,7 +1178,24 @@ where
     let mut tiles = Vec::with_capacity(selected.len());
     for index in &selected {
         let frame = &source.frames()[*index];
-        let rect = *by_frame.get(index).unwrap();
+        let Some(rect) = by_frame.get(index).copied() else {
+            tiles.push(FilmstripTilePlan {
+                frame_id: frame.id().clone(),
+                frame_index: *index,
+                timestamp: frame.timestamp(),
+                anchor_offset_nanos: i128::from(frame.timestamp().as_nanos())
+                    - i128::from(parameters.anchor.as_nanos()),
+                source_rect: None,
+                padding: PaddingInsets {
+                    left: first.width(),
+                    top: first.height(),
+                    right: first.width(),
+                    bottom: first.height(),
+                },
+                gap_after: false,
+            });
+            continue;
+        };
         let (source_rect, padding) = intersect_region(rect, source.dimensions())?;
         tiles.push(FilmstripTilePlan {
             frame_id: frame.id().clone(),
@@ -1530,23 +1541,24 @@ fn draw_header<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         MUTED,
     )?;
     let status = if source.gaps().is_empty() {
-        format!(
-            "SOURCE-DERIVED | FIXED {} | {} | STRIP OMITTED {}",
-            plan.coordinate_space().as_str(),
-            parameters
-                .tracking_label
-                .as_deref()
-                .unwrap_or("TRACKING NONE"),
-            plan.omitted_frame_count()
-        )
+        if let Some(label) = parameters.tracking_label.as_deref() {
+            format!(
+                "SOURCE-DERIVED | PER-FRAME REGION | {label} | STRIP OMITTED {}",
+                plan.omitted_frame_count()
+            )
+        } else {
+            format!(
+                "SOURCE-DERIVED | FIXED {} | TRACKING NONE | STRIP OMITTED {}",
+                plan.coordinate_space().as_str(),
+                plan.omitted_frame_count()
+            )
+        }
+    } else if let Some(label) = parameters.tracking_label.as_deref() {
+        format!("GAP - UNSEEN BEHAVIOR MAY HAVE OCCURRED | PER-FRAME REGION | {label}")
     } else {
         format!(
-            "GAP - UNSEEN BEHAVIOR MAY HAVE OCCURRED | FIXED {} | {}",
-            plan.coordinate_space().as_str(),
-            parameters
-                .tracking_label
-                .as_deref()
-                .unwrap_or("TRACKING NONE")
+            "GAP - UNSEEN BEHAVIOR MAY HAVE OCCURRED | FIXED {} | TRACKING NONE",
+            plan.coordinate_space().as_str()
         )
     };
     draw_clipped_text(
@@ -1569,7 +1581,10 @@ fn draw_header<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>>(
         if parameters.mask.is_some() {
             "MASK APPLIED | SELECTED PIXELS SHOWN | EXCLUDED PIXELS HATCHED"
         } else {
-            "FIXED VISUAL REGION; NO LOGICAL ELEMENT FOLLOWING"
+            parameters
+                .tracking_label
+                .as_deref()
+                .unwrap_or("FIXED VISUAL REGION; NO LOGICAL ELEMENT FOLLOWING")
         },
         if parameters.mask.is_some() {
             WARNING
