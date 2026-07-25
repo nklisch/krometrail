@@ -1800,6 +1800,8 @@ fn draw_tile<F: Display>(
         text_width,
         if parameters.mask.is_some() {
             "FIXED MASK | TRACKING NONE"
+        } else if parameters.tracking_label.is_some() {
+            "TRACKED REGION | PER-FRAME CROP"
         } else {
             "FIXED REGION | TRACKING NONE"
         },
@@ -2769,5 +2771,153 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    fn tracked_params(regions: Vec<TrackedRegion>, tile_limit: u8) -> TrackedFilmstripParameters {
+        TrackedFilmstripParameters::new(
+            regions,
+            Timestamp::ZERO,
+            FilmstripTileLimit::new(tile_limit).unwrap(),
+            Rgb8::new(0, 0, 0),
+            Rgb8::new(32, 32, 32),
+            IntegerScale::IDENTITY,
+            RegionFilmstripLabels::new("TRACKED".to_owned(), "TEST".to_owned()).unwrap(),
+            RegionFilmstripRenderLimits::default(),
+        )
+    }
+
+    fn rect(x: i64, y: i64, w: u32, h: u32) -> SignedPixelRect {
+        SignedPixelRect::new(
+            x,
+            y,
+            NonZeroU32::new(w).unwrap(),
+            NonZeroU32::new(h).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn tracked_filmstrip_crops_each_tile_from_its_own_region() {
+        // 4 frames at 8x6; two 4x3 regions at opposite corners. Evenly-spaced
+        // selection over 4 frames with limit 4 selects all frames, but only
+        // frames 1 and 3 have regions.
+        let seq = sized_source(4, PixelDimensions::new(8, 6).unwrap());
+        let artifact = generate_tracked_region_filmstrip(
+            "tracked",
+            &seq,
+            tracked_params(
+                vec![
+                    TrackedRegion {
+                        frame_index: 1,
+                        rect: rect(0, 0, 4, 3),
+                    },
+                    TrackedRegion {
+                        frame_index: 3,
+                        rect: rect(4, 3, 4, 3),
+                    },
+                ],
+                4,
+            ),
+        )
+        .unwrap();
+        let tiles = artifact.plan().tiles();
+        assert_eq!(tiles.len(), 4);
+        // Frame 1: top-left region, fully inside the source.
+        let tile1 = &tiles[1];
+        assert_eq!(tile1.source_rect().unwrap().x(), 0);
+        assert_eq!(tile1.source_rect().unwrap().y(), 0);
+        assert!(tile1.padding().is_empty());
+        // Frame 3: bottom-right region, fully inside the source.
+        let tile3 = &tiles[3];
+        assert_eq!(tile3.source_rect().unwrap().x(), 4);
+        assert_eq!(tile3.source_rect().unwrap().y(), 3);
+        assert!(tile3.padding().is_empty());
+        assert!(!artifact.image().bytes().is_empty());
+    }
+
+    #[test]
+    fn tracked_filmstrip_missing_selected_frame_renders_padded_tile() {
+        // Regions only cover frames 0 and 3; the selected middle frames get
+        // fully-padded tiles instead of an error.
+        let seq = sized_source(4, PixelDimensions::new(8, 6).unwrap());
+        let artifact = generate_tracked_region_filmstrip(
+            "tracked",
+            &seq,
+            tracked_params(
+                vec![
+                    TrackedRegion {
+                        frame_index: 0,
+                        rect: rect(0, 0, 4, 3),
+                    },
+                    TrackedRegion {
+                        frame_index: 3,
+                        rect: rect(0, 0, 4, 3),
+                    },
+                ],
+                4,
+            ),
+        )
+        .unwrap();
+        let tiles = artifact.plan().tiles();
+        assert_eq!(tiles.len(), 4);
+        for index in [1usize, 2] {
+            let tile = &tiles[index];
+            assert!(
+                tile.source_rect().is_none(),
+                "frame {index} without a region must be fully padded"
+            );
+            assert_eq!(tile.padding().left(), 4);
+            assert_eq!(tile.padding().top(), 3);
+        }
+        assert!(!artifact.image().bytes().is_empty());
+    }
+
+    #[test]
+    fn tracked_filmstrip_is_deterministic() {
+        let seq = sized_source(3, PixelDimensions::new(8, 6).unwrap());
+        let make = || {
+            generate_tracked_region_filmstrip(
+                "tracked",
+                &seq,
+                tracked_params(
+                    vec![
+                        TrackedRegion {
+                            frame_index: 0,
+                            rect: rect(0, 0, 4, 3),
+                        },
+                        TrackedRegion {
+                            frame_index: 2,
+                            rect: rect(2, 1, 4, 3),
+                        },
+                    ],
+                    3,
+                ),
+            )
+            .unwrap()
+        };
+        assert_eq!(make().image().bytes(), make().image().bytes());
+    }
+
+    #[test]
+    fn tracked_filmstrip_rejects_inconsistent_crop_dimensions() {
+        let seq = sized_source(3, PixelDimensions::new(8, 6).unwrap());
+        let result = generate_tracked_region_filmstrip(
+            "tracked",
+            &seq,
+            tracked_params(
+                vec![
+                    TrackedRegion {
+                        frame_index: 0,
+                        rect: rect(0, 0, 4, 3),
+                    },
+                    TrackedRegion {
+                        frame_index: 1,
+                        rect: rect(0, 0, 2, 3),
+                    },
+                ],
+                3,
+            ),
+        );
+        assert!(result.is_err());
     }
 }
