@@ -42,6 +42,16 @@ jobs:
             exit 1
           fi
 
+      - name: Block no-op releases
+        run: |
+          # Refuse to publish a new version number over unchanged source.
+          LAST_TAG=$(git tag -l 'temporal-vision-v*' --sort=-v:refname | head -1 || true)
+          if [ -n "$LAST_TAG" ] && git diff --quiet "$LAST_TAG" HEAD -- crates/temporal-vision/; then
+            echo "No changes in crates/temporal-vision/ since $LAST_TAG — this bump is unnecessary."
+            echo "Publish only when the crate's source has changed."
+            exit 1
+          fi
+
       - name: Test
         run: cargo test -p temporal-vision
 

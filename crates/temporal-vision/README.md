@@ -99,6 +99,13 @@ let png_bytes = artifact.storyboard().image().bytes();
 let manifest = artifact.storyboard().manifest(); // provenance + selection reasons
 ```
 
+## Releases
+
+temporal-vision is versioned and published independently of the krometrail
+workspace. Releases are cut from tags (`temporal-vision-vX.Y.Z`) and
+published to crates.io via GitHub OIDC Trusted Publishing; see
+[docs/RELEASING.md](../../docs/RELEASING.md) for the bump policy.
+
 ## License
 
 MIT

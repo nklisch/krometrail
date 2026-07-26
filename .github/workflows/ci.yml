@@ -39,6 +39,37 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  temporal-vision-version-gate:
+    # temporal-vision is versioned independently of the workspace. Policy:
+    # any PR that changes the crate's source must bump its version in the
+    # same PR, so a release tag never carries an unstaged change and never
+    # republishes unchanged code.
+    name: temporal-vision version gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require version bump when temporal-vision changes
+        run: |
+          set -e
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- crates/temporal-vision/ || true)
+          if [ -z "$CHANGED" ]; then
+            echo "temporal-vision untouched; gate passes"
+            exit 0
+          fi
+          BEFORE=$(git show origin/${{ github.base_ref }}:crates/temporal-vision/Cargo.toml | grep -m1 '^version' | cut -d'"' -f2)
+          AFTER=$(grep -m1 '^version' crates/temporal-vision/Cargo.toml | cut -d'"' -f2)
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "crates/temporal-vision changed but its version is still $AFTER."
+            echo "Bump the version in crates/temporal-vision/Cargo.toml (independent of the workspace version)."
+            exit 1
+          fi
+          echo "temporal-vision bumped $BEFORE -> $AFTER; gate passes"
+
   rust-msrv:
     name: Rust MSRV 1.85 gate
     runs-on: ubuntu-latest

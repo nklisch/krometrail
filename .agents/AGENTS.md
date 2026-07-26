@@ -89,6 +89,10 @@ bun scripts/bump-version.ts patch
 
 The helper validates and updates Cargo metadata, runs the Rust quality gate, and performs the repository release commit/tag/push workflow. GitHub Actions builds the stable Linux, macOS, and best-effort Windows asset names and publishes checksums. The installer and developer installer retain the `krometrail` executable name.
 
+`crates/temporal-vision` is the exception: it is versioned and published to crates.io independently of the workspace, via the `publish-temporal-vision.yml` tag workflow (`temporal-vision-vX.Y.Z`) using OIDC Trusted Publishing. Do not bump it with `bump-version.ts`; see docs/RELEASING.md for the policy and gates.
+
+`crates/temporal-vision` is the exception: it is versioned and published to crates.io independently of the workspace, via the `publish-temporal-vision.yml` tag workflow (`temporal-vision-vX.Y.Z`) using OIDC Trusted Publishing. Do not bump it with `bump-version.ts`; see docs/RELEASING.md for the policy and gates.
+
 ## Conventions
 
 - Keep domain logic in `krometrail-core`; infrastructure implementations depend inward on its ports.

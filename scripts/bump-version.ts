@@ -97,6 +97,20 @@ if (workspacePackage) {
 }
 
 const workspacePackageNames = [rootPackageName];
+
+// temporal-vision is versioned and published independently of the workspace
+// (see docs/RELEASING.md). Guard the decoupling: this script must never be
+// the thing that moves its version.
+{
+	const tvCargo = await Bun.file("crates/temporal-vision/Cargo.toml").text();
+	const tvPackage = findTomlSection(tvCargo, "[package]");
+	if (tvPackage && /^\s*version\.workspace\s*=\s*true\s*$/m.test(tvPackage.content)) {
+		throw new Error(
+			"crates/temporal-vision is versioned independently — do not recouple it to version.workspace; bump it manually per docs/RELEASING.md",
+		);
+	}
+}
+
 const workspaceMembers = findTomlSection(originalCargo, "[workspace]");
 if (workspaceMembers) {
 	const membersMatch = workspaceMembers.content.match(/members\s*=\s*\[([\s\S]*?)\]/m);
