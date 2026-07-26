@@ -1,5 +1,8 @@
 [package]
 name = "temporal-vision"
+description = "Deterministic temporal visual analysis: storyboards, difference maps, motion history images, and region filmstrips from frame sequences"
+keywords = ["vision", "storyboard", "filmstrip", "diff", "frames"]
+categories = ["multimedia::images", "data-structures"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
