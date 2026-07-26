@@ -1,0 +1,53 @@
+name: Publish temporal-vision
+
+# Publishes crates/temporal-vision to crates.io via Trusted Publishing
+# (GitHub OIDC → short-lived crates.io token; no stored secrets).
+#
+# One-time setup (web UI): crates.io → temporal-vision → Settings →
+# Trusted Publishing → GitHub: nklisch/krometrail, workflow filename
+# "publish-temporal-vision.yml", environment "crates-io".
+#
+# Release flow: bump version in crates/temporal-vision/Cargo.toml, merge,
+# then tag the merge commit:  git tag temporal-vision-vX.Y.Z && git push --tags
+
+on:
+  push:
+    tags:
+      - "temporal-vision-v*"
+
+permissions:
+  id-token: write # required for OIDC token exchange
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check tag/version agreement
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#temporal-vision-v}"
+          CRATE_VERSION=$(grep -m1 '^version' crates/temporal-vision/Cargo.toml | cut -d'"' -f2)
+          if [ "$TAG_VERSION" != "$CRATE_VERSION" ]; then
+            echo "Tag $TAG_VERSION does not match Cargo.toml version $CRATE_VERSION"
+            exit 1
+          fi
+
+      - name: Test
+        run: cargo test -p temporal-vision
+
+      - name: Publish
+        uses: rust-lang/crates-io-action@v1
+        with:
+          command: publish
+          args: -p temporal-vision
+          use-trusted-publishing: true
