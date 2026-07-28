@@ -29,6 +29,8 @@ jobs:
     environment: crates-io
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -45,7 +47,8 @@ jobs:
       - name: Block no-op releases
         run: |
           # Refuse to publish a new version number over unchanged source.
-          LAST_TAG=$(git tag -l 'temporal-vision-v*' --sort=-v:refname | head -1 || true)
+          # Compare against the PREVIOUS release tag (never the current one).
+          LAST_TAG=$(git tag -l 'temporal-vision-v*' --sort=-v:refname | grep -vx "$GITHUB_REF_NAME" | head -1 || true)
           if [ -n "$LAST_TAG" ] && git diff --quiet "$LAST_TAG" HEAD -- crates/temporal-vision/; then
             echo "No changes in crates/temporal-vision/ since $LAST_TAG — this bump is unnecessary."
             echo "Publish only when the crate's source has changed."
