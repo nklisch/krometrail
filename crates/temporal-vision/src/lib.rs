@@ -1,4 +1,5 @@
 //! Browser-agnostic temporal visual analysis contracts.
+#![doc = include_str!("../README.md")]
 
 #[macro_export]
 macro_rules! stable_registry {

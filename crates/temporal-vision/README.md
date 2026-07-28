@@ -80,7 +80,7 @@ Why it fits agent consumers:
 
 ## Example
 
-```rust
+```rust,ignore
 use temporal_vision::*;
 
 // Build a validated frame sequence (caller-owned ids, borrowed pixels ok).
