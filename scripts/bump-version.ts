@@ -102,7 +102,11 @@ const workspacePackageNames = [rootPackageName];
 // (see docs/RELEASING.md). Guard the decoupling: this script must never be
 // the thing that moves its version.
 {
-	const tvCargo = await Bun.file("crates/temporal-vision/Cargo.toml").text();
+	// The crate may be absent when this script runs inside the bare fixture
+	// repos used by tests/distribution-static.sh; there is nothing to guard
+	// there, so only enforce the decoupling when the manifest exists.
+	const tvManifest = Bun.file("crates/temporal-vision/Cargo.toml");
+	const tvCargo = (await tvManifest.exists()) ? await tvManifest.text() : "";
 	const tvPackage = findTomlSection(tvCargo, "[package]");
 	if (tvPackage && /^\s*version\.workspace\s*=\s*true\s*$/m.test(tvPackage.content)) {
 		throw new Error(
