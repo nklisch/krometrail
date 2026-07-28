@@ -55,9 +55,11 @@ jobs:
       - name: Test
         run: cargo test -p temporal-vision
 
+      - name: Authenticate with crates.io (OIDC)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
       - name: Publish
-        uses: rust-lang/crates-io-action@v1
-        with:
-          command: publish
-          args: -p temporal-vision
-          use-trusted-publishing: true
+        run: cargo publish -p temporal-vision
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
