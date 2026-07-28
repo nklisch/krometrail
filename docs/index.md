@@ -6,7 +6,7 @@ description: "Krometrail records a controlled browser session so coding agents c
 
 hero:
   name: Krometrail
-  text: Browser memory for coding agents
+  text: Give your agent motion vision without video
   tagline: Catch the flicker, jump, and half-rendered state that disappears before the next screenshot.
   actions:
     - theme: brand

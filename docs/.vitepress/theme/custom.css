@@ -17,18 +17,18 @@
 	unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-/* Chrome Inspector palette — Krometrail custom theme */
+/* Slate palette — Krometrail custom theme (muted, editorial dark) */
 
 :root {
-	/* Brand colors */
-	--vp-c-brand-1: #7c3aed;
-	--vp-c-brand-2: #6d28d9;
-	--vp-c-brand-3: #7c3aed;
-	--vp-c-brand-soft: rgba(124, 58, 237, 0.16);
+	/* Brand colors — sage */
+	--vp-c-brand-1: #8fae8b;
+	--vp-c-brand-2: #7a9a76;
+	--vp-c-brand-3: #a3bda0;
+	--vp-c-brand-soft: rgba(143, 174, 139, 0.12);
 
-	/* Accent cyan (browser features) */
-	--kt-accent-cyan: #22d3ee;
-	--kt-accent-cyan-soft: rgba(34, 211, 238, 0.12);
+	/* Accent */
+	--kt-accent-sage: #8fae8b;
+	--kt-accent-sage-soft: rgba(143, 174, 139, 0.10);
 
 	/* Fonts */
 	--vp-font-family-base: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -53,37 +53,42 @@
 /* Dark theme (default) */
 .dark {
 	/* Backgrounds */
-	--vp-c-bg: #111113;
-	--vp-c-bg-soft: #1a1a1e;
-	--vp-c-bg-mute: #222226;
-	--vp-c-bg-alt: #111113;
+	--vp-c-bg: #1b1d1f;
+	--vp-c-bg-soft: #22252a;
+	--vp-c-bg-mute: #2a2e33;
+	--vp-c-bg-alt: #1b1d1f;
 
 	/* Text */
-	--vp-c-text-1: #ededef;
-	--vp-c-text-2: #71717a;
-	--vp-c-text-3: #6b6b75;
+	--vp-c-text-1: #d7d9dc;
+	--vp-c-text-2: #959ba3;
+	--vp-c-text-3: #6b7178;
 
 	/* Borders */
-	--vp-c-divider: #27272a;
-	--vp-c-border: #27272a;
-	--vp-c-gutter: #27272a;
-	--kt-border-highlight: #3f3f46;
+	--vp-c-divider: #30353b;
+	--vp-c-border: #30353b;
+	--vp-c-gutter: #30353b;
+	--kt-border-highlight: #41474f;
 }
 
 /* Light theme */
 :root:not(.dark) {
-	--vp-c-bg: #ffffff;
-	--vp-c-bg-soft: #f4f4f5;
-	--vp-c-bg-mute: #e4e4e7;
-	--vp-c-bg-alt: #f9f9fb;
+	--vp-c-bg: #f7f8f7;
+	--vp-c-bg-soft: #eef0ee;
+	--vp-c-bg-mute: #e2e5e2;
+	--vp-c-bg-alt: #fbfcfb;
 
-	--vp-c-text-1: #18181b;
-	--vp-c-text-2: #52525b;
-	--vp-c-text-3: #64646e;
+	--vp-c-text-1: #24272a;
+	--vp-c-text-2: #565d63;
+	--vp-c-text-3: #6f767c;
 
-	--vp-c-divider: #e4e4e7;
-	--vp-c-border: #e4e4e7;
-	--kt-border-highlight: #d4d4d8;
+	--vp-c-brand-1: #5c7a58;
+	--vp-c-brand-2: #4d6849;
+	--vp-c-brand-3: #6e8a6a;
+	--vp-c-brand-soft: rgba(92, 122, 88, 0.14);
+
+	--vp-c-divider: #d9ddd9;
+	--vp-c-border: #d9ddd9;
+	--kt-border-highlight: #c3c9c3;
 }
 
 /* Font application */
@@ -106,17 +111,17 @@ div[class*="language-"] {
 }
 
 .dark div[class*="language-"] {
-	background-color: #1a1a1e !important;
+	background-color: #15171a !important;
 }
 
-/* Violet accent border utility */
-.kt-border-violet {
+/* Brand accent border utility */
+.kt-border-brand {
 	border-left: 3px solid var(--vp-c-brand-1);
 }
 
-/* Cyan accent border utility */
-.kt-border-cyan {
-	border-left: 3px solid var(--kt-accent-cyan);
+/* Sage accent border utility */
+.kt-border-accent {
+	border-left: 3px solid var(--kt-accent-sage);
 }
 
 /* Card base style */
