@@ -1,5 +1,7 @@
 # Krometrail
 
+[![MCP Toplist](https://mcptoplist.com/badge/glama%2Fnklisch%2Fkrometrail.svg)](https://mcptoplist.com/server/glama%2Fnklisch%2Fkrometrail)
+
 **Browser memory for coding agents.**
 
 A screenshot shows your agent what a page is. Krometrail preserves what the page did—flicker, reversed motion, transient layout shifts, hydration flashes, focus jumps, and incorrect canvas frames that disappear before the next screenshot.
