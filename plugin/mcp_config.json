@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "krometrail": {
+      "command": "./bin/krometrail",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}
