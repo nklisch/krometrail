@@ -26,9 +26,10 @@ impl PageControl {
             "Runtime.callFunctionOn",
             json!({"functionDeclaration": READ_CLIPBOARD, "objectId": execution_object_id, "awaitPromise": true, "returnByValue": true}),
         ).await.map_err(|error| clipboard_dispatch_error(error, bound))?;
-        let text = result_value(&response)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| clipboard_response_error(bound, &response))?;
+        let value = clipboard_bridge_value(bound, &response)?;
+        let text = value
+            .as_str()
+            .ok_or_else(|| clipboard_uninterpretable_error(bound))?;
         if text.len() > MAX_CLIPBOARD_TEXT_BYTES {
             return Err(clipboard_failure(
                 ErrorCode::InteractionFailed,
@@ -65,8 +66,9 @@ impl PageControl {
             "Runtime.callFunctionOn",
             json!({"functionDeclaration": WRITE_CLIPBOARD, "objectId": execution_object_id, "arguments": [{"value": request.text}], "awaitPromise": true, "returnByValue": true}),
         ).await.map_err(|error| clipboard_dispatch_error(error, bound))?;
-        if result_value(&response).and_then(serde_json::Value::as_bool) != Some(true) {
-            return Err(clipboard_response_error(bound, &response));
+        let value = clipboard_bridge_value(bound, &response)?;
+        if value.as_bool() != Some(true) {
+            return Err(clipboard_uninterpretable_error(bound));
         }
         Ok(())
     }
@@ -90,7 +92,13 @@ async fn clipboard_execution_object(
                 "clipboard document became stale while resolving its frame",
             )
         })?;
-    let root = frame_tree.get("frameTree").unwrap_or(&frame_tree);
+    let root = frame_tree.get("frameTree").ok_or_else(|| {
+        operation_error(
+            ErrorCode::StaleReference,
+            bound.target_id,
+            "clipboard document changed before its isolated world could be resolved",
+        )
+    })?;
     let frame_id = root
         .pointer("/frame/id")
         .and_then(serde_json::Value::as_str)
@@ -121,7 +129,6 @@ async fn clipboard_execution_object(
         })?;
     let execution_context_id = world
         .get("executionContextId")
-        .or_else(|| world.pointer("/result/executionContextId"))
         .and_then(serde_json::Value::as_i64)
         .ok_or_else(|| {
             operation_error(
@@ -151,7 +158,6 @@ async fn clipboard_execution_object(
         })?;
     global
         .pointer("/result/objectId")
-        .or_else(|| global.pointer("/result/result/objectId"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| {
@@ -231,28 +237,40 @@ fn transport_error_class(error: &TransportError) -> &'static str {
     }
 }
 
-fn result_value(value: &serde_json::Value) -> Option<&serde_json::Value> {
-    value
-        .pointer("/result/result/value")
-        .or_else(|| value.pointer("/result/value"))
-}
-
-fn require_visible(bound: &BoundTarget) -> Result<()> {
-    if bound.visibility != TargetVisibility::Visible {
-        return Err(clipboard_failure(
-            ErrorCode::InteractionFailed,
-            bound,
-            "clipboard access requires a visible focused page",
-            "focus the managed browser page without asking Krometrail to activate it, then retry",
-        ));
+/// Decodes one clipboard bridge outcome from the production transport
+/// shape. `CdpTransport::send_raw` forwards the unwrapped CDP command
+/// result, so a `Runtime.callFunctionOn` outcome is `{"result": <remote
+/// object>, "exceptionDetails": <optional>}` with the exception beside the
+/// remote object. The exception is inspected first so a rejected bridge
+/// call can never be accepted as a successful value.
+fn clipboard_bridge_value<'a>(
+    bound: &BoundTarget,
+    response: &'a serde_json::Value,
+) -> Result<&'a serde_json::Value> {
+    if let Some(details) = response.get("exceptionDetails") {
+        return Err(clipboard_exception_error(bound, details));
     }
-    Ok(())
+    response
+        .pointer("/result/value")
+        .ok_or_else(|| clipboard_uninterpretable_error(bound))
 }
 
-fn clipboard_response_error(bound: &BoundTarget, response: &serde_json::Value) -> KrometrailError {
-    let description = response
-        .pointer("/result/exceptionDetails/exception/description")
+/// Classifies a bridge exception from the evidence in its description.
+/// Only descriptions naming a known failure receive a confident category;
+/// `NotAllowedError` is the one evidence-backed denial because
+/// `navigator.clipboard` rejects with that DOMException when the browser
+/// permission decision denies the request. Unknown content stays neutral
+/// and never echoes the raw description, class name, or clipboard text
+/// into the agent-facing error.
+fn clipboard_exception_error(bound: &BoundTarget, details: &serde_json::Value) -> KrometrailError {
+    let description = details
+        .pointer("/exception/description")
         .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            details
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+        })
         .unwrap_or_default();
     let (code, message, recovery) = if description.contains("secure_context_required") {
         (
@@ -266,20 +284,53 @@ fn clipboard_response_error(bound: &BoundTarget, response: &serde_json::Value) -
             "the page clipboard API is unavailable",
             "use a supported secure Chromium page and retry",
         )
-    } else if description.contains("focus_required") {
+    } else if description.contains("focus_required") || description.contains("not focused") {
+        // "not focused" also classifies the real-Chrome focus race where the
+        // document loses focus between the bridge pre-check and the clipboard
+        // call and Chrome reports `NotAllowedError: Document is not focused.`
         (
             ErrorCode::InteractionFailed,
             "clipboard access requires a visible focused page",
             "focus the managed browser page and retry; Krometrail will not steal focus",
         )
-    } else {
+    } else if description.contains("NotAllowedError") {
         (
             ErrorCode::InteractionFailed,
             "browser clipboard permission denied the explicit request",
             "focus the managed page, allow clipboard access in Chrome, and retry",
         )
+    } else {
+        (
+            ErrorCode::InteractionFailed,
+            "clipboard operation failed with an unidentified in-page error",
+            "retry the operation; if it persists, re-select the page and try again",
+        )
     };
     clipboard_failure(code, bound, message, recovery)
+}
+
+/// A response with neither an exception nor a decodable value — or a value
+/// of the wrong shape — is not evidence of any specific browser state, so
+/// the error stays neutral and privacy-bounded.
+fn clipboard_uninterpretable_error(bound: &BoundTarget) -> KrometrailError {
+    clipboard_failure(
+        ErrorCode::InteractionFailed,
+        bound,
+        "clipboard bridge returned a response Krometrail could not interpret",
+        "retry the operation; if it persists, re-select the page and try again",
+    )
+}
+
+fn require_visible(bound: &BoundTarget) -> Result<()> {
+    if bound.visibility != TargetVisibility::Visible {
+        return Err(clipboard_failure(
+            ErrorCode::InteractionFailed,
+            bound,
+            "clipboard access requires a visible focused page",
+            "focus the managed browser page without asking Krometrail to activate it, then retry",
+        ));
+    }
+    Ok(())
 }
 
 fn clipboard_failure(
@@ -391,7 +442,7 @@ mod tests {
                 json!({"frameTree":{"frame":{"id":"main-frame"}}}),
                 json!({"executionContextId": 41}),
                 json!({"result":{"objectId":"isolated-global"}}),
-                json!({"result":{"result":{"value":true}}}),
+                json!({"result":{"type":"boolean","value":true}}),
             ]),
         };
         let request = WriteClipboardRequest {
@@ -446,23 +497,65 @@ mod tests {
         assert!(transport.calls.lock().unwrap().is_empty());
     }
 
+    /// Known exceptions classify from the production `exceptionDetails`
+    /// shape (beside the remote object, not nested under a result
+    /// envelope); denial is claimed only from `NotAllowedError` evidence;
+    /// unknown content stays neutral and never echoes the raw description.
     #[test]
-    fn response_failures_have_stable_supported_and_interaction_codes() {
+    fn exception_shapes_classify_known_failures_and_stay_neutral_on_unknown() {
         let bound = bound(TargetVisibility::Visible);
+        let details = |class_name: &str, description: &str| {
+            json!({
+                "exceptionId": 1,
+                "text": "Uncaught (in promise)",
+                "exception": {"type": "object", "subtype": "error", "className": class_name, "description": description},
+            })
+        };
+
         for description in ["secure_context_required", "clipboard_unavailable"] {
-            let error = clipboard_response_error(
-                &bound,
-                &json!({"result":{"exceptionDetails":{"exception":{"description":description}}}}),
-            );
+            let error = clipboard_exception_error(&bound, &details("Error", description));
             assert_eq!(error.code, ErrorCode::Unsupported);
         }
-        for description in ["focus_required", "NotAllowedError"] {
-            let error = clipboard_response_error(
-                &bound,
-                &json!({"result":{"exceptionDetails":{"exception":{"description":description}}}}),
-            );
+        for (class_name, description) in [
+            ("Error", "focus_required"),
+            ("DOMException", "NotAllowedError: Document is not focused."),
+        ] {
+            let error = clipboard_exception_error(&bound, &details(class_name, description));
             assert_eq!(error.code, ErrorCode::InteractionFailed);
+            assert!(error.message.as_str().contains("focused"));
+            assert!(!error.message.as_str().contains("denied"));
         }
+        let error = clipboard_exception_error(
+            &bound,
+            &details("DOMException", "NotAllowedError: Read permission denied."),
+        );
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(error.message.as_str().contains("permission denied"));
+        assert!(
+            error
+                .recovery
+                .is_some_and(|recovery| recovery.as_str().contains("allow clipboard access"))
+        );
+
+        let error = clipboard_exception_error(
+            &bound,
+            &details("TypeError", "TypeError: raw-exception-content-sentinel"),
+        );
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(!error.message.as_str().contains("permission"));
+        assert!(
+            !error
+                .message
+                .as_str()
+                .contains("raw-exception-content-sentinel")
+        );
+
+        let error = clipboard_uninterpretable_error(&bound);
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(error.recovery.is_some());
+
         let error = clipboard_dispatch_error(TransportError::CommandFailed, &bound);
         assert_eq!(error.code, ErrorCode::InteractionFailed);
         assert!(error.message.as_str().contains("script dispatch"));
@@ -504,6 +597,226 @@ mod tests {
         let rejected = clipboard_dispatch_error(TransportError::Protocol, &bound);
         assert_eq!(rejected.code, ErrorCode::StaleReference);
         assert!(rejected.message.as_str().contains("destroyed"));
+    }
+
+    /// Builds the last scripted response — the `Runtime.callFunctionOn`
+    /// outcome production `send_raw` forwards: the unwrapped CDP command
+    /// result with the remote object beside an optional top-level
+    /// `exceptionDetails`.
+    fn bridge_exception_response(class_name: &str, description: &str) -> serde_json::Value {
+        json!({
+            "result": {"type": "object", "subtype": "error", "className": class_name, "description": description},
+            "exceptionDetails": {
+                "exceptionId": 1,
+                "text": "Uncaught (in promise)",
+                "exception": {"type": "object", "subtype": "error", "className": class_name, "description": description},
+            },
+        })
+    }
+
+    /// The write path performs the same three setup calls as read before its
+    /// single bridge dispatch, so one transport builder serves both.
+    fn read_bridge_transport(bridge: serde_json::Value) -> ScriptedTransport {
+        ScriptedTransport {
+            calls: Mutex::new(Vec::new()),
+            responses: Mutex::new(vec![
+                json!({"frameTree": {"frame": {"id": "main-frame"}}}),
+                json!({"executionContextId": 41}),
+                json!({"result": {"objectId": "isolated-global"}}),
+                bridge,
+            ]),
+        }
+    }
+
+    async fn read_with(bridge: serde_json::Value) -> Result<ClipboardRead> {
+        control()
+            .read_clipboard(
+                &read_bridge_transport(bridge),
+                &bound(TargetVisibility::Visible),
+                ReadClipboardRequest::default(),
+            )
+            .await
+    }
+
+    async fn write_failure_with(bridge: serde_json::Value) -> KrometrailError {
+        let request = WriteClipboardRequest {
+            target: krometrail_core::PageSelection::Selected,
+            text: "sentinel-value".into(),
+        };
+        control()
+            .write_clipboard(
+                &read_bridge_transport(bridge),
+                &bound(TargetVisibility::Visible),
+                &request,
+            )
+            .await
+            .unwrap_err()
+    }
+
+    /// Successful reads decode the production command-result shape:
+    /// `{"result": {"type": "string", "value": ...}}` without any nested
+    /// envelope.
+    #[tokio::test]
+    async fn read_success_decodes_the_production_command_result_shape() {
+        let read =
+            read_with(json!({"result": {"type": "string", "value": "sentinel-clipboard-text"}}))
+                .await
+                .expect("production success shape decodes");
+        assert_eq!(read.text, "sentinel-clipboard-text");
+        assert_eq!(read.utf8_bytes, 23);
+    }
+
+    /// Regression: a secure-context rejection arrives with `exceptionDetails`
+    /// at the top level of the command result. It must classify as
+    /// unsupported with secure-context recovery, never as a generic
+    /// permission denial.
+    #[tokio::test]
+    async fn secure_context_failure_classifies_from_the_transport_exception_shape() {
+        let error = read_with(bridge_exception_response(
+            "Error",
+            "Error: secure_context_required\n    at async function",
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.as_str().contains("secure page context"));
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(error.recovery.is_some_and(|recovery| {
+            let recovery = recovery.as_str();
+            recovery.contains("HTTPS") || recovery.contains("secure context")
+        }));
+    }
+
+    /// Regression: the write path classifies the same transport-shaped
+    /// focus rejection as a focus failure with focus recovery, not as a
+    /// permission denial.
+    #[tokio::test]
+    async fn write_focus_failure_classifies_from_the_transport_exception_shape() {
+        let error =
+            write_failure_with(bridge_exception_response("Error", "Error: focus_required")).await;
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(error.message.as_str().contains("focused"));
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(
+            error
+                .recovery
+                .is_some_and(|recovery| recovery.as_str().contains("focus"))
+        );
+    }
+
+    /// Regression: the real-Chrome focus race — focus is lost between the
+    /// bridge pre-check and the clipboard call — surfaces as
+    /// `NotAllowedError: Document is not focused.` and must classify as a
+    /// focus failure, not a permission denial.
+    #[tokio::test]
+    async fn document_not_focus_race_classifies_as_focus_not_denial() {
+        let error = read_with(bridge_exception_response(
+            "DOMException",
+            "NotAllowedError: Document is not focused.",
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(error.message.as_str().contains("focused"));
+        assert!(!error.message.as_str().contains("denied"));
+    }
+
+    /// Regression: an unidentified exception must stay neutral — no
+    /// confident permission diagnosis, and the raw exception content and
+    /// any clipboard text stay out of the agent-facing error.
+    #[tokio::test]
+    async fn unknown_exception_stays_neutral_and_never_claims_permission_denial() {
+        let error = read_with(bridge_exception_response(
+            "TypeError",
+            "TypeError: raw-exception-content-sentinel-9f41",
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(!error.message.as_str().contains("permission"));
+        assert!(
+            !error
+                .message
+                .as_str()
+                .contains("raw-exception-content-sentinel-9f41")
+        );
+        let recovery = error
+            .recovery
+            .expect("neutral failure still advises recovery");
+        assert!(
+            !recovery
+                .as_str()
+                .contains("raw-exception-content-sentinel-9f41")
+        );
+    }
+
+    /// Regression: `exceptionDetails` is inspected before any value is
+    /// accepted, so a rejected bridge call can never surface a stray remote
+    /// value as a successful read.
+    #[tokio::test]
+    async fn exception_details_are_never_accepted_as_a_successful_value() {
+        let bridge = json!({
+            "result": {"type": "string", "value": "clipboard-sentinel-leak-b52e"},
+            "exceptionDetails": {
+                "exceptionId": 1,
+                "text": "Uncaught (in promise)",
+                "exception": {"className": "Error", "description": "Error: focus_required"},
+            },
+        });
+        let error = read_with(bridge).await.unwrap_err();
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(error.message.as_str().contains("focused"));
+        assert!(
+            !error
+                .message
+                .as_str()
+                .contains("clipboard-sentinel-leak-b52e")
+        );
+    }
+
+    /// Regression: a well-formed envelope with no exception and no value is
+    /// an uninterpretable response, not evidence of a permission denial.
+    #[tokio::test]
+    async fn malformed_bridge_response_stays_neutral() {
+        let error = read_with(json!({"result": {"type": "object", "objectId": "remote-only"}}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(!error.message.as_str().contains("permission"));
+        assert!(error.recovery.is_some());
+    }
+
+    /// Permission denial is claimed only from `NotAllowedError` evidence —
+    /// the DOMException `navigator.clipboard` rejects with when the
+    /// browser permission decision denies the request.
+    #[tokio::test]
+    async fn denial_is_reported_only_from_not_allowed_error_evidence() {
+        let error = read_with(bridge_exception_response(
+            "DOMException",
+            "NotAllowedError: Read permission denied.",
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(error.message.as_str().contains("permission denied"));
+        assert!(
+            error
+                .recovery
+                .is_some_and(|recovery| recovery.as_str().contains("allow clipboard access"))
+        );
+    }
+
+    /// The successful read byte limit is preserved on the production shape.
+    #[tokio::test]
+    async fn read_rejects_text_beyond_the_byte_limit() {
+        let oversized = "x".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1);
+        let error = read_with(json!({"result": {"type": "string", "value": oversized}}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(error.message.as_str().contains("65536-byte limit"));
     }
 
     #[tokio::test]
