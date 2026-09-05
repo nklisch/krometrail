@@ -255,45 +255,48 @@ fn clipboard_bridge_value<'a>(
         .ok_or_else(|| clipboard_uninterpretable_error(bound))
 }
 
-/// Classifies a bridge exception from the evidence in its description.
-/// Only descriptions naming a known failure receive a confident category;
-/// `NotAllowedError` is the one evidence-backed denial because
-/// `navigator.clipboard` rejects with that DOMException when the browser
-/// permission decision denies the request. Unknown content stays neutral
-/// and never echoes the raw description, class name, or clipboard text
-/// into the agent-facing error.
+/// Classifies a bridge exception from the first line of its description.
+/// Chrome formats `exception.description` as `ClassName: message` followed
+/// by stack frames, so content further down — a `NotAllowedError` mention,
+/// a bridge sentinel, even a denial message — cannot manufacture a known
+/// cause. Permission denial is claimed only from Chrome's source-grounded
+/// "Read permission denied." / "Write permission denied." rejections;
+/// other `NotAllowedError` shapes (permission service unavailable,
+/// document detached, permissions-policy blocking, system denial) carry
+/// no confident cause and stay neutral. Raw descriptions, class names,
+/// and clipboard text never reach the agent-facing error.
 fn clipboard_exception_error(bound: &BoundTarget, details: &serde_json::Value) -> KrometrailError {
-    let description = details
+    let first_line = details
         .pointer("/exception/description")
         .and_then(serde_json::Value::as_str)
-        .or_else(|| {
-            details
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-        })
+        .unwrap_or_default()
+        .lines()
+        .next()
         .unwrap_or_default();
-    let (code, message, recovery) = if description.contains("secure_context_required") {
+    let (code, message, recovery) = if first_line.contains("secure_context_required") {
         (
             ErrorCode::Unsupported,
             "clipboard access requires a secure page context",
             "navigate the managed page to HTTPS or another secure context and retry",
         )
-    } else if description.contains("clipboard_unavailable") {
+    } else if first_line.contains("clipboard_unavailable") {
         (
             ErrorCode::Unsupported,
             "the page clipboard API is unavailable",
             "use a supported secure Chromium page and retry",
         )
-    } else if description.contains("focus_required") || description.contains("not focused") {
-        // "not focused" also classifies the real-Chrome focus race where the
-        // document loses focus between the bridge pre-check and the clipboard
-        // call and Chrome reports `NotAllowedError: Document is not focused.`
+    } else if first_line.contains("focus_required") || first_line.contains("not focused") {
+        // The document can lose focus between the bridge pre-check and the
+        // clipboard call; Chrome then rejects with
+        // `NotAllowedError: Document is not focused.` — a focus failure.
         (
             ErrorCode::InteractionFailed,
             "clipboard access requires a visible focused page",
             "focus the managed browser page and retry; Krometrail will not steal focus",
         )
-    } else if description.contains("NotAllowedError") {
+    } else if first_line.contains("Read permission denied.")
+        || first_line.contains("Write permission denied.")
+    {
         (
             ErrorCode::InteractionFailed,
             "browser clipboard permission denied the explicit request",
@@ -302,7 +305,7 @@ fn clipboard_exception_error(bound: &BoundTarget, details: &serde_json::Value) -
     } else {
         (
             ErrorCode::InteractionFailed,
-            "clipboard operation failed with an unidentified in-page error",
+            "clipboard operation failed for an unidentified reason",
             "retry the operation; if it persists, re-select the page and try again",
         )
     };
@@ -499,8 +502,11 @@ mod tests {
 
     /// Known exceptions classify from the production `exceptionDetails`
     /// shape (beside the remote object, not nested under a result
-    /// envelope); denial is claimed only from `NotAllowedError` evidence;
-    /// unknown content stays neutral and never echoes the raw description.
+    /// envelope). Only the description's first `ClassName: message` line
+    /// is evidence; permission denial is claimed only from Chrome's
+    /// source-grounded "Read/Write permission denied." messages; unknown
+    /// content — including a missing description — stays neutral and never
+    /// echoes the raw description.
     #[test]
     fn exception_shapes_classify_known_failures_and_stay_neutral_on_unknown() {
         let bound = bound(TargetVisibility::Visible);
@@ -536,6 +542,40 @@ mod tests {
                 .recovery
                 .is_some_and(|recovery| recovery.as_str().contains("allow clipboard access"))
         );
+
+        // A bare `NotAllowedError` name is not a permission decision;
+        // Chromium uses the same DOMException for service failures,
+        // document detach, permissions-policy blocking, and system denial.
+        let error = clipboard_exception_error(
+            &bound,
+            &details("DOMException", "NotAllowedError: Document detached."),
+        );
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(!error.message.as_str().contains("permission"));
+
+        // Stack content must not manufacture a known cause: the first
+        // line names the real rejection.
+        let error = clipboard_exception_error(
+            &bound,
+            &details(
+                "TypeError",
+                "TypeError: unexpected page state\n    at NotAllowedError: Read permission denied. (<anonymous>)",
+            ),
+        );
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(!error.message.as_str().contains("permission"));
+
+        // An exceptionDetails without `exception.description` (the only
+        // description location in the current CDP shape) stays neutral.
+        let error = clipboard_exception_error(
+            &bound,
+            &json!({"exceptionId": 1, "text": "Uncaught (in promise)"}),
+        );
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(!error.message.as_str().contains("permission"));
 
         let error = clipboard_exception_error(
             &bound,
@@ -706,7 +746,8 @@ mod tests {
 
     /// Regression: the real-Chrome focus race — focus is lost between the
     /// bridge pre-check and the clipboard call — surfaces as
-    /// `NotAllowedError: Document is not focused.` and must classify as a
+    /// `NotAllowedError: Document is not focused.` (verified in the
+    /// reviewed Chromium clipboard promise source) and must classify as a
     /// focus failure, not a permission denial.
     #[tokio::test]
     async fn document_not_focus_race_classifies_as_focus_not_denial() {
@@ -788,26 +829,6 @@ mod tests {
         assert!(error.recovery.is_some());
     }
 
-    /// Permission denial is claimed only from `NotAllowedError` evidence —
-    /// the DOMException `navigator.clipboard` rejects with when the
-    /// browser permission decision denies the request.
-    #[tokio::test]
-    async fn denial_is_reported_only_from_not_allowed_error_evidence() {
-        let error = read_with(bridge_exception_response(
-            "DOMException",
-            "NotAllowedError: Read permission denied.",
-        ))
-        .await
-        .unwrap_err();
-        assert_eq!(error.code, ErrorCode::InteractionFailed);
-        assert!(error.message.as_str().contains("permission denied"));
-        assert!(
-            error
-                .recovery
-                .is_some_and(|recovery| recovery.as_str().contains("allow clipboard access"))
-        );
-    }
-
     /// The successful read byte limit is preserved on the production shape.
     #[tokio::test]
     async fn read_rejects_text_beyond_the_byte_limit() {
@@ -817,6 +838,191 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::InteractionFailed);
         assert!(error.message.as_str().contains("65536-byte limit"));
+    }
+
+    /// Regression (parent review of the first-pass classifier): Chromium
+    /// rejects with `NotAllowedError: Permission Service could not
+    /// connect.` when the browser permission service is unreachable — not
+    /// a permission decision — so this must stay neutral instead of
+    /// instructing the caller to allow permissions.
+    #[tokio::test]
+    async fn permission_service_failure_stays_neutral() {
+        let error = read_with(bridge_exception_response(
+            "DOMException",
+            "NotAllowedError: Permission Service could not connect.",
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InteractionFailed);
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(!error.message.as_str().contains("permission"));
+        let recovery = error
+            .recovery
+            .expect("neutral failure still advises recovery");
+        assert!(!recovery.as_str().contains("allow clipboard access"));
+        assert!(!recovery.as_str().contains("permission"));
+    }
+
+    /// Regression (parent review): `NotAllowedError` also covers document
+    /// detach, permissions-policy blocking, and unlisted causes, and a
+    /// denial or bridge marker further down the description is stack
+    /// content, not the rejection reason. The first `ClassName: message`
+    /// line is the only evidence; neither operation may report a known
+    /// cause from any of these.
+    #[tokio::test]
+    async fn unlisted_rejections_stay_neutral_across_operations() {
+        #[derive(Clone, Copy)]
+        enum Op {
+            Read,
+            Write,
+        }
+        let failure = |op: Op, description: &'static str| async move {
+            let bridge = bridge_exception_response("DOMException", description);
+            match op {
+                Op::Read => read_with(bridge).await.unwrap_err(),
+                Op::Write => write_failure_with(bridge).await,
+            }
+        };
+        let op_name = |op: Op| match op {
+            Op::Read => "read",
+            Op::Write => "write",
+        };
+        let cases: &[(&str, &str)] = &[
+            ("detach", "NotAllowedError: Document detached."),
+            (
+                "bare",
+                "NotAllowedError: Clipboard access was blocked by an unlisted browser policy.",
+            ),
+            (
+                "stack-poisoned",
+                "TypeError: unexpected page state\n    at NotAllowedError: Read permission denied. (<anonymous>)\n    at Error: secure_context_required (<anonymous>)",
+            ),
+        ];
+        for op in [Op::Read, Op::Write] {
+            for (label, description) in cases {
+                let error = failure(op, description).await;
+                assert_eq!(
+                    error.code,
+                    ErrorCode::InteractionFailed,
+                    "{}/{} must stay a neutral interaction failure",
+                    op_name(op),
+                    label
+                );
+                assert!(
+                    !error.message.as_str().contains("denied"),
+                    "{}/{} must not claim denial",
+                    op_name(op),
+                    label
+                );
+                assert!(
+                    !error.message.as_str().contains("permission"),
+                    "{}/{} must not claim a permission cause",
+                    op_name(op),
+                    label
+                );
+                let recovery = error.recovery.expect("neutral failure advises recovery");
+                assert!(
+                    !recovery.as_str().contains("allow clipboard access"),
+                    "{}/{} must not give denial recovery",
+                    op_name(op),
+                    label
+                );
+                assert!(
+                    !error.message.as_str().contains("secure page context"),
+                    "{}/{} must not classify from stack content",
+                    op_name(op),
+                    label
+                );
+                assert!(
+                    !error.message.as_str().contains(description),
+                    "{}/{} must not echo the raw description",
+                    op_name(op),
+                    label
+                );
+            }
+        }
+    }
+
+    /// Operation-level coverage: the unavailable-API sentinel classifies
+    /// as unsupported through the full read operation, not only through
+    /// the direct helper.
+    #[tokio::test]
+    async fn clipboard_unavailable_classifies_from_the_transport_shape() {
+        let error = read_with(bridge_exception_response(
+            "Error",
+            "Error: clipboard_unavailable",
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.message.as_str().contains("unavailable"));
+        assert!(!error.message.as_str().contains("denied"));
+        assert!(
+            error
+                .recovery
+                .is_some_and(|recovery| recovery.as_str().contains("supported secure Chromium"))
+        );
+    }
+
+    /// Regression (parent review): a success envelope with a value of the
+    /// wrong type for the operation — on either read or write — is an
+    /// uninterpretable response, never a permission claim.
+    #[tokio::test]
+    async fn wrong_type_success_values_stay_neutral() {
+        for bridge in [
+            json!({"result": {"type": "number", "value": 42}}),
+            json!({"result": {"type": "boolean", "value": true}}),
+        ] {
+            let error = read_with(bridge).await.unwrap_err();
+            assert_eq!(error.code, ErrorCode::InteractionFailed);
+            assert!(!error.message.as_str().contains("denied"));
+            assert!(!error.message.as_str().contains("permission"));
+            assert!(error.recovery.is_some());
+        }
+        for bridge in [
+            json!({"result": {"type": "string", "value": "not-a-confirmation"}}),
+            json!({"result": {"type": "object"}}),
+        ] {
+            let error = write_failure_with(bridge).await;
+            assert_eq!(error.code, ErrorCode::InteractionFailed);
+            assert!(!error.message.as_str().contains("denied"));
+            assert!(!error.message.as_str().contains("permission"));
+            assert!(error.recovery.is_some());
+        }
+    }
+
+    /// Permission denial is claimed only from Chrome's source-grounded
+    /// rejection messages — `Read permission denied.` on the read path and
+    /// `Write permission denied.` on the write path — with recovery that
+    /// names the real state change.
+    #[tokio::test]
+    async fn source_grounded_denial_messages_report_permission_denial() {
+        let read_error = read_with(bridge_exception_response(
+            "DOMException",
+            "NotAllowedError: Read permission denied.",
+        ))
+        .await
+        .unwrap_err();
+        assert_eq!(read_error.code, ErrorCode::InteractionFailed);
+        assert!(read_error.message.as_str().contains("permission denied"));
+        assert!(
+            read_error
+                .recovery
+                .is_some_and(|recovery| recovery.as_str().contains("allow clipboard access"))
+        );
+
+        let write_error = write_failure_with(bridge_exception_response(
+            "DOMException",
+            "NotAllowedError: Write permission denied.",
+        ))
+        .await;
+        assert_eq!(write_error.code, ErrorCode::InteractionFailed);
+        assert!(write_error.message.as_str().contains("permission denied"));
+        assert!(
+            write_error
+                .recovery
+                .is_some_and(|recovery| recovery.as_str().contains("allow clipboard access"))
+        );
     }
 
     #[tokio::test]

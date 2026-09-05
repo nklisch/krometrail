@@ -67,7 +67,7 @@ Implemented by the scoped GLM-5.3-Flash xhigh trial (pi coding-agent sub-agent r
 ### Implementation
 
 - One production command-result representation. `clipboard_bridge_value` decodes the unwrapped `Runtime.callFunctionOn` outcome (`{"result": <remote object>, "exceptionDetails": <optional>}`) and inspects `exceptionDetails` first, so a rejected bridge call can never be accepted as a successful value.
-- Classification from description evidence only: `secure_context_required` and `clipboard_unavailable` → `unsupported` with context-specific recovery; `focus_required` and the real-Chrome focus race `NotAllowedError: Document is not focused.` → `interaction_failed` with focus recovery; `NotAllowedError` (the `navigator.clipboard` permission-rejection DOMException) is the only evidence-backed permission denial; any other exception stays neutral ("unidentified in-page error") with generic retry advice.
+- Classification from the description's first `ClassName: message` line only (corrected after parent review; see below): `secure_context_required` and `clipboard_unavailable` → `unsupported` with context-specific recovery; `focus_required` and the verified focus-race message `NotAllowedError: Document is not focused.` → `interaction_failed` with focus recovery; Chrome's source-grounded "Read permission denied." / "Write permission denied." rejections → the only claimed permission denial; every other exception — including the other `NotAllowedError` shapes — stays neutral ("unidentified reason") with generic retry advice.
 - Malformed responses — an exception-free envelope with no `/result/value`, or a value of the wrong type for the operation — return a neutral uninterpretable-response error instead of the previous confident permission claim.
 - Removed the legacy dual-shape fallbacks in `clipboard_execution_object` (the `frameTree` `unwrap_or`, `/result/executionContextId`, and `/result/result/objectId` alternates) per the one-envelope contract. Dispatch-death classification (timeout/protocol/disconnect) and the in-page bridge scripts are untouched.
 - Privacy preserved and asserted: no raw description, class name, or clipboard text reaches any error message or recovery text.
@@ -88,6 +88,32 @@ Implemented by the scoped GLM-5.3-Flash xhigh trial (pi coding-agent sub-agent r
 
 ### Remaining gaps for parent review
 
-- `NotAllowedError` denial semantics rest on documented Chrome `navigator.clipboard` behavior, not a live browser run in this pilot; the opt-in real-Chrome clipboard qualification remains the live-coverage lane.
+- Denial classification is now grounded in Chromium source (see the correction section below) rather than assumption, but it is still not a live browser run in this pilot; the opt-in real-Chrome clipboard qualification remains the live-coverage lane.
 - Workspace-wide gates (`cargo test --workspace --all-targets`, wire-enum schema check) were outside the pilot scope and were not run.
 - Acceptance-criteria checkboxes above are left for the parent to tick at review; the evidence for each is in this section.
+
+## Parent review correction — 2026-09-05 (first-line classification)
+
+The parent's review of `7effdbef` found a medium-severity correctness issue in the first-pass classifier: it equated `description.contains("NotAllowedError")` with a confirmed browser permission denial. The first-pass notes above claiming the DOMException name alone was evidence-backed denial were wrong and have been removed. Chromium's clipboard promise source (fetched to `/tmp/krometrail-clipboard-promise-review.cc` and read selectively) rejects with `NotAllowedError` for at least: "Permission Service could not connect." (lines 761-764), "Document detached." (815-818, 838-839), permissions-policy blocking (693-707), "Permission denied by system." (507/536, an OS-level refusal, not a browser permission decision), and the focus race "Document is not focused." (689). The only confirmed user-permission denials are "Read permission denied." (305/468) and "Write permission denied." (609/646).
+
+### Correction implementation
+
+- `clipboard_exception_error` now discriminates on the description's first `ClassName: message` line only. Stack-frame content — a `NotAllowedError` mention, a bridge sentinel, even a denial message — can no longer manufacture a known cause.
+- The claimed-denial branch matches only the two source-grounded messages ("Read permission denied." / "Write permission denied."); exact-phrase matching also keeps "Permission denied by system." neutral, which is honest because its recovery differs from a browser permission grant.
+- The unsupported `exceptionDetails.description` fallback was removed; `exception.description` is the only description location in the current CDP shape, and a details object without it stays neutral.
+- The neutral message was reworded to "clipboard operation failed for an unidentified reason" — some neutral causes are browser-side, not in-page.
+- Superseded test `denial_is_reported_only_from_not_allowed_error_evidence` was removed; the name had encoded the incorrect claim.
+
+### Correction verification (exact commands, worktree cwd)
+
+- Red against the first-pass logic: `cargo test -p krometrail-cdp --lib control::clipboard` — 17 passed, 2 failed. The failures are the requested regression demonstrations: `permission_service_failure_stays_neutral` (first-pass logic claimed "denied" for the service-connection failure) and `unlisted_rejections_stay_neutral_across_operations` (first failure message: "read/detach must not claim denial"). The other new cases — operation-level `clipboard_unavailable`, wrong-type/malformed success values on both paths, source-grounded Read/Write denials — passed against first-pass logic as well and are coverage additions, not regression claims.
+- Green with the correction: same command — 18 passed, 0 failed (the superseded duplicate test was removed).
+- `cargo fmt -p krometrail-cdp -- --check` — clean (formatting applied before the check this iteration).
+- `cargo clippy -p krometrail-cdp --all-targets --locked -- -D warnings` — clean.
+- `cargo test -p krometrail-cdp --all-targets --locked` — all suites pass (outcomes recorded identically to the first pass; see commit message for the exact run).
+
+### Correction iteration observations
+
+- The substantive first-pass defect was the over-broad denial claim itself — caught by parent review, not by the trial's own tests, because the trial's fixtures only exercised the NotAllowedError message the classifier expected. The correction's new fixtures now include the non-denial NotAllowedError shapes so that class of gap is closed locally.
+- Mechanical correction iterations: one edit batch was rejected atomically on a wrong-neighbor `oldText` (superseded test sits before the byte-limit test, not the missing-document test) and reapplied with exact text; formatting was applied proactively this iteration to avoid a second fmt-check failure loop.
+- Scope held: only `clipboard.rs` and this item changed; no taxonomy was added for every Chromium failure — unlisted causes stay neutral per the review direction.
