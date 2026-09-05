@@ -2,6 +2,9 @@
 
 mod support;
 
+#[path = "support/giant_page_probe.rs"]
+mod giant_page_probe;
+
 use std::{
     collections::{HashMap, HashSet},
     io::{Read, Write},
