@@ -168,8 +168,8 @@ require_text "$CI" 'cargo fmt --all --check'
 require_text "$CI" 'cargo check --workspace --all-targets --locked'
 require_text "$CI" 'cargo test --workspace --all-targets --locked'
 require_text "$CI" 'cargo clippy --workspace --all-targets --locked -- -D warnings'
-require_text "$CI" 'rust-msrv:'
-require_text "$CI" 'dtolnay/rust-toolchain@1.85.0'
+# Parse the actual YAML/TOML and exercise negative toolchain-selection mutations.
+bun test "$ROOT/tests/minimum-rust-workflow.test.ts"
 require_text "$CI" 'name: Rust quality gate'
 require_text "$CI" 'bash tests/distribution-static.sh'
 require_text "$PAGES" 'bun install --frozen-lockfile'

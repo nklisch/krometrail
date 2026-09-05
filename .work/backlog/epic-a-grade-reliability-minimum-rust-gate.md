@@ -1,7 +1,7 @@
 ---
 id: epic-a-grade-reliability-minimum-rust-gate
 kind: feature
-stage: backlog
+stage: review
 tags: [infra, testing]
 parent: epic-a-grade-reliability
 depends_on: []
@@ -21,7 +21,7 @@ Actual Rust 1.85 rejects current let chains with E0658. Installing a default 1.8
 - **Priority:** P1 — wave 2 of [epic-a-grade-reliability](epic-a-grade-reliability.md). Priority is proposed remediation order, not a release commitment.
 - **Evidence status:** Reproduced with explicit Rust 1.85 compiler selection; CI toolchain-selection flaw code-traced.
 - **Origin:** Personal read-only repository review at `eb5b4656`, followed by the user's request to backlog the full path to a solid A (2026-09-05). References are point-in-time; revalidate before implementation.
-- **Readiness:** Backlog scope and acceptance criteria, not an approved implementation design. Scope/design before delivery; no implementation or paid qualification is authorized by capture alone.
+- **Readiness:** Bounded release-prerequisite implementation authorized and prepared; independent review and final integrated gates remain pending. This item is nonterminal.
 
 ## Evidence
 
@@ -32,10 +32,10 @@ Actual Rust 1.85 rejects current let chains with E0658. Installing a default 1.8
 
 ## Acceptance criteria
 
-- [ ] Choose and document the actual minimum: restore source/dependency support for 1.85 or raise the declaration consistently. Do not infer the replacement minimum from let-chain syntax alone.
-- [ ] CI logs the effective rustc and cargo identities and explicitly selects the intended compiler for every minimum-version gate.
-- [ ] The declared-minimum locked workspace/all-targets check, tests, and applicable lint/format policy pass on the intended compiler.
-- [ ] A regression fixture or workflow contract test catches reintroduction of ambiguous toolchain selection; installation success alone is not a passing compatibility check.
+- [x] Choose and document the actual minimum: Rust 1.88, selected after explicit Linux locked workspace/all-targets check and tests (receipt below), not inferred from syntax alone.
+- [x] CI logs the effective rustc and cargo identities and explicitly selects the intended compiler for every minimum-version gate.
+- [ ] The declared-minimum locked workspace/all-targets check, tests, and applicable lint/format policy pass on the intended compiler. Minimum check/tests passed at `90085cba`; final integrated stable lint/format gates remain pending.
+- [x] A regression fixture or workflow contract test catches reintroduction of ambiguous toolchain selection; installation success alone is not a passing compatibility check.
 
 ## Implementation direction and boundaries
 
@@ -51,4 +51,16 @@ An offline locked Cargo metadata inventory succeeded. The highest declared depen
 
 A candidate-only check subsequently passed at `c49a42f75ca9972092b9f07a9b39e3da61cba891`: explicitly selected `rustc 1.88.0 (6b00bc388 2025-06-23)` and `cargo 1.88.0 (873a06493 2025-05-10)` completed `cargo check --workspace --all-targets --locked --offline` on Linux. The command held the shared build lock and used its own temporary target; removal was verified afterward. This establishes compilation for that revision, not tests, lint/format policy, other platforms, or the final integrated revision. No minimum-version declaration or workflow was changed.
 
-Queue implementation after the release owner's shared CI/fixture surface is available. Preserve stable formatting/tooling policy separately from minimum compiler compatibility. Any custom compiler-specific build directory created for qualification has an owner and must be removed at completion; do not repeatedly evict the active workers' shared stable build cache by alternating compiler versions there.
+The release owner's shared CI/fixture surface became available for the bounded implementation below. Preserve stable formatting/tooling policy separately from minimum compiler compatibility. Any custom compiler-specific build directory created for qualification has an owner and must be removed at completion; do not repeatedly evict the active workers' shared stable build cache by alternating compiler versions there.
+
+## Bounded release prerequisite — 2026-09-05
+
+Selected policy: root package and workspace `rust-version = "1.88"`. The Linux `rust-msrv` job pins `MSRV_TOOLCHAIN: 1.88.0`, installs it with `rustup toolchain install`, and uses `rustup run "$MSRV_TOOLCHAIN"` for both identity commands and every check/test invocation. This bypasses the repository's stable directory-toolchain selection. Stable alone owns rustfmt and Clippy: formatter output and lint rules evolve separately from the minimum compiler's ability to compile and test the workspace. No attempt is made to force old formatting rules onto current sources.
+
+Parent qualification receipt (supplied to this implementation, not rerun here): at `90085cba`, Linux full `cargo check --workspace --all-targets --locked` and `cargo test --workspace --all-targets --locked` passed with explicitly selected `rustc 1.88.0 (6b00bc388 2025-06-23)` and `cargo 1.88.0 (873a06493 2025-05-10)`, including explicit `RUSTC`/`RUSTDOC`. Log: `/tmp/krometrail-release-msrv.log`, exit 0, 2,186 lines. The parent's owned temporary target was removed on exit. This supports the Linux minimum selection, not another platform or optional-feature qualification.
+
+`tests/minimum-rust-workflow.test.ts` parses actual CI YAML and Cargo TOML using Bun built-ins, checks metadata agreement and exact executable minimum-job steps, and rejects wrong compiler/installer selection, unqualified check/test, missing compiler/Cargo identities, metadata drift, step compiler overrides, and ignored test failures. It also preserves stable-only formatting/Clippy gates. The fixture is wired into the existing distribution suite; it installs no dependencies and does not compile code to inspect a manifest.
+
+Bounded local verification: `bun test tests/minimum-rust-workflow.test.ts` — 10 pass, 0 fail (Bun 1.3.14); `bash -n tests/distribution-static.sh` and `git diff --check` passed. No build directories were created or shared target caches touched. README and development instructions now state the selected minimum and Linux qualification boundary; historical research and sample evidence retain their original identities.
+
+Pending parent work: independent review, final integrated stable gates and full distribution fixtures, documentation regeneration/build (`docs/public/llms-full.txt` was deliberately not edited), and final release reconciliation. No version bump, tag, push, or publication is part of this commit; product and temporal-vision versions remain unchanged.

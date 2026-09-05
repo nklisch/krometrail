@@ -2,7 +2,7 @@
 name = "krometrail"
 version = "1.6.2"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license.workspace = true
 repository.workspace = true
 
@@ -21,7 +21,7 @@ members = [
 [workspace.package]
 version = "1.6.2"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/nklisch/krometrail"
 

@@ -71,28 +71,30 @@ jobs:
           echo "temporal-vision bumped $BEFORE -> $AFTER; gate passes"
 
   rust-msrv:
-    name: Rust MSRV 1.85 gate
+    name: Rust minimum-version gate (Linux)
     runs-on: ubuntu-latest
+    env:
+      MSRV_TOOLCHAIN: 1.88.0
+    # rust-toolchain.toml selects stable: installing a default is not selection.
+    # Formatting and Clippy belong to the stable job, not compiler compatibility:
+    # their output/rules evolve independently of the supported compiler minimum.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.85 toolchain
-        uses: dtolnay/rust-toolchain@1.85.0
-        with:
-          components: rustfmt, clippy
+      - name: Install minimum Rust toolchain
+        run: rustup toolchain install "$MSRV_TOOLCHAIN" --profile minimal
 
-      - name: Check formatting
-        run: cargo fmt --all --check
+      - name: Report minimum toolchain identities
+        run: |
+          rustup run "$MSRV_TOOLCHAIN" rustc --version
+          rustup run "$MSRV_TOOLCHAIN" cargo --version
 
       - name: Check workspace
-        run: cargo check --workspace --all-targets --locked
+        run: rustup run "$MSRV_TOOLCHAIN" cargo check --workspace --all-targets --locked
 
       - name: Run tests
-        run: cargo test --workspace --all-targets --locked
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: rustup run "$MSRV_TOOLCHAIN" cargo test --workspace --all-targets --locked
 
   distribution:
     name: Distribution contract checks

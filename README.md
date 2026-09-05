@@ -57,7 +57,7 @@ Recording is bounded by a configurable disk budget. Krometrail reports known cap
 
 ## Develop Krometrail
 
-Krometrail is a Rust 2024 workspace with a Rust 1.85 minimum supported version. Run the quality gate from the repository root:
+Krometrail is a Rust 2024 workspace with a Rust 1.88 minimum, checked and tested on Linux. The repository selects stable Rust for developer tooling; minimum-compiler compatibility is gated separately. Run the stable quality gate from the repository root:
 
 ```bash
 cargo fmt --all -- --check

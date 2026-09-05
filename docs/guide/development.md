@@ -7,7 +7,7 @@ description: Build, test, lint, run, and release the Rust Krometrail workspace.
 
 ## Requirements
 
-Install Rust 1.85 or newer. The supported product development environments are Linux and macOS. Windows binaries are produced as a best-effort release artifact but Windows is not a supported development environment.
+Install Rust through rustup. The minimum compiler is Rust 1.88, with locked workspace checks and tests qualified on Linux; this is not a minimum-toolchain qualification for other platforms. The repository's `rust-toolchain.toml` selects stable for normal development. The supported product development environments are Linux and macOS. Windows binaries are produced as a best-effort release artifact but Windows is not a supported development environment.
 
 The browser runtime targets locally installed Chrome or a compatible Chromium browser. It can launch a managed browser or attach to an explicitly debug-enabled Chrome/Electron renderer endpoint through MCP. Electron's Node main process is not part of the browser boundary.
 
@@ -27,7 +27,19 @@ cargo test --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-`cargo fmt --all` can apply formatting when needed. The other commands compile and test all six workspace crates plus the root binary.
+`cargo fmt --all` can apply formatting when needed. The other commands compile and test the workspace and root binary.
+
+Formatting and Clippy run on stable only: formatter output and lint rules evolve independently of compiler compatibility. The separate Linux minimum-version CI job installs and explicitly selects Rust 1.88.0 for both locked gates and prints the compiler and Cargo identities. Reproduce it without allowing the repository's stable toolchain file to mask the selection:
+
+```bash
+rustup toolchain install 1.88.0 --profile minimal
+rustup run 1.88.0 rustc --version
+rustup run 1.88.0 cargo --version
+rustup run 1.88.0 cargo check --workspace --all-targets --locked
+rustup run 1.88.0 cargo test --workspace --all-targets --locked
+```
+
+The parsed workflow/manifest contract fixture runs through `bash tests/distribution-static.sh`, or independently with `bun test tests/minimum-rust-workflow.test.ts` (Bun built-ins only; no package installation required).
 
 ## Run a development build
 
