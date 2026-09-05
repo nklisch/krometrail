@@ -159,4 +159,12 @@ Required tests after adjudication:
 
 Tests run: `node /home/nathan/dev/.krometrail-result-delivery/tests/fixtures/agent-result-delivery.mjs /home/nathan/.pi/agent/npm/node_modules/@nklisch/pi-mcp-adapter` completed with six confirmed losses and two controls (no truncation). `git diff --check` is the scope/whitespace gate. No Rust build/test, browser qualification, native-client execution, provider request, paid run, or release gate was run. No browser/profile/store/build directory was created; shared `/storage/cargo-target` was untouched. The short diagnostic needs no build lock; future heavy qualification must use the shared `flock /tmp/krometrail-reliability-build.lock` background path.
 
-**Parent decisions needed:** accept adapter-loss attribution independently of the historical incident; authorize adapter-first ownership or explicitly choose the server alternative; commission real server-wire/provider-seam and native-host qualifications before advancing acceptance. This checkpoint does not close any unchecked acceptance criterion.
+**Parent decisions at this checkpoint:** accept adapter-loss attribution independently of the historical incident; authorize adapter-first ownership or explicitly choose the server alternative; commission real server-wire/provider-seam and native-host qualifications before advancing acceptance. This checkpoint does not close any unchecked acceptance criterion.
+
+## Authorized adapter handoff — 2026-09-05
+
+The parent independently reran the installed diagnostic after integrating this checkpoint (`c49a42f7`): six structured-fact losses confirmed; empty-content fallback and image/resource-link controls checked. The user then explicitly selected **Fix the Pi adapter** and identified `../pi-extensions` as the source repository. The source adapter is also `2.21.0-nklisch.2`.
+
+Source repair is owned by `mcp-structured-result-delivery` in the Pi Extensions Workbench, isolated on branch `work/mcp-structured-result-delivery`. The original source checkout's unrelated lockfile/Ollama work stays untouched. Astra medium is evaluating the concrete shared delivery design before scoped Flash xhigh implementation and Astra review. The earlier suggested bounded routine remains a design candidate, not a mandate for a new serialization framework. Existing output/spill ownership should be reused wherever sufficient.
+
+No installed extension, package version, production configuration, or browser session has been changed. Publishing/installing and native-host qualification remain separate; Krometrail acceptance remains open. The Pi Extensions ledger's pre-existing older-layout validation failures are recorded separately and do not constitute an adapter regression or authorize a Workbench migration.
