@@ -259,7 +259,8 @@ fn clipboard_bridge_value<'a>(
 /// Chrome formats `exception.description` as `ClassName: message` followed
 /// by stack frames, so content further down — a `NotAllowedError` mention,
 /// a bridge sentinel, even a denial message — cannot manufacture a known
-/// cause. Permission denial is claimed only from Chrome's source-grounded
+/// cause. The whole first line must match, so an unknown error merely quoting
+/// a known message also stays neutral. Permission denial requires Chrome's
 /// "Read permission denied." / "Write permission denied." rejections;
 /// other `NotAllowedError` shapes (permission service unavailable,
 /// document detached, permissions-policy blocking, system denial) carry
@@ -273,41 +274,34 @@ fn clipboard_exception_error(bound: &BoundTarget, details: &serde_json::Value) -
         .lines()
         .next()
         .unwrap_or_default();
-    let (code, message, recovery) = if first_line.contains("secure_context_required") {
-        (
+    let (code, message, recovery) = match first_line {
+        "Error: secure_context_required" => (
             ErrorCode::Unsupported,
             "clipboard access requires a secure page context",
             "navigate the managed page to HTTPS or another secure context and retry",
-        )
-    } else if first_line.contains("clipboard_unavailable") {
-        (
+        ),
+        "Error: clipboard_unavailable" => (
             ErrorCode::Unsupported,
             "the page clipboard API is unavailable",
             "use a supported secure Chromium page and retry",
-        )
-    } else if first_line.contains("focus_required") || first_line.contains("not focused") {
-        // The document can lose focus between the bridge pre-check and the
-        // clipboard call; Chrome then rejects with
-        // `NotAllowedError: Document is not focused.` — a focus failure.
-        (
+        ),
+        // Focus can be lost between the bridge pre-check and Chrome's call.
+        "Error: focus_required" | "NotAllowedError: Document is not focused." => (
             ErrorCode::InteractionFailed,
             "clipboard access requires a visible focused page",
             "focus the managed browser page and retry; Krometrail will not steal focus",
-        )
-    } else if first_line.contains("Read permission denied.")
-        || first_line.contains("Write permission denied.")
-    {
-        (
+        ),
+        "NotAllowedError: Read permission denied."
+        | "NotAllowedError: Write permission denied." => (
             ErrorCode::InteractionFailed,
             "browser clipboard permission denied the explicit request",
             "focus the managed page, allow clipboard access in Chrome, and retry",
-        )
-    } else {
-        (
+        ),
+        _ => (
             ErrorCode::InteractionFailed,
             "clipboard operation failed for an unidentified reason",
             "retry the operation; if it persists, re-select the page and try again",
-        )
+        ),
     };
     clipboard_failure(code, bound, message, recovery)
 }
@@ -518,12 +512,15 @@ mod tests {
             })
         };
 
-        for description in ["secure_context_required", "clipboard_unavailable"] {
+        for description in [
+            "Error: secure_context_required",
+            "Error: clipboard_unavailable",
+        ] {
             let error = clipboard_exception_error(&bound, &details("Error", description));
             assert_eq!(error.code, ErrorCode::Unsupported);
         }
         for (class_name, description) in [
-            ("Error", "focus_required"),
+            ("Error", "Error: focus_required"),
             ("DOMException", "NotAllowedError: Document is not focused."),
         ] {
             let error = clipboard_exception_error(&bound, &details(class_name, description));
@@ -888,6 +885,17 @@ mod tests {
             Op::Write => "write",
         };
         let cases: &[(&str, &str)] = &[
+            (
+                "first-line-denial-quotation",
+                "TypeError: unexpected text: Read permission denied.",
+            ),
+            (
+                "first-line-marker-quotation",
+                "TypeError: secure_context_required is not a known failure",
+            ),
+            ("marker-suffix", "Error: focus_required_extra"),
+            ("unavailable-suffix", "Error: clipboard_unavailable_extra"),
+            ("bare-denial", "NotAllowedError"),
             ("detach", "NotAllowedError: Document detached."),
             (
                 "bare",

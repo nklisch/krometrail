@@ -15,7 +15,7 @@ Because managed browser sessions run automated headless or background workflows,
 
 ## Review disposition — 2026-09-05
 
-The user-observed failures above remain useful evidence, but a permission-denied message is not proof of the underlying permission state. Review at `eb5b4656` found that clipboard exception classification can misread the CDP response shape and label focus/secure-context failures as permission denial. That correction belongs to [clipboard error classification](epic-a-grade-reliability-clipboard-error-shape.md); this item retains the distinct unattended-permission policy question.
+The user-observed failures above remain useful evidence, but a permission-denied message is not proof of the underlying permission state. Review at `eb5b4656` found that clipboard exception classification can misread the CDP response shape and label focus/secure-context failures as permission denial. That correction belongs to [clipboard error classification](../active/features/epic-a-grade-reliability-clipboard-error-shape.md); this item retains the distinct unattended-permission policy question.
 
 ## Proposed direction and safety boundaries
 
