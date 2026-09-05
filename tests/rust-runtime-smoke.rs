@@ -468,7 +468,19 @@ fn a_second_process_leaves_a_running_instance_store_intact() {
         .expect("MCP binary should spawn");
     let root = wait_for_instance_root(&data.join("instances"));
     let index = root.join("index.sqlite3");
+    // Ownership is claimed before storage opens. Wait for the files whose
+    // survival this test checks, not just the earlier ownership-lock signal.
+    for _ in 0..200 {
+        if index.is_file() && root.join("segments").is_dir() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
     assert!(index.is_file(), "startup should create an index");
+    assert!(
+        root.join("segments").is_dir(),
+        "startup should create its segments directory"
+    );
 
     // Exactly what destroyed the store before: other processes running their
     // ordinary startup, including abandoned-root reclamation.
