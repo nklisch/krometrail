@@ -167,5 +167,6 @@ pub use select::{
     select_storyboard_frames_with_analysis,
 };
 pub use sequence::{
-    BorrowedFrameSequence, DeclaredGap, FrameSequence, Marker, OwnedFrameSequence, TimeRange,
+    BorrowedFrameSequence, DeclaredGap, FrameSequence, Marker, OwnedFrameSequence,
+    SourceProvenance, TimeRange,
 };

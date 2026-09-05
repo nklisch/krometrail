@@ -93,9 +93,26 @@ FrameSequence
   region?
   mask?
   gaps?
+  source_frame_ids        # complete retained source identity, in source order
+  source_indices?         # decoded-subset positions; absent when decoded = source
+  source_range?           # declared inclusive source time range; present with indices
 ```
 
 Frames in one sequence use a common coordinate space and dimensions.
+
+A bounded decoded subset keeps its full source identity: the sequence retains
+the complete retained source identifiers plus explicit source positions and
+the declared source time range when supplied. The wire always names the source
+identifiers. Indices and range are null in the implicit full-source shape;
+explicit indices may also cover the complete source, with a declared range
+containing the decoded endpoints.
+In-memory construction — including the complete-input constructor — and
+deserialization share one validating authority: duplicate source identifiers,
+decoded-subset identity or order mismatches, and declared ranges excluding
+decoded frames are rejected rather than silently dropped. Markers and gaps
+are validated against the declared source range when provenance is declared,
+so a source-timeline annotation between decoded frames remains representable
+through construction and the wire alike.
 
 A viewport resize, orientation change, device-scale change, or incompatible crop divides the input into separate visual epochs unless the caller explicitly requests a declared normalization. Artifacts do not silently stretch incompatible frames into alignment.
 

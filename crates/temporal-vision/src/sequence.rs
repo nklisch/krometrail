@@ -217,16 +217,42 @@ pub struct FrameSequence<FrameId, MarkerId, GapId, Pixels> {
     gaps: Box<[DeclaredGap<GapId>]>,
     region: Option<FrameRegion>,
     mask: Option<BinaryMask>,
-    #[serde(skip)]
+    /// Complete retained source identity in source order: every retained
+    /// frame of the sequence's visual epoch, decoded or not.
     source_frame_ids: Box<[FrameId]>,
-    #[serde(skip)]
+    /// Each decoded frame's position within `source_frame_ids`, or `None`
+    /// when the decoded frames are the complete retained source.
     source_indices: Option<Box<[usize]>>,
-    #[serde(skip)]
+    /// The caller-declared inclusive time range of the retained source;
+    /// present exactly when `source_indices` is.
     source_range: Option<TimeRange>,
 }
 
 pub type OwnedFrameSequence<F, M, G> = FrameSequence<F, M, G, Box<[u8]>>;
 pub type BorrowedFrameSequence<'a, F, M, G> = FrameSequence<F, M, G, &'a [u8]>;
+
+/// Caller-supplied provenance linking decoded frames to their complete
+/// retained source, for use with [`FrameSequence::with_provenance`].
+///
+/// `indices` and `range` are an all-or-nothing pair: both `None` when the
+/// decoded frames are the complete retained source, or both `Some` when they
+/// declare the decoded frames' positions within the retained source — which
+/// may be a subset of it or all of it (explicit complete-source indices are
+/// valid and let the caller declare a wider source time range).
+#[derive(Clone, Debug)]
+pub struct SourceProvenance<F> {
+    /// Complete retained source identity in source order: every retained
+    /// frame of the sequence's visual epoch, decoded or not. When `indices`
+    /// is `None`, these must be exactly the decoded frame identifiers in
+    /// order.
+    pub frame_ids: Vec<F>,
+    /// Each decoded frame's position within `frame_ids`, or `None` when the
+    /// decoded frames are the complete retained source.
+    pub indices: Option<Vec<usize>>,
+    /// The caller-declared inclusive time range of the retained source;
+    /// present exactly when `indices` is.
+    pub range: Option<TimeRange>,
+}
 
 impl<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>> FrameSequence<F, M, G, P> {
     pub fn new(
@@ -239,6 +265,60 @@ impl<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>> FrameSequence<F, M, G, P> {
     where
         F: Clone,
     {
+        let source_frame_ids = frames.iter().map(|frame| frame.id().clone()).collect();
+        Self::assemble(
+            frames,
+            markers,
+            gaps,
+            region,
+            mask,
+            SourceProvenance {
+                frame_ids: source_frame_ids,
+                indices: None,
+                range: None,
+            },
+        )
+    }
+
+    /// Construct a sequence from complete inputs: decoded content and source
+    /// provenance in one call.
+    ///
+    /// This is the in-memory counterpart of deserialization: both delegate to
+    /// the same validating authority, so a caller can construct — with the
+    /// same invariants — sequences the wire can express and `new` cannot,
+    /// such as annotations between decoded frames but inside the declared
+    /// source range. [`Self::new`] remains the convenience path for the plain
+    /// full-source shape, and [`Self::with_source_provenance`] attaches
+    /// provenance to an already-built sequence.
+    pub fn with_provenance(
+        frames: Vec<Frame<F, P>>,
+        markers: Vec<Marker<M>>,
+        gaps: Vec<DeclaredGap<G>>,
+        region: Option<FrameRegion>,
+        mask: Option<BinaryMask>,
+        provenance: SourceProvenance<F>,
+    ) -> Result<Self> {
+        Self::assemble(frames, markers, gaps, region, mask, provenance)
+    }
+
+    /// Single construction authority for decoded content and provenance:
+    /// `new` and `Deserialize` construct through it, and
+    /// `with_source_provenance` revalidates through the same shared
+    /// validators (`validate_source_provenance`, `validate_markers`,
+    /// `validate_gaps`) without rebuilding the sequence. Constructing here
+    /// keeps the wire unable to express a sequence the constructors cannot,
+    /// and no constructor able to skip the shared frame, annotation, or
+    /// provenance checks. Annotations are validated against the effective
+    /// range: the declared source range when provenance is declared, the
+    /// decoded frame range otherwise.
+    fn assemble(
+        frames: Vec<Frame<F, P>>,
+        markers: Vec<Marker<M>>,
+        gaps: Vec<DeclaredGap<G>>,
+        region: Option<FrameRegion>,
+        mask: Option<BinaryMask>,
+        provenance: SourceProvenance<F>,
+    ) -> Result<Self> {
         let Some(first) = frames.first() else {
             return Err(VisionError::new(
                 ErrorCode::EmptySequence,
@@ -271,9 +351,16 @@ impl<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>> FrameSequence<F, M, G, P> {
             }
         }
 
-        let range = TimeRange::new(first.timestamp(), frames.last().unwrap().timestamp())?;
-        validate_markers(&markers, range)?;
-        validate_gaps(&gaps, range)?;
+        let decoded_range = TimeRange::new(first.timestamp(), frames.last().unwrap().timestamp())?;
+        validate_source_provenance(
+            &frames,
+            &provenance.frame_ids,
+            provenance.indices.as_deref(),
+            provenance.range,
+        )?;
+        let effective_range = provenance.range.unwrap_or(decoded_range);
+        validate_markers(&markers, effective_range)?;
+        validate_gaps(&gaps, effective_range)?;
 
         if region.is_some_and(|value| !value.rect().fits_within(dimensions)) {
             return Err(VisionError::new(
@@ -291,47 +378,40 @@ impl<F: Eq, M: Eq, G: Eq, P: AsRef<[u8]>> FrameSequence<F, M, G, P> {
             ));
         }
 
-        let source_frame_ids = frames.iter().map(|frame| frame.id().clone()).collect();
         Ok(Self {
             frames: frames.into_boxed_slice(),
             markers: markers.into_boxed_slice(),
             gaps: gaps.into_boxed_slice(),
             region,
             mask,
-            source_frame_ids,
-            source_indices: None,
-            source_range: None,
+            source_frame_ids: provenance.frame_ids.into_boxed_slice(),
+            source_indices: provenance.indices.map(Vec::into_boxed_slice),
+            source_range: provenance.range,
         })
     }
 
     /// Attach the full retained source identity to a bounded decoded subset.
     /// Rendering and measurement continue to use the decoded frames, while
     /// manifests retain the complete source-frame and time-range provenance.
+    ///
+    /// Annotations are revalidated against the newly declared range through
+    /// the same shared validators construction uses: reattaching provenance
+    /// that strands an annotation outside the effective range is an error,
+    /// not a silent rewrite.
     pub fn with_source_provenance(
         mut self,
         source_frame_ids: Vec<F>,
         source_indices: Vec<usize>,
         source_range: TimeRange,
     ) -> Result<Self> {
-        if source_frame_ids.len() < self.frames.len()
-            || source_indices.len() != self.frames.len()
-            || source_indices.windows(2).any(|pair| pair[0] >= pair[1])
-            || self
-                .frames
-                .iter()
-                .zip(&source_indices)
-                .any(|(frame, index)| {
-                    *index >= source_frame_ids.len() || source_frame_ids[*index] != *frame.id()
-                })
-            || source_frame_ids.windows(2).any(|pair| pair[0] == pair[1])
-            || !source_range.contains(self.frames[0].timestamp())
-            || !source_range.contains(self.frames[self.frames.len() - 1].timestamp())
-        {
-            return Err(VisionError::new(
-                ErrorCode::InvalidParameter,
-                "source provenance does not match the bounded frame sequence",
-            ));
-        }
+        validate_source_provenance(
+            &self.frames,
+            &source_frame_ids,
+            Some(&source_indices),
+            Some(source_range),
+        )?;
+        validate_markers(&self.markers, source_range)?;
+        validate_gaps(&self.gaps, source_range)?;
         self.source_frame_ids = source_frame_ids.into_boxed_slice();
         self.source_indices = Some(source_indices.into_boxed_slice());
         self.source_range = Some(source_range);
@@ -412,7 +492,7 @@ impl<F: Clone + Eq, M: Clone + Eq, G: Clone + Eq, P: AsRef<[u8]>> FrameSequence<
 
 impl<'de, F, M, G, P> Deserialize<'de> for FrameSequence<F, M, G, P>
 where
-    F: Deserialize<'de> + Clone + Eq,
+    F: Deserialize<'de> + Eq,
     M: Deserialize<'de> + Eq,
     G: Deserialize<'de> + Eq,
     P: Deserialize<'de> + AsRef<[u8]>,
@@ -421,21 +501,134 @@ where
     where
         D: Deserializer<'de>,
     {
+        // One current representation: `source_frame_ids` is required — the
+        // historical provenance-dropping payload stays rejected — while
+        // `source_indices` and `source_range` are ordinary optional members
+        // where omission equals null. Their all-or-nothing pairing, subset
+        // identity and order, and declared-range containment are validated by
+        // the same authority as construction.
         #[derive(Deserialize)]
-        #[serde(bound(
-            deserialize = "F: Deserialize<'de>, M: Deserialize<'de>, G: Deserialize<'de>, P: Deserialize<'de> + AsRef<[u8]>"
-        ))]
+        #[serde(
+            bound(
+                deserialize = "F: Deserialize<'de>, M: Deserialize<'de>, G: Deserialize<'de>, P: Deserialize<'de> + AsRef<[u8]>"
+            ),
+            deny_unknown_fields
+        )]
         struct Wire<F, M, G, P> {
             frames: Vec<Frame<F, P>>,
             markers: Vec<Marker<M>>,
             gaps: Vec<DeclaredGap<G>>,
             region: Option<FrameRegion>,
             mask: Option<BinaryMask>,
+            source_frame_ids: Vec<F>,
+            source_indices: Option<Vec<usize>>,
+            source_range: Option<TimeRange>,
         }
         let wire = Wire::deserialize(deserializer)?;
-        Self::new(wire.frames, wire.markers, wire.gaps, wire.region, wire.mask)
-            .map_err(serde::de::Error::custom)
+        Self::assemble(
+            wire.frames,
+            wire.markers,
+            wire.gaps,
+            wire.region,
+            wire.mask,
+            SourceProvenance {
+                frame_ids: wire.source_frame_ids,
+                indices: wire.source_indices,
+                range: wire.source_range,
+            },
+        )
+        .map_err(serde::de::Error::custom)
     }
+}
+
+/// Validate the provenance triplet linking a bounded decoded sequence to its
+/// complete retained source. Exactly one shape is valid: either the decoded
+/// frames are the complete retained source (indices and range both `None`,
+/// with `source_frame_ids` equal to the decoded identifiers in order), or the
+/// decoded frames declare their positions within the retained source (both
+/// `Some`) — a subset of it, or all of it with explicit indices. The declared
+/// `source_range` must contain the decoded frame range.
+///
+/// Duplicate source identifiers are rejected at any distance with a quadratic
+/// scan: requiring `Hash` or `Ord` on caller identifier types would add a
+/// bound the public generic contract deliberately does not make, so identity
+/// comparison stays `Eq`-only. The retained source may be far larger than the
+/// decoded subset; no cap relates the two populations.
+fn validate_source_provenance<F: Eq, P: AsRef<[u8]>>(
+    frames: &[Frame<F, P>],
+    source_frame_ids: &[F],
+    source_indices: Option<&[usize]>,
+    source_range: Option<TimeRange>,
+) -> Result<()> {
+    let (Some(indices), Some(source_range)) = (source_indices, source_range) else {
+        if source_indices.is_none() && source_range.is_none() {
+            if source_frame_ids.len() != frames.len()
+                || source_frame_ids.iter().ne(frames.iter().map(Frame::id))
+            {
+                return Err(VisionError::new(
+                    ErrorCode::InvalidParameter,
+                    "a sequence without source indices must retain every decoded frame as its complete source",
+                ));
+            }
+            return Ok(());
+        }
+        return Err(VisionError::new(
+            ErrorCode::InvalidParameter,
+            "source indices and source range must be declared together",
+        ));
+    };
+    if indices.len() != frames.len() {
+        return Err(VisionError::new(
+            ErrorCode::InvalidParameter,
+            "source indices must identify every decoded frame",
+        ));
+    }
+    // Duplicates anywhere in the retained source make its identity ambiguous,
+    // including between frames the decoded subset never maps.
+    for (position, id) in source_frame_ids.iter().enumerate() {
+        if source_frame_ids[..position].contains(id) {
+            return Err(VisionError::at(
+                ErrorCode::DuplicateIdentifier,
+                "source frame identifiers must be unique",
+                position,
+            ));
+        }
+    }
+    // Structural order is checked before identity so a reordered subset is
+    // reported as an ordering problem even when its identifiers also drift.
+    for (position, &index) in indices.iter().enumerate() {
+        if position > 0 && indices[position - 1] >= index {
+            return Err(VisionError::at(
+                ErrorCode::OutOfOrder,
+                "source indices must be strictly increasing",
+                position,
+            ));
+        }
+    }
+    for (position, (&index, frame)) in indices.iter().zip(frames).enumerate() {
+        if index >= source_frame_ids.len() {
+            return Err(VisionError::at(
+                ErrorCode::InvalidParameter,
+                "source index lies outside the retained source frames",
+                position,
+            ));
+        }
+        if &source_frame_ids[index] != frame.id() {
+            return Err(VisionError::at(
+                ErrorCode::InvalidParameter,
+                "decoded frame does not match its declared source frame",
+                position,
+            ));
+        }
+    }
+    let contains = |frame: &Frame<F, P>| source_range.contains(frame.timestamp());
+    if !frames.first().is_some_and(contains) || !frames.last().is_some_and(contains) {
+        return Err(VisionError::new(
+            ErrorCode::InvalidParameter,
+            "the declared source range must contain the decoded frame range",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_markers<M: Eq>(markers: &[Marker<M>], range: TimeRange) -> Result<()> {

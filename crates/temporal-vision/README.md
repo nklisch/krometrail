@@ -77,6 +77,14 @@ Why it fits agent consumers:
 - **Plan/render separation** — `MotionHistoryPlan`, `RegionFilmstripPlan`,
   `StoryboardSelection`, `DifferenceMapData` can be consumed directly and
   rendered by your own UI (or skip the built-in renderer entirely).
+- **Evidence provenance survives persistence** — a serialized
+  `FrameSequence` always names its complete retained source identity, and
+  carries explicit source indices and a declared source range when supplied.
+  Both are null in the implicit full-source shape; explicit indices may also
+  cover the complete source. Deserialization runs the same
+  validation as construction — including the `with_provenance`
+  complete-input constructor — and rejects duplicate, mismatched, unordered,
+  or out-of-range provenance instead of silently dropping it.
 
 ## Example
 
