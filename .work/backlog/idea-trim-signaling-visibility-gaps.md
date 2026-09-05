@@ -39,3 +39,15 @@ below ~500 MB behave coarsely (whole-segment sawtooth; first trim structurally
 forces grace override because the only sealed segment backs the fresh
 artifacts). Segment target size scaling with small budgets may be worth
 considering separately.
+
+## Execution assessment — 2026-09-05
+
+Both signaling findings were promoted to
+[`story-trim-signaling-visibility`](../active/stories/story-trim-signaling-visibility.md),
+marked done for 1.6.2. Current source includes `grace_overridden_through` and
+`fully_evicted_range_not_found` with targeted coverage. Do not dispatch a second
+implementation from this idea: first rerun the owning regressions, then reconcile
+this retained source item under the repository's retention policy. This
+assessment inspected the current source and completion record but did not rerun
+those tests. The small-budget segment-size note above is still an unmeasured
+observation, not another established signaling defect.

@@ -64,3 +64,14 @@ Investigation directions (verify, do not assume):
 Related: `feature-ax-overflow-observation-failure` (done, 1.6.1) — its
 serialization-failure classification is untestable end-to-end until this is
 fixed. Parked cdpkit byte-fingerprint idea is adjacent but distinct.
+
+## Execution assessment — 2026-09-05
+
+The [reliability execution topology](epic-a-grade-reliability.md#execution-graph)
+places this existing item in the first session-survival queue at proposed P1
+priority. Losing the entire browser session is more severe than losing one
+observation. The report above is historical evidence, not a fresh reproduction
+on the current revision. Reproduce with a bounded local giant-document fixture,
+identify the actual transport/reconnect failure, and retain regressions before
+choosing a fix. This assessment does not authorize implementation or establish
+the oversized-message hypothesis as the cause.

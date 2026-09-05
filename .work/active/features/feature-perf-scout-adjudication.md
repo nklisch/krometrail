@@ -15,7 +15,7 @@ updated: 2026-07-20
 
 ## Brief
 
-Ten parked `perf-scout-*` items from a 2026-07-15 scout run, all speculative and
+Eleven parked `perf-scout-*` items from a 2026-07-15 scout run, all speculative and
 none measured:
 
 - `perf-scout-batch-artifact-publication` (io)
@@ -30,7 +30,7 @@ none measured:
 - `perf-scout-request-source-digests` (caching, investigate-first)
 - `perf-scout-share-pair-classification` (algorithmic, investigate-first)
 
-Six carry an explicit `investigate-first` tag. These are borrowed-pattern
+Five carry an explicit `investigate-first` tag. These are borrowed-pattern
 hypotheses ("sparse matrices and bitmap engines", "HPC loop fusion", "database
 dataloaders"), not diagnosed bottlenecks.
 
@@ -57,7 +57,7 @@ decide, and delete the items that the numbers do not justify.
 
 - Artifact-stage profiling exists and produces reproducible numbers on a real
   workload (the shakedown's 474-frame / 1673x1288 range is a good baseline).
-- Every one of the ten items reaches a terminal state: implemented with a
+- Every one of the eleven items reaches a terminal state: implemented with a
   benchmark demonstrating the win, or closed with the measurement that refutes
   it.
 - No speculative optimization is merged without a number attached.
