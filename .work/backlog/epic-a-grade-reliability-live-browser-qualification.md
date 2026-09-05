@@ -48,3 +48,11 @@ Preserve evidence provenance, explicit gaps and uncertainty, authority revalidat
 
 - `epic-prove-temporal-advantage` — related authority/context, not an implicit blocking dependency.
 - `epic-prove-temporal-advantage-platform-evidence-collection` — related authority/context, not an implicit blocking dependency.
+
+## Qualification-feature compilation follow-up — 2026-09-05
+
+Independent review of the discovery-only doctor branch (`7e0d83fe`/`3315bdba`, base `d5047192`) ran `cargo check -p krometrail --all-targets --features qualification-support --locked` and found a broken feature lane. Default workspace/root gates do not compile this feature and cannot establish its readiness.
+
+The review separates newly removed runtime/storage projections still consumed by qualification code (owned by the doctor correction) from reportedly pre-existing stale `mcp_config` construction and operation matches in `src/app/live_evaluation.rs` and its modules. A baseline-versus-corrected compiler comparison has been requested; do not attribute all 79 reported errors to doctor or claim the lane passes merely after removing its introduced errors. The independent feature-check receipt is `/tmp/krometrail-doctor-independent-feature-check.cFV7l1.log`; preserve relevant diagnostics in this item when the differential is available.
+
+Reconcile this feature-gated compilation debt as part of qualifying the existing harness, rather than deleting coverage or inventing a replacement harness. The current finding is a compilation/coverage blocker, not a failed live-browser run or evidence about browser behavior. No browser or paid model was invoked by this review.
