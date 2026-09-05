@@ -42,3 +42,11 @@ Actual Rust 1.85 rejects current let chains with E0658. Installing a default 1.8
 Prefer explicit cargo +<version> or equivalent verified selection. Keep stable developer tooling distinct from the supported-minimum build contract.
 
 Preserve evidence provenance, explicit gaps and uncertainty, authority revalidation, bounded processing, and the current-contract/no-hypothetical-compatibility discipline. Run the applicable production, boundary, failure-path, and integration tests; record actual results and unresolved limitations in this item.
+
+## Execution preflight — 2026-09-05
+
+The parent inspected the current CI and local toolchains while the result-delivery, giant-page, release-ownership, and sequence-provenance units were running. Both minimum-version CI steps and ordinary local cargo commands remain ambiguous without explicit compiler selection; local unqualified rustc/cargo report Fedora 1.96.1. Installed rustup toolchains include 1.85.0 and 1.88.0, so a candidate minimum can be tested without a toolchain download.
+
+An offline locked Cargo metadata inventory succeeded. The highest declared dependency requirement in the complete graph was `wasip2` 1.0.4+wasi-0.2.12 at Rust 1.87.0; other leading entries reported 1.85. This inventory includes target-specific dependencies and is not evidence that the Linux build requires 1.87 or that the workspace compiles on 1.88. Source let chains independently rule out the current 1.85 declaration as-is. Treat 1.88 as a candidate to verify, not a selected minimum; run explicit-toolchain locked gates before changing the promise.
+
+Queue this after the release owner's shared CI/fixture surface is available. Preserve stable formatting/tooling policy separately from minimum compiler compatibility. Any custom compiler-specific build directory created for qualification has an owner and must be removed at completion; do not repeatedly evict the active workers' shared stable build cache by alternating compiler versions there.

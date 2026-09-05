@@ -54,7 +54,7 @@ Waves are sequencing guidance, not extra artificial dependency edges. Frontmatte
 | 1 | P1 | [Separate snapshot reference validity from content novelty](epic-a-grade-reliability-snapshot-freshness.md) | Code-traced defect |
 | 2 | P1 | [Make the declared minimum Rust version genuinely compile and gate CI](epic-a-grade-reliability-minimum-rust-gate.md) | Reproduced with explicit Rust 1.85 compiler selection |
 | 2 | P1 | [Keep independent crate and all plugin versions correct through release](../active/features/epic-a-grade-reliability-release-version-ownership.md) | Release verifier failure reproduced |
-| 2 | P1 | [Keep doctor independent of recording storage and reclamation](epic-a-grade-reliability-doctor-discovery-only.md) | Reproduced in isolated storage: doctor removed abandoned recording evidence and preserved managed profiles. |
+| 2 | P1 | [Keep doctor independent of recording storage and reclamation](../active/features/epic-a-grade-reliability-doctor-discovery-only.md) | Reproduced in isolated storage: doctor removed abandoned recording evidence and preserved managed profiles. |
 | 2 | P1 | [Preserve and validate complete temporal sequence provenance](../active/features/epic-a-grade-reliability-sequence-provenance.md) | Both silent round-trip loss and nonadjacent duplicate acceptance reproduced through public APIs. |
 | 2 | P2 | [Release browser-event capacity when page targets retire](epic-a-grade-reliability-event-target-retirement.md) | Code-traced lifecycle leak |
 | 2 | P2 | [Reclaim resolved-range handle entries and byte budget](epic-a-grade-reliability-range-handle-reclamation.md) | Code-traced: entries and budget are never removed/released. |
@@ -237,3 +237,5 @@ Requested model/thinking was `zai/glm-5.3-flash` / `xhigh`; the harness reported
 ### Continuing execution — 2026-09-05
 
 After the accepted clipboard pilot, the user authorized continued work. The next bounded wave dispatches agent-result delivery and giant-page session survival as Astra-medium investigation/design checkpoints, plus release-version ownership and sequence provenance as scoped Flash-xhigh implementation units. Each owns an isolated worktree and named files; heavy builds/tests are serialized through the shared build lock, and parent review/integration precede done status. Paid model-effectiveness studies and actual releases remain outside this authorization. The earlier assessment-only statements describe that checkpoint, not a prohibition on this subsequently authorized wave.
+
+The giant-page investigation subsequently hit a provider-side safety flag after an unsuccessful no-run probe build. Its owning item records the exact blocker; the uncompiled diagnostic is preserved on `work/giant-page`, not merged into the main test suite. The freed fourth worker slot now owns the discovery-only doctor fix (Flash xhigh). The other three lanes continue unchanged.

@@ -86,3 +86,18 @@ the oversized-message hypothesis as the cause.
 ## Authorized execution checkpoint — 2026-09-05
 
 The user authorized continued reliability work. Astra medium owns a diagnosis-first checkpoint: reproduce with a bounded local giant-document fixture using isolated temporary browser/profile/store state; establish the actual command/transport/supervisor failure and why reconnect succeeds or fails before selecting a fix. Do not visit private/public target sites or use the user's reusable profile. Existing Chrome opt-in qualification and process cleanup authorities apply. No transport replacement, fork, raised limits, or blanket observation suppression based on the historical oversized-message hypothesis alone. Record exact versions, fixture size, wire/error evidence, regression shape, diagnosis confidence, narrow design, and remaining uncertainty in this item for parent adjudication. Source/probe/test changes are allowed for the investigation; hold production transport changes until the cause and design are reviewed.
+
+
+## Blocked investigation checkpoint — 2026-09-05
+
+**Blocked by provider failure; no new product diagnosis or live reproduction.** The Astra-medium worker stopped after 288.0 seconds with:
+
+> Codex error: This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber
+
+The last operation was a no-run compilation of an isolated local diagnostic:
+
+`cargo test -p krometrail-cdp --features qualification-support --test capture_real bounded_local_giant_page_diagnosis --no-run --locked`
+
+It failed with E0599 (`BrowserOperationRequest::Evaluate` does not exist) and E0061 (both execute calls omitted `BrowserOperationContext`). The partial source also attempts mutation through the read-only evaluation request and contains unfinished tracing setup. It is not a valid regression, was not run in Chrome, and proves neither the historical failure nor its cause.
+
+The uncompiled diagnostic source and its registration are retained only on the separate `work/giant-page` branch, not integrated into main's test suite. That branch is a preservation checkpoint, not accepted implementation. Main retains this blocker/evidence record. No custom build directory was created; the only worker job was the completed no-run compile against the pre-existing shared Cargo target. Other reliability lanes continue; do not silently route this blocked request to another provider to evade the flag.
