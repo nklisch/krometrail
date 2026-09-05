@@ -41,7 +41,7 @@ Run:
 krometrail doctor
 ```
 
-`doctor` only discovers supported local browsers; it does not launch one. If it reports `browser_not_found`, install Chrome or a compatible Chromium browser, or have your agent pass an explicit executable through Krometrail's browser-start request.
+`doctor` only discovers supported local browsers; it does not launch one. It also never opens recording storage or recording configuration, so you can run it no matter what state your Krometrail data directory is in. The only thing it may write there is the usual best-effort diagnostics log; if that location is unusable, doctor prints a warning and still answers. If it reports `browser_not_found`, install Chrome or a compatible Chromium browser, or have your agent pass an explicit executable through Krometrail's browser-start request.
 
 ## The shell cannot find `krometrail`
 

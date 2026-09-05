@@ -3,6 +3,7 @@ mod artifacts;
 mod cli;
 mod debug_bundle;
 mod diagnostics;
+mod doctor;
 mod progressive;
 mod range_handles;
 mod video;
@@ -13,7 +14,8 @@ use clap::{CommandFactory, Parser};
 use krometrail_core::{KrometrailError, RetryAdvice};
 
 use app::{build_runtime, data_directory};
-use cli::Cli;
+use cli::{Cli, Command};
+use doctor::Doctor;
 
 const FAILURE_EXIT_CODE: u8 = 1;
 
@@ -44,6 +46,8 @@ fn main() -> ExitCode {
         }
     };
 
+    // Diagnostics stay best effort for every command: failure degrades to no
+    // logging and is the only data-root side effect doctor can produce.
     let diagnostics = match diagnostics::initialize(&data_directory()) {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -51,18 +55,36 @@ fn main() -> ExitCode {
             None
         }
     };
-    let diagnostic_context = diagnostics
-        .as_ref()
-        .map(diagnostics::DiagnosticRuntime::context)
-        .unwrap_or_default();
-    let runtime = match build_runtime(diagnostic_context) {
-        Ok(runtime) => runtime,
-        Err(error) => return report_error(&error),
-    };
 
-    match executor.block_on(runtime.run(command)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => report_error(&error),
+    match command {
+        // Doctor composes the discovery authority alone, before any recording
+        // runtime exists. Storage it does not need can never block discovery,
+        // and an abandoned recording cache can never be reclaimed by a health
+        // check that only reads installed browsers.
+        Command::Doctor => {
+            let doctor = Doctor::with_system_launcher();
+            match executor.block_on(doctor.run()) {
+                Ok(outcome) => {
+                    println!("{}", outcome.success_line());
+                    ExitCode::SUCCESS
+                }
+                Err(error) => report_error(&error),
+            }
+        }
+        Command::Mcp => {
+            let diagnostic_context = diagnostics
+                .as_ref()
+                .map(diagnostics::DiagnosticRuntime::context)
+                .unwrap_or_default();
+            let runtime = match build_runtime(diagnostic_context) {
+                Ok(runtime) => runtime,
+                Err(error) => return report_error(&error),
+            };
+            match executor.block_on(runtime.run_mcp()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => report_error(&error),
+            }
+        }
     }
 }
 

@@ -22,7 +22,13 @@ Use `doctor` as the terminal health check for browser discovery:
 krometrail doctor
 ```
 
-It does not launch a browser, change a profile, or start recording.
+It does not launch a browser, change a profile, or start recording. Doctor never
+initializes, reclaims, validates, or reads recording storage or recording
+configuration: an unusable data directory or an invalid recording setting
+cannot block discovery. Diagnostic logging stays on and stays best effort:
+discovery is appended to the data directory's diagnostics log when that
+location is writable, and an unwritable location only produces a warning on
+standard error.
 
 ## `mcp`
 

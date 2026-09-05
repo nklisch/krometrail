@@ -1,10 +1,74 @@
 use std::{
+    ffi::OsString,
     io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _},
+    path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     time::Duration,
 };
 
 use krometrail_store::{IndexStoreConfig, SqliteIndex};
+
+/// Removes the scratch directory on scope exit, including during assertion
+/// unwinds: a red doctor test must not leak its state directory or fake
+/// executable into the shared temporary directory.
+struct ScratchGuard(PathBuf);
+
+impl ScratchGuard {
+    fn new(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+}
+
+impl AsRef<Path> for ScratchGuard {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A deterministic discovery candidate: doctor probes `--version` on this script,
+/// which prints a parseable Chrome version without any real browser involvement.
+#[cfg(unix)]
+fn fixture_browser(root: &Path) -> PathBuf {
+    let path = root.join("fixture-chrome");
+    std::fs::write(&path, "#!/bin/sh\necho 'Google Chrome 123.4.5.6'\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+    }
+    path
+}
+
+#[cfg(unix)]
+fn run_doctor(data: &Path, environment: &[(&str, OsString)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_krometrail"));
+    command.arg("doctor").env("KROMETRAIL_DATA_DIR", data);
+    for (key, value) in environment {
+        command.env(key, value);
+    }
+    command
+        .output()
+        .expect("krometrail binary should be executable")
+}
+
+/// Points discovery at the deterministic fixture so the doctor outcome does not
+/// depend on which browsers happen to be installed on the test host.
+#[cfg(unix)]
+fn with_fixture_browser(root: &Path) -> (PathBuf, Vec<(&'static str, OsString)>) {
+    let executable = fixture_browser(root);
+    (
+        executable.clone(),
+        vec![("KROMETRAIL_CHROME", executable.into_os_string())],
+    )
+}
 
 fn run(args: &[&str]) -> Output {
     let data = std::env::temp_dir().join(format!(
@@ -74,6 +138,244 @@ fn doctor_reports_only_the_production_discovery_outcomes() {
         );
         assert!(stderr.contains("recovery:"), "stderr: {stderr}");
     }
+}
+
+/// Doctor is a browser-discovery diagnostic, so it must leave every member of the
+/// data root alone: the abandoned recording cache it finds, plus profiles,
+/// configuration, downloads, and anything it does not recognize. The abandoned
+/// instance root is named as a UUID, exactly the shape startup reclamation scans
+/// for, so the previous doctor-through-runtime composition deleted it here.
+#[test]
+#[cfg(unix)]
+fn doctor_preserves_abandoned_cache_and_unrelated_data_root_members_byte_for_byte() {
+    let scratch = ScratchGuard::new(std::env::temp_dir().join(format!(
+        "krometrail-doctor-preserve-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    let data = scratch.as_ref().join("data");
+    let abandoned = data.join("instances/00000000-0000-4000-8000-000000000001");
+    std::fs::create_dir_all(abandoned.join("segments")).unwrap();
+    std::fs::write(abandoned.join("index.sqlite3"), b"abandoned-index").unwrap();
+    std::fs::write(
+        abandoned.join("segments/frame-0001.bin"),
+        b"abandoned-frame",
+    )
+    .unwrap();
+    std::fs::create_dir_all(data.join("browser-profiles/default")).unwrap();
+    std::fs::write(
+        data.join("browser-profiles/default/profile"),
+        b"preserve-profile",
+    )
+    .unwrap();
+    std::fs::write(data.join("config.toml"), b"preserve-configuration").unwrap();
+    std::fs::create_dir_all(data.join("browser-downloads")).unwrap();
+    std::fs::write(
+        data.join("browser-downloads/receipt.txt"),
+        b"preserve-download",
+    )
+    .unwrap();
+    std::fs::write(data.join("unknown-member.bin"), b"preserve-unknown").unwrap();
+    let (_fixture, environment) = with_fixture_browser(scratch.as_ref());
+
+    let output = run_doctor(&data, &environment);
+
+    let stdout = text(&output.stdout);
+    let stderr = text(&output.stderr);
+    assert!(
+        output.status.success(),
+        "doctor must not be blocked by storage it does not need: {stderr}"
+    );
+    assert!(stdout.contains("browser available: "), "stdout: {stdout}");
+    assert!(!stderr.contains("error["), "stderr: {stderr}");
+
+    let root = abandoned;
+    assert_eq!(
+        std::fs::read(root.join("index.sqlite3")).unwrap(),
+        b"abandoned-index",
+        "the abandoned recording index was modified or removed by doctor"
+    );
+    assert_eq!(
+        std::fs::read(root.join("segments/frame-0001.bin")).unwrap(),
+        b"abandoned-frame",
+        "abandoned recording segments were modified or removed by doctor"
+    );
+    assert!(
+        !root.join(".owner.lock").exists(),
+        "doctor claimed the abandoned instance root even though it must never own storage"
+    );
+    let roots: Vec<_> = std::fs::read_dir(data.join("instances"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        roots,
+        vec![std::ffi::OsString::from(
+            "00000000-0000-4000-8000-000000000001"
+        )],
+        "doctor must not claim a fresh instance root"
+    );
+    assert_eq!(
+        std::fs::read(data.join("browser-profiles/default/profile")).unwrap(),
+        b"preserve-profile"
+    );
+    assert_eq!(
+        std::fs::read(data.join("config.toml")).unwrap(),
+        b"preserve-configuration"
+    );
+    assert_eq!(
+        std::fs::read(data.join("browser-downloads/receipt.txt")).unwrap(),
+        b"preserve-download"
+    );
+    assert_eq!(
+        std::fs::read(data.join("unknown-member.bin")).unwrap(),
+        b"preserve-unknown"
+    );
+}
+
+/// A storage root that cannot host recordings must not stop the browser
+/// discovery answer. The data path is a regular file, so instance ownership and
+/// every storage member below it are structurally impossible — a stronger
+/// obstacle than a permission bit, and one that root cannot bypass.
+#[test]
+#[cfg(unix)]
+fn doctor_succeeds_when_the_storage_root_is_structurally_unusable() {
+    let scratch = ScratchGuard::new(std::env::temp_dir().join(format!(
+        "krometrail-doctor-unusable-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    std::fs::create_dir_all(scratch.as_ref()).unwrap();
+    let data = scratch.as_ref().join("data");
+    std::fs::write(&data, b"not a data directory").unwrap();
+    let (_fixture, environment) = with_fixture_browser(scratch.as_ref());
+
+    let output = run_doctor(&data, &environment);
+
+    let stdout = text(&output.stdout);
+    let stderr = text(&output.stderr);
+    assert!(
+        output.status.success(),
+        "unusable recording storage must not fail doctor: {stderr}"
+    );
+    assert!(stdout.contains("browser available: "), "stdout: {stdout}");
+    assert!(!stderr.contains("error["), "stderr: {stderr}");
+}
+
+/// A fresh data root must stay free of recording setup: no instance root, no
+/// index, no segments, no profile or download scaffolding. Best-effort
+/// diagnostic logging is the one documented data-root side effect doctor has.
+#[test]
+#[cfg(unix)]
+fn doctor_never_creates_recording_setup_for_a_fresh_data_root() {
+    let scratch = ScratchGuard::new(std::env::temp_dir().join(format!(
+        "krometrail-doctor-fresh-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    std::fs::create_dir_all(scratch.as_ref()).unwrap();
+    let data = scratch.as_ref().join("data");
+    let (_fixture, environment) = with_fixture_browser(scratch.as_ref());
+
+    let output = run_doctor(&data, &environment);
+
+    let stdout = text(&output.stdout);
+    let stderr = text(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(stdout.contains("browser available: "), "stdout: {stdout}");
+    assert!(!stderr.contains("error["), "stderr: {stderr}");
+    let mut members: Vec<String> = std::fs::read_dir(&data)
+        .expect("doctor should only have created diagnostics state")
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    members.sort();
+    assert_eq!(
+        members,
+        vec!["diagnostics"],
+        "doctor created recording setup"
+    );
+    assert!(!data.join("instances").exists());
+    assert!(!data.join("index.sqlite3").exists());
+    assert!(!data.join("segments").exists());
+    assert!(!data.join("browser-profiles").exists());
+    assert!(!data.join("browser-downloads").exists());
+}
+
+/// Recording-only settings are not doctor's inputs. An invalid disk budget and
+/// an invalid retention age must be ignored instead of failing a discovery
+/// diagnostic that never opens storage.
+#[test]
+#[cfg(unix)]
+fn doctor_ignores_invalid_recording_only_configuration() {
+    let scratch = ScratchGuard::new(std::env::temp_dir().join(format!(
+        "krometrail-doctor-config-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    std::fs::create_dir_all(scratch.as_ref()).unwrap();
+    let data = scratch.as_ref().join("data");
+    let (_fixture, mut environment) = with_fixture_browser(scratch.as_ref());
+    environment.push(("KROMETRAIL_DISK_BUDGET_BYTES", OsString::from("0")));
+    environment.push((
+        "KROMETRAIL_RETENTION_MAX_AGE_SECS",
+        OsString::from("not-a-number"),
+    ));
+
+    let output = run_doctor(&data, &environment);
+
+    let stdout = text(&output.stdout);
+    let stderr = text(&output.stderr);
+    assert!(
+        output.status.success(),
+        "invalid recording-only configuration must not fail doctor: {stderr}"
+    );
+    assert!(stdout.contains("browser available: "), "stdout: {stdout}");
+    assert!(stderr.is_empty(), "stderr: {stderr}");
+}
+
+/// The guard must clean up during unwinds: a red doctor test panics before its
+/// cleanup statements run, and its scratch state must still be removed. This
+/// pins the Drop behavior directly instead of trusting happy-path cleanup.
+#[test]
+fn scratch_guard_removes_state_when_the_test_panics() {
+    let scratch = std::env::temp_dir().join(format!(
+        "krometrail-doctor-guard-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let result = std::panic::catch_unwind(|| {
+        let _guard = ScratchGuard::new(&scratch);
+        std::fs::create_dir_all(scratch.join("data")).unwrap();
+        std::fs::write(scratch.join("data/state"), b"scratch").unwrap();
+        panic!("simulated assertion failure before cleanup");
+    });
+
+    assert_eq!(
+        result
+            .expect_err("the simulated failure should unwind")
+            .downcast_ref::<&str>()
+            .copied(),
+        Some("simulated assertion failure before cleanup")
+    );
+    assert!(
+        !scratch.exists(),
+        "the guard must remove scratch state during unwinding, not only on success"
+    );
 }
 
 #[test]

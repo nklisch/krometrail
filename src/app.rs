@@ -5,13 +5,14 @@ use std::{
 
 use krometrail_core::{
     ArtifactGeneration, ArtifactStore, BrowserConnector, BrowserEventSink, CapabilityId,
-    CapabilitySnapshot, CaptureGapStore, DiskBudgetBytes, ErrorCode, FrameSource, IdSource,
-    IdValue, InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText,
-    ProgressiveEvidence, ProgressiveEvidenceStore, RecordingCatalog, RecordingSink,
-    ResolvedRangeHandles, Result, RetentionLifecycle, RetentionStore, TemporalContextQuery,
-    TemporalDebugBundles, TemporalQuery, TemporalVideoEncoder, TemporalVideoGeneration,
-    TimelineStore, WallClock,
+    CapabilitySnapshot, DiskBudgetBytes, ErrorCode, FrameSource, IdSource, IdValue,
+    InteractionEvidenceSink, KrometrailError, MonotonicClock, NonEmptyText, ProgressiveEvidence,
+    ProgressiveEvidenceStore, RecordingCatalog, RecordingSink, ResolvedRangeHandles, Result,
+    RetentionLifecycle, RetentionStore, TemporalContextQuery, TemporalDebugBundles, TemporalQuery,
+    TemporalVideoEncoder, TemporalVideoGeneration, WallClock,
 };
+#[cfg(feature = "qualification-support")]
+use krometrail_core::{CaptureGapStore, TimelineStore};
 use uuid::Uuid;
 
 // These imports make the root's assembly boundary explicit. Implementations will
@@ -19,7 +20,6 @@ use uuid::Uuid;
 // remains the only place allowed to choose and connect them.
 use crate::{
     artifacts::{ArtifactWorkLimits, TemporalVisionArtifactService},
-    cli::Command,
     debug_bundle::{BundleWorkLimits, TemporalDebugBundleService, TemporalDebugEvidenceStore},
     progressive::ProgressiveEvidenceService,
     range_handles::ProcessResolvedRangeHandles,
@@ -45,24 +45,41 @@ pub(crate) mod live_evaluation;
 pub(crate) mod platform_evidence;
 
 pub(crate) struct RuntimeDependencies {
-    pub clock: Arc<dyn MonotonicClock>,
-    pub wall_clock: Arc<dyn WallClock>,
-    pub ids: Arc<dyn IdSource>,
+    // Runtime is the MCP-serving runtime only: doctor composes its own discovery
+    // authority in src/doctor.rs and never builds these services. Every Arc here
+    // is either read by compose_temporal_video/mcp_dependencies or keeps a store
+    // projection alive through the services that retain it.
     pub browser: Arc<dyn BrowserConnector>,
-    pub recording: Arc<dyn RecordingSink>,
-    pub retention: Arc<dyn RetentionStore>,
-    pub timeline: Arc<dyn TimelineStore>,
-    pub catalog: Arc<dyn RecordingCatalog>,
-    pub gaps: Arc<dyn CaptureGapStore>,
     pub frames: Arc<dyn FrameSource>,
-    pub temporal_queries: Arc<dyn TemporalQuery>,
-    pub temporal_context: Arc<dyn TemporalContextQuery>,
-    pub artifact_generation: Arc<dyn ArtifactGeneration>,
-    pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
+    pub ids: Arc<dyn IdSource>,
     pub temporal_debug_bundles: Arc<dyn TemporalDebugBundles>,
+    pub progressive_evidence: Arc<dyn ProgressiveEvidence>,
+    pub temporal_context: Arc<dyn TemporalContextQuery>,
     pub range_handles: Arc<dyn ResolvedRangeHandles>,
     pub artifacts: Arc<dyn ArtifactStore>,
     pub diagnostics: DiagnosticContext,
+    // The feature-gated qualification runtime composes the full recording
+    // runtime and its observation modules read these projections directly
+    // (live_evaluation capture/control). The default surface stays lean, so
+    // they exist only under the qualification feature.
+    #[cfg(feature = "qualification-support")]
+    pub clock: Arc<dyn MonotonicClock>,
+    #[cfg(feature = "qualification-support")]
+    pub wall_clock: Arc<dyn WallClock>,
+    #[cfg(feature = "qualification-support")]
+    pub recording: Arc<dyn RecordingSink>,
+    #[cfg(feature = "qualification-support")]
+    pub retention: Arc<dyn RetentionStore>,
+    #[cfg(feature = "qualification-support")]
+    pub timeline: Arc<dyn TimelineStore>,
+    #[cfg(feature = "qualification-support")]
+    pub catalog: Arc<dyn RecordingCatalog>,
+    #[cfg(feature = "qualification-support")]
+    pub gaps: Arc<dyn CaptureGapStore>,
+    #[cfg(feature = "qualification-support")]
+    pub temporal_queries: Arc<dyn TemporalQuery>,
+    #[cfg(feature = "qualification-support")]
+    pub artifact_generation: Arc<dyn ArtifactGeneration>,
 }
 
 /// Composition hook retained for the later agent-facing video surface. The caller supplies the
@@ -84,14 +101,18 @@ struct StorageDependencies {
     store: Arc<RecordingStore>,
     recording: Arc<dyn RecordingSink>,
     retention: Arc<dyn RetentionStore>,
-    timeline: Arc<dyn TimelineStore>,
     catalog: Arc<dyn RecordingCatalog>,
-    gaps: Arc<dyn CaptureGapStore>,
     frames: Arc<dyn FrameSource>,
     temporal_queries: Arc<dyn TemporalQuery>,
     browser_event_sink: Arc<dyn BrowserEventSink>,
     temporal_context: Arc<dyn TemporalContextQuery>,
     artifacts: Arc<dyn ArtifactStore>,
+    // The feature-gated qualification runtime composes from these projections;
+    // the default product runtime wires capture and queries without them.
+    #[cfg(feature = "qualification-support")]
+    timeline: Arc<dyn TimelineStore>,
+    #[cfg(feature = "qualification-support")]
+    gaps: Arc<dyn CaptureGapStore>,
     // The qualification composition root transfers this authority-owned report to its observation
     // runtime; the normal product runtime intentionally does not publish startup diagnostics.
     #[allow(dead_code)]
@@ -124,71 +145,35 @@ impl Runtime {
         Self { dependencies }
     }
 
-    pub(crate) async fn run(self, command: Command) -> Result<()> {
-        match command {
-            Command::Doctor => {
-                // Touch the injected process services at the runtime boundary. The
-                // browser operation remains the authoritative availability check;
-                // clocks and IDs are ready for later commands without leaking their
-                // implementations into core.
-                let _ = self.dependencies.clock.now();
-                let _ = self.dependencies.wall_clock.now();
-                let _ = self.dependencies.ids.next();
-                let _ = (
-                    &self.dependencies.recording,
-                    &self.dependencies.retention,
-                    &self.dependencies.timeline,
-                    &self.dependencies.catalog,
-                    &self.dependencies.gaps,
-                    &self.dependencies.frames,
-                    &self.dependencies.temporal_queries,
-                    &self.dependencies.temporal_context,
-                    &self.dependencies.artifact_generation,
-                    &self.dependencies.progressive_evidence,
-                    &self.dependencies.temporal_debug_bundles,
-                    &self.dependencies.range_handles,
-                );
-                let installations = self.dependencies.browser.installations().await?;
-                if installations.is_empty() {
-                    return Err(browser_not_found());
-                }
-                println!("browser available: {} installation(s)", installations.len());
-                Ok(())
+    pub(crate) async fn run_mcp(self) -> Result<()> {
+        // FFmpeg is optional and MCP-only. One bounded qualification result controls the
+        // immutable capability snapshot and the optional retained generation service.
+        let qualification = qualify_ffmpeg(
+            FfmpegDiscoveryOptions::from_process_environment(),
+            Arc::new(StartupCancellation),
+            Instant::now() + krometrail_ffmpeg::FFMPEG_QUALIFICATION_TIMEOUT,
+        )
+        .await;
+        let (encoder, unavailable, identity) = match qualification {
+            FfmpegQualification::Qualified(encoder) => {
+                let identity = encoder.identity().clone();
+                let encoder: Arc<dyn TemporalVideoEncoder> = encoder;
+                (Some(encoder), None, Some(identity))
             }
-            Command::Mcp => {
-                // FFmpeg is optional and MCP-only. One bounded qualification result controls the
-                // immutable capability snapshot and the optional retained generation service.
-                let qualification = qualify_ffmpeg(
-                    FfmpegDiscoveryOptions::from_process_environment(),
-                    Arc::new(StartupCancellation),
-                    Instant::now() + krometrail_ffmpeg::FFMPEG_QUALIFICATION_TIMEOUT,
-                )
-                .await;
-                let (encoder, unavailable, identity) = match qualification {
-                    FfmpegQualification::Qualified(encoder) => {
-                        let identity = encoder.identity().clone();
-                        let encoder: Arc<dyn TemporalVideoEncoder> = encoder;
-                        (Some(encoder), None, Some(identity))
-                    }
-                    FfmpegQualification::Unavailable(unavailable) => {
-                        (None, Some(unavailable), None)
-                    }
-                };
-                let (mcp_config, temporal_video) =
-                    compose_temporal_video(&self.dependencies, encoder)?;
-                log_temporal_video_availability(
-                    temporal_video.as_ref(),
-                    unavailable.as_ref(),
-                    identity.as_ref(),
-                );
-                build_service(
-                    self.dependencies.mcp_dependencies(temporal_video),
-                    mcp_config,
-                )?
-                .serve_stdio()
-                .await
-            }
-        }
+            FfmpegQualification::Unavailable(unavailable) => (None, Some(unavailable), None),
+        };
+        let (mcp_config, temporal_video) = compose_temporal_video(&self.dependencies, encoder)?;
+        log_temporal_video_availability(
+            temporal_video.as_ref(),
+            unavailable.as_ref(),
+            identity.as_ref(),
+        );
+        build_service(
+            self.dependencies.mcp_dependencies(temporal_video),
+            mcp_config,
+        )?
+        .serve_stdio()
+        .await
     }
 }
 
@@ -268,24 +253,33 @@ pub(crate) fn build_runtime(diagnostics: DiagnosticContext) -> Result<Runtime> {
         .with_interaction_evidence(Arc::clone(&storage.store) as Arc<dyn InteractionEvidenceSink>),
     );
     Ok(Runtime::new(RuntimeDependencies {
-        clock,
-        wall_clock,
-        ids,
         browser,
-        recording: storage.recording,
-        retention: storage.retention,
-        timeline: storage.timeline,
-        catalog: storage.catalog,
-        gaps: storage.gaps,
         frames: storage.frames,
-        temporal_queries: storage.temporal_queries,
-        temporal_context: storage.temporal_context,
-        artifact_generation,
-        progressive_evidence,
+        ids,
         temporal_debug_bundles,
+        progressive_evidence,
+        temporal_context: storage.temporal_context,
         range_handles,
         artifacts: storage.artifacts,
         diagnostics,
+        #[cfg(feature = "qualification-support")]
+        clock,
+        #[cfg(feature = "qualification-support")]
+        wall_clock,
+        #[cfg(feature = "qualification-support")]
+        recording: storage.recording,
+        #[cfg(feature = "qualification-support")]
+        retention: storage.retention,
+        #[cfg(feature = "qualification-support")]
+        timeline: storage.timeline,
+        #[cfg(feature = "qualification-support")]
+        catalog: storage.catalog,
+        #[cfg(feature = "qualification-support")]
+        gaps: storage.gaps,
+        #[cfg(feature = "qualification-support")]
+        temporal_queries: storage.temporal_queries,
+        #[cfg(feature = "qualification-support")]
+        artifact_generation,
     }))
 }
 
@@ -453,12 +447,14 @@ fn open_storage_with_budget(
         recovery,
         recording: Arc::clone(&store) as Arc<dyn RecordingSink>,
         retention: Arc::clone(&store) as Arc<dyn RetentionStore>,
-        timeline: Arc::clone(&store) as Arc<dyn TimelineStore>,
         temporal_queries: Arc::clone(&store) as Arc<dyn TemporalQuery>,
         browser_event_sink: Arc::clone(&store) as Arc<dyn BrowserEventSink>,
         temporal_context: Arc::clone(&store) as Arc<dyn TemporalContextQuery>,
         artifacts: Arc::clone(&store) as Arc<dyn ArtifactStore>,
         catalog: Arc::clone(&index) as Arc<dyn RecordingCatalog>,
+        #[cfg(feature = "qualification-support")]
+        timeline: Arc::clone(&store) as Arc<dyn TimelineStore>,
+        #[cfg(feature = "qualification-support")]
         gaps: Arc::clone(&index) as Arc<dyn CaptureGapStore>,
         frames: store as Arc<dyn FrameSource>,
     })
@@ -631,19 +627,6 @@ impl IdSource for ProcessIdSource {
     }
 }
 
-fn browser_not_found() -> KrometrailError {
-    KrometrailError::new(
-        ErrorCode::BrowserNotFound,
-        NonEmptyText::new("no supported browser installation was found")
-            .expect("static browser error message is non-empty"),
-    )
-    .with_retry(krometrail_core::RetryAdvice::AfterRecovery)
-    .with_recovery(
-        NonEmptyText::new("install Chrome or Chromium, then run doctor again")
-            .expect("static browser recovery message is non-empty"),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,20 +638,14 @@ mod tests {
     }
 
     use krometrail_core::PortFuture;
-    use std::{
-        collections::HashSet,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use std::collections::HashSet;
 
-    struct DiscoveryOnlyFake {
-        installations_calls: AtomicUsize,
-    }
+    struct DiscoveryOnlyFake;
 
     impl BrowserConnector for DiscoveryOnlyFake {
         fn installations(
             &self,
         ) -> PortFuture<'_, Result<Vec<krometrail_core::BrowserInstallation>>> {
-            self.installations_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(std::future::ready(Ok(Vec::new())))
         }
 
@@ -682,23 +659,20 @@ mod tests {
             &self,
             _request: krometrail_core::BrowserConnectRequest,
         ) -> PortFuture<'_, Result<Arc<dyn krometrail_core::BrowserSessionPort>>> {
-            panic!("doctor must not connect to a browser");
+            panic!(
+                "composition tests must not connect to a browser; doctor \
+                 never constructs this runtime"
+            );
         }
     }
 
     #[tokio::test]
-    async fn doctor_is_discovery_only() {
-        let browser = Arc::new(DiscoveryOnlyFake {
-            installations_calls: AtomicUsize::new(0),
-        });
-        let recording_directory =
-            std::env::temp_dir().join(format!("krometrail-doctor-test-{}", Uuid::new_v4()));
-        let storage = open_storage_with_budget(
-            &recording_directory,
-            DiskBudgetBytes::default(),
-            test_process_clock(),
-        )
-        .unwrap();
+    async fn mcp_dependency_projection_shares_runtime_services() {
+        let root =
+            std::env::temp_dir().join(format!("krometrail-mcp-projection-{}", Uuid::new_v4()));
+        let storage =
+            open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
+                .unwrap();
         let ids: Arc<dyn IdSource> = Arc::new(ProcessIdSource);
         let artifact_generation: Arc<dyn ArtifactGeneration> = Arc::new(
             TemporalVisionArtifactService::new(
@@ -727,58 +701,63 @@ mod tests {
         let range_handles: Arc<dyn ResolvedRangeHandles> = Arc::new(
             ProcessResolvedRangeHandles::new(Arc::clone(&ids), Arc::clone(&storage.frames)),
         );
-        let runtime_dependencies = RuntimeDependencies {
-            clock: Arc::new(ProcessMonotonicClock {
-                origin: Instant::now(),
-            }),
-            wall_clock: Arc::new(SystemWallClock),
+        let browser: Arc<dyn BrowserConnector> = Arc::new(DiscoveryOnlyFake);
+        let dependencies = RuntimeDependencies {
+            browser: Arc::clone(&browser),
+            frames: Arc::clone(&storage.frames),
             ids,
-            browser: Arc::clone(&browser) as Arc<dyn BrowserConnector>,
-            recording: storage.recording,
-            retention: storage.retention,
-            timeline: storage.timeline,
-            catalog: storage.catalog,
-            gaps: storage.gaps,
-            frames: storage.frames,
-            temporal_queries: storage.temporal_queries,
-            temporal_context: storage.temporal_context,
-            artifact_generation,
-            progressive_evidence,
             temporal_debug_bundles,
+            progressive_evidence,
+            temporal_context: Arc::clone(&storage.temporal_context),
             range_handles,
-            artifacts: storage.artifacts,
+            artifacts: Arc::clone(&storage.artifacts),
             diagnostics: DiagnosticContext::default(),
+            #[cfg(feature = "qualification-support")]
+            clock: test_process_clock(),
+            #[cfg(feature = "qualification-support")]
+            wall_clock: Arc::new(SystemWallClock),
+            #[cfg(feature = "qualification-support")]
+            recording: Arc::clone(&storage.recording),
+            #[cfg(feature = "qualification-support")]
+            retention: Arc::clone(&storage.retention),
+            #[cfg(feature = "qualification-support")]
+            timeline: Arc::clone(&storage.timeline),
+            #[cfg(feature = "qualification-support")]
+            catalog: Arc::clone(&storage.catalog),
+            #[cfg(feature = "qualification-support")]
+            gaps: Arc::clone(&storage.gaps),
+            #[cfg(feature = "qualification-support")]
+            temporal_queries: Arc::clone(&storage.temporal_queries),
+            #[cfg(feature = "qualification-support")]
+            artifact_generation: Arc::clone(&artifact_generation),
         };
-        let mcp_dependencies = runtime_dependencies.mcp_dependencies(None);
+        let mcp_dependencies = dependencies.mcp_dependencies(None);
         assert!(Arc::ptr_eq(
             &mcp_dependencies.browser,
-            &runtime_dependencies.browser
+            &dependencies.browser
         ));
         assert!(Arc::ptr_eq(
             &mcp_dependencies.temporal_context,
-            &runtime_dependencies.temporal_context,
+            &dependencies.temporal_context,
         ));
         assert!(Arc::ptr_eq(
             &mcp_dependencies.progressive_evidence,
-            &runtime_dependencies.progressive_evidence,
+            &dependencies.progressive_evidence,
         ));
         assert!(Arc::ptr_eq(
             &mcp_dependencies.temporal_debug_bundles,
-            &runtime_dependencies.temporal_debug_bundles,
+            &dependencies.temporal_debug_bundles,
         ));
         assert!(Arc::ptr_eq(
             &mcp_dependencies.range_handles,
-            &runtime_dependencies.range_handles,
+            &dependencies.range_handles,
         ));
-        let runtime = Runtime::new(runtime_dependencies);
-        let error = runtime.run(Command::Doctor).await.unwrap_err();
-        assert_eq!(error.code, ErrorCode::BrowserNotFound);
-        assert_eq!(browser.installations_calls.load(Ordering::SeqCst), 1);
-        std::fs::remove_dir_all(recording_directory).unwrap();
+        drop(dependencies);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
-    async fn storage_composition_shares_lossless_gap_metadata_and_fails_before_runtime() {
+    async fn storage_composition_shares_one_store_and_fails_on_unusable_paths() {
         let root = std::env::temp_dir().join(format!("krometrail-storage-test-{}", Uuid::new_v4()));
         let storage =
             open_storage_with_budget(&root, DiskBudgetBytes::default(), test_process_clock())
@@ -815,40 +794,6 @@ mod tests {
             concrete,
             Arc::as_ptr(&storage.artifacts) as *const (),
             "artifact reads and publication must use the one recording store",
-        );
-        let session = krometrail_core::SessionId::from_uuid(Uuid::from_u128(1));
-        let target = krometrail_core::TargetId::from_uuid(Uuid::from_u128(2));
-        let gap = krometrail_core::CaptureGap::new(
-            krometrail_core::GapId::from_uuid(Uuid::from_u128(3)),
-            session,
-            target,
-            krometrail_core::SessionRange::new(
-                krometrail_core::SessionTime::from_nanos(1),
-                krometrail_core::SessionTime::from_nanos(2),
-            )
-            .unwrap(),
-            krometrail_core::ObservedTime::from_nanos(3),
-            krometrail_core::CaptureGapReason::CaptureStopped,
-            std::num::NonZeroU64::new(1),
-            Some("shutdown boundary".into()),
-        )
-        .unwrap();
-        storage.recording.append_gap(gap.clone()).await.unwrap();
-        assert_eq!(
-            storage
-                .gaps
-                .gaps(
-                    session,
-                    target,
-                    krometrail_core::SessionRange::new(
-                        krometrail_core::SessionTime::from_nanos(2),
-                        krometrail_core::SessionTime::from_nanos(2),
-                    )
-                    .unwrap(),
-                )
-                .await
-                .unwrap(),
-            std::slice::from_ref(&gap)
         );
         drop(storage);
         std::fs::remove_dir_all(&root).unwrap();
@@ -931,22 +876,9 @@ mod tests {
             ProcessResolvedRangeHandles::new(Arc::clone(&ids), Arc::clone(&storage.frames)),
         );
         let dependencies = RuntimeDependencies {
-            clock: Arc::new(ProcessMonotonicClock {
-                origin: Instant::now(),
-            }),
-            wall_clock: Arc::new(SystemWallClock),
+            browser: Arc::new(DiscoveryOnlyFake),
+            frames: Arc::clone(&storage.frames),
             ids,
-            browser: Arc::new(DiscoveryOnlyFake {
-                installations_calls: AtomicUsize::new(0),
-            }),
-            recording: storage.recording,
-            retention: storage.retention,
-            timeline: storage.timeline,
-            catalog: storage.catalog,
-            gaps: storage.gaps,
-            frames: storage.frames,
-            temporal_queries: storage.temporal_queries,
-            temporal_context: storage.temporal_context,
             progressive_evidence: Arc::new(ProgressiveEvidenceService::new(
                 Arc::clone(&storage.store) as Arc<dyn ProgressiveEvidenceStore>,
                 Arc::clone(&artifact_generation),
@@ -961,10 +893,28 @@ mod tests {
                 )
                 .unwrap(),
             ),
+            temporal_context: Arc::clone(&storage.temporal_context),
             range_handles,
-            artifact_generation,
-            artifacts: storage.artifacts,
+            artifacts: Arc::clone(&storage.artifacts),
             diagnostics: DiagnosticContext::default(),
+            #[cfg(feature = "qualification-support")]
+            clock: test_process_clock(),
+            #[cfg(feature = "qualification-support")]
+            wall_clock: Arc::new(SystemWallClock),
+            #[cfg(feature = "qualification-support")]
+            recording: Arc::clone(&storage.recording),
+            #[cfg(feature = "qualification-support")]
+            retention: Arc::clone(&storage.retention),
+            #[cfg(feature = "qualification-support")]
+            timeline: Arc::clone(&storage.timeline),
+            #[cfg(feature = "qualification-support")]
+            catalog: Arc::clone(&storage.catalog),
+            #[cfg(feature = "qualification-support")]
+            gaps: Arc::clone(&storage.gaps),
+            #[cfg(feature = "qualification-support")]
+            temporal_queries: Arc::clone(&storage.temporal_queries),
+            #[cfg(feature = "qualification-support")]
+            artifact_generation: Arc::clone(&artifact_generation),
         };
 
         let (unavailable_config, unavailable_service) =
