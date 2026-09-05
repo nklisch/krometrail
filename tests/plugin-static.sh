@@ -7,6 +7,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGIN="$ROOT/plugin"
 CLAUDE_MANIFEST="$PLUGIN/.claude-plugin/plugin.json"
 CODEX_MANIFEST="$PLUGIN/.codex-plugin/plugin.json"
+# Antigravity host manifest: ships the same plugin identity as the Claude and
+# Codex manifests and belongs to the same version-ownership inventory.
+ANTIGRAVITY_MANIFEST="$PLUGIN/plugin.json"
 CLAUDE_MCP="$PLUGIN/.mcp.json"
 CODEX_MCP="$PLUGIN/.mcp.codex.json"
 PLUGIN_VERSION="$PLUGIN/version"
@@ -33,7 +36,7 @@ require_text() {
 }
 
 for file in \
-  "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$CLAUDE_MCP" "$CODEX_MCP" "$PLUGIN_VERSION" \
+  "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$ANTIGRAVITY_MANIFEST" "$CLAUDE_MCP" "$CODEX_MCP" "$PLUGIN_VERSION" \
   "$LAUNCHER" "$MANAGED_INSTALLER" "$SKILL" "$EVIDENCE" "$SETUP" "$OPENAI" \
   "$REPORT_SKILL" "$REPORT_OPENAI" \
   "$CLAUDE_MARKETPLACE" "$CODEX_MARKETPLACE"; do
@@ -41,7 +44,7 @@ for file in \
 done
 
 command -v jq >/dev/null 2>&1 || fail "jq is required"
-jq empty "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$CLAUDE_MCP" "$CODEX_MCP" "$CLAUDE_MARKETPLACE" "$CODEX_MARKETPLACE"
+jq empty "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$ANTIGRAVITY_MANIFEST" "$CLAUDE_MCP" "$CODEX_MCP" "$CLAUDE_MARKETPLACE" "$CODEX_MARKETPLACE"
 
 cargo_version="$(awk '
   /^\[package\][[:space:]]*$/ { in_package=1; next }
@@ -52,7 +55,7 @@ cargo_version="$(awk '
 ' "$ROOT/Cargo.toml")"
 [[ -n "$cargo_version" ]] || fail "could not read Cargo package version"
 
-for manifest in "$CLAUDE_MANIFEST" "$CODEX_MANIFEST"; do
+for manifest in "$CLAUDE_MANIFEST" "$CODEX_MANIFEST" "$ANTIGRAVITY_MANIFEST"; do
   jq -e --arg version "$cargo_version" '
     .name == "krometrail" and
     .version == $version and

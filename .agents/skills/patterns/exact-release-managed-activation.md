@@ -33,22 +33,37 @@ MODE="${3:-install}"
 
 Install and warm verification share the same exact version and destination authority before execution.
 
-### Release transaction derives every projection
+### Release transaction derives every projection from one inventory
 
-**File**: `scripts/bump-version.ts:134`
+**File**: `scripts/release-ownership.ts:34`
 
 ```ts
-const derivedVersionPaths = rootPackageName === "krometrail"
-  ? [
-      "plugin/.claude-plugin/plugin.json",
-      "plugin/.codex-plugin/plugin.json",
-      ".claude-plugin/marketplace.json",
-      ".agents/plugins/marketplace.json",
-    ]
-  : [];
+export const PRODUCT_VERSION_PROJECTIONS: VersionProjection[] = [
+	{ path: "plugin/.claude-plugin/plugin.json", format: "json" },
+	{ path: "plugin/.codex-plugin/plugin.json", format: "json" },
+	{ path: "plugin/plugin.json", format: "json" },
+	{ path: ".claude-plugin/marketplace.json", format: "json" },
+	{ path: ".agents/plugins/marketplace.json", format: "json" },
+	{ path: "plugin/version", format: "text" },
+];
 ```
 
-Cargo remains authoritative while plugin manifests, catalogs, and the launcher marker move atomically as derived release metadata.
+**File**: `scripts/bump-version.ts:148`
+
+```ts
+const unregistered = findUnregisteredVersionProjections(".");
+if (unregistered.length > 0) {
+	throw new Error(`Unregistered shipped version projection(s): ...`);
+}
+derivedVersionUpdates = await prepareProjectionUpdates(".", current, nextVersion);
+```
+
+Cargo remains authoritative while plugin manifests, catalogs, and the launcher
+marker move atomically as derived release metadata. The same inventory also
+splits lock verification: members that explicitly inherit
+`[workspace.package].version` are product-owned, while independently
+versioned members keep their manifest and lock entry byte-identical through a
+product bump.
 
 ### Static contracts reject release drift
 

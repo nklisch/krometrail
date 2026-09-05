@@ -351,7 +351,7 @@ Run:
 krometrail doctor
 ```
 
-`doctor` only discovers supported local browsers; it does not launch one. If it reports `browser_not_found`, install Chrome or a compatible Chromium browser, or have your agent pass an explicit executable through Krometrail's browser-start request.
+`doctor` only discovers supported local browsers; it does not launch one. It also never opens recording storage or recording configuration, so you can run it no matter what state your Krometrail data directory is in. The only thing it may write there is the usual best-effort diagnostics log; if that location is unusable, doctor prints a warning and still answers. If it reports `browser_not_found`, install Chrome or a compatible Chromium browser, or have your agent pass an explicit executable through Krometrail's browser-start request.
 
 ## The shell cannot find `krometrail`
 
@@ -497,7 +497,13 @@ Use `doctor` as the terminal health check for browser discovery:
 krometrail doctor
 ```
 
-It does not launch a browser, change a profile, or start recording.
+It does not launch a browser, change a profile, or start recording. Doctor never
+initializes, reclaims, validates, or reads recording storage or recording
+configuration: an unusable data directory or an invalid recording setting
+cannot block discovery. Diagnostic logging stays on and stays best effort:
+discovery is appended to the data directory's diagnostics log when that
+location is writable, and an unwritable location only produces a warning on
+standard error.
 
 ## `mcp`
 

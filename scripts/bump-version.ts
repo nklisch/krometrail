@@ -1,6 +1,14 @@
 #!/usr/bin/env bun
 // Usage: bun scripts/bump-version.ts [patch|minor|major|x.y.z] [--prepare|--dry-run]
 
+import {
+	findTomlSection,
+	inheritsWorkspaceVersion,
+	findUnregisteredVersionProjections,
+	prepareProjectionUpdates,
+	type ProjectionUpdate,
+} from "./release-ownership.ts";
+
 const args = [...process.argv.slice(2)];
 const prepare = args.includes("--prepare");
 const dryRun = args.includes("--dry-run");
@@ -12,24 +20,8 @@ if (!bump || (prepare && dryRun) || args.some((arg) => arg.startsWith("--") && a
 	process.exit(1);
 }
 
-// Keep section discovery intentionally narrow: release behavior depends on the
-// exact headers this helper names, not on a general TOML parser.
-type TomlSection = {
-	start: number;
-	end: number;
-	content: string;
-};
-
-function findTomlSection(source: string, header: string): TomlSection | undefined {
-	const start = source.indexOf(header);
-	if (start < 0) return undefined;
-
-	const contentStart = start + header.length;
-	const nextSectionOffset = source.slice(contentStart).search(/^\[/m);
-	const end = nextSectionOffset < 0 ? source.length : contentStart + nextSectionOffset;
-	return { start, end, content: source.slice(start, end) };
-}
-
+// Section discovery stays intentionally narrow; the reader lives in
+// scripts/release-ownership.ts so every manifest consumer parses identically.
 const semverRe = /^(\d+)\.(\d+)\.(\d+)$/;
 const cargoPath = "Cargo.toml";
 const cargoFile = Bun.file(cargoPath);
@@ -96,21 +88,30 @@ if (workspacePackage) {
 	updatedCargo = updatedCargo.slice(0, workspacePackage.start) + updatedWorkspaceSection + updatedCargo.slice(workspacePackage.end);
 }
 
-const workspacePackageNames = [rootPackageName];
+// Workspace membership does not confer product-version ownership. The root
+// package is the explicit product version authority, and a member joins it
+// exactly when it explicitly inherits [workspace.package].version (dotted or
+// inline-table form). A member without that explicit inheritance is
+// independently versioned — literal or single-quoted versions, or no version
+// at all (Cargo defaults to 0.0.0) — so its manifest and Cargo.lock entry must
+// move only through its own release flow.
+const productOwnedLockNames = [rootPackageName];
+const independentMemberNames: string[] = [];
 
 // temporal-vision is versioned and published independently of the workspace
-// (see docs/RELEASING.md). Guard the decoupling: this script must never be
-// the thing that moves its version.
+// (see docs/RELEASING.md). Guard the decoupling with the same classifier the
+// ownership split uses, so recoupling in any TOML shape — dotted
+// `version.workspace = true` or the inline table — is refused by name. This
+// script must never be the thing that moves its version.
 {
 	// The crate may be absent when this script runs inside the bare fixture
 	// repos used by tests/distribution-static.sh; there is nothing to guard
 	// there, so only enforce the decoupling when the manifest exists.
 	const tvManifest = Bun.file("crates/temporal-vision/Cargo.toml");
 	const tvCargo = (await tvManifest.exists()) ? await tvManifest.text() : "";
-	const tvPackage = findTomlSection(tvCargo, "[package]");
-	if (tvPackage && /^\s*version\.workspace\s*=\s*true\s*$/m.test(tvPackage.content)) {
+	if (tvCargo !== "" && inheritsWorkspaceVersion(tvCargo)) {
 		throw new Error(
-			"crates/temporal-vision is versioned independently — do not recouple it to version.workspace; bump it manually per docs/RELEASING.md",
+			"crates/temporal-vision is versioned independently — do not recouple it to the workspace version; bump it manually per docs/RELEASING.md",
 		);
 	}
 }
@@ -129,61 +130,37 @@ if (workspaceMembers) {
 			if (!memberName) {
 				throw new Error(`Workspace member ${memberPath[1]} is missing a root package name`);
 			}
-			workspacePackageNames.push(memberName);
+			if (inheritsWorkspaceVersion(memberCargo)) {
+				productOwnedLockNames.push(memberName);
+			} else {
+				independentMemberNames.push(memberName);
+			}
 		}
 	}
 }
 
 console.log(`Bumping ${current} → ${nextVersion}`);
+
+// Cargo.toml remains the sole version authority. Registered version
+// projections are distribution surfaces that must move atomically with a
+// Krometrail release so the plugin launcher installs the exact binary its
+// package declares. Validate them — and reject any unregistered shipped
+// version surface — before anything mutates, including under --dry-run.
+let derivedVersionUpdates: ProjectionUpdate[] = [];
+if (rootPackageName === "krometrail") {
+	const unregistered = findUnregisteredVersionProjections(".");
+	if (unregistered.length > 0) {
+		throw new Error(
+			`Unregistered shipped version projection(s): ${unregistered.join(", ")} — register them in scripts/release-ownership.ts so every release moves them`,
+		);
+	}
+	derivedVersionUpdates = await prepareProjectionUpdates(".", current, nextVersion);
+}
+
 if (mode === "dry-run") {
-	console.log("Dry run: no files, commits, tags, or pushes changed.");
+	console.log(`Dry run validated ${derivedVersionUpdates.length} registered version projection(s); no files, commits, tags, or pushes changed.`);
 	process.exit(0);
 }
-
-// Cargo.toml remains the sole version authority. These files are distribution
-// projections that must move atomically with a Krometrail release so the plugin
-// launcher can install the exact binary its package declares.
-type DerivedVersionUpdate = {
-	path: string;
-	original: string;
-	updated: string;
-};
-
-const derivedVersionPaths = rootPackageName === "krometrail"
-	? [
-		"plugin/.claude-plugin/plugin.json",
-		"plugin/.codex-plugin/plugin.json",
-		".claude-plugin/marketplace.json",
-		".agents/plugins/marketplace.json",
-	]
-	: [];
-
-async function prepareDerivedVersionUpdates(): Promise<DerivedVersionUpdate[]> {
-	const updates: DerivedVersionUpdate[] = [];
-	for (const path of derivedVersionPaths) {
-		const original = await Bun.file(path).text();
-		const matches = [...original.matchAll(/"version"\s*:\s*"([^"]+)"/g)];
-		if (matches.length !== 1 || matches[0][1] !== current) {
-			throw new Error(`${path} must contain exactly one version equal to ${current}`);
-		}
-		const updated = original.replace(
-			/("version"\s*:\s*")[^"]+("\s*)/,
-			`$1${nextVersion}$2`,
-		);
-		updates.push({ path, original, updated });
-	}
-	if (rootPackageName === "krometrail") {
-		const path = "plugin/version";
-		const original = await Bun.file(path).text();
-		if (original !== `${current}\n`) {
-			throw new Error(`${path} must contain exactly ${current}`);
-		}
-		updates.push({ path, original, updated: `${nextVersion}\n` });
-	}
-	return updates;
-}
-
-const derivedVersionUpdates = await prepareDerivedVersionUpdates();
 
 function run(command: string[], capture = false): string {
 	const result = Bun.spawnSync(command, {
@@ -247,8 +224,8 @@ function sameMultiset(left: Map<string, number>, right: Map<string, number>): bo
 	return true;
 }
 
-function isWorkspacePackage(pkg: LockPackage): boolean {
-	return workspacePackageNames.includes(pkg.name) && pkg.source === "";
+function isProductOwnedPackage(pkg: LockPackage): boolean {
+	return productOwnedLockNames.includes(pkg.name) && pkg.source === "";
 }
 
 function verifyLockRefresh(original: string | undefined, updated: string, expectedVersion: string): void {
@@ -259,25 +236,36 @@ function verifyLockRefresh(original: string | undefined, updated: string, expect
 		const updatedHeader = updated.replaceAll("\r\n", "\n").split("[[package]]", 1)[0];
 		if (originalHeader !== updatedHeader) throw new Error("Cargo.lock header changed during the narrow version refresh");
 	}
-	for (const packageName of workspacePackageNames) {
-		const before = originalPackages.filter((pkg) => pkg.name === packageName && isWorkspacePackage(pkg));
-		const after = updatedPackages.filter((pkg) => pkg.name === packageName && isWorkspacePackage(pkg));
-		if (after.length !== 1) throw new Error(`Cargo.lock must contain exactly one workspace package ${packageName}`);
+	for (const packageName of productOwnedLockNames) {
+		const before = originalPackages.filter((pkg) => pkg.name === packageName && isProductOwnedPackage(pkg));
+		const after = updatedPackages.filter((pkg) => pkg.name === packageName && isProductOwnedPackage(pkg));
+		if (after.length !== 1) throw new Error(`Cargo.lock must contain exactly one product-owned package ${packageName}`);
 		if (before.length === 1 && before[0].version !== current) {
-			throw new Error(`Cargo.lock workspace package ${packageName} did not start at ${current}`);
+			throw new Error(`Cargo.lock product-owned package ${packageName} did not start at ${current}`);
 		}
-		if (before.length > 1) throw new Error(`Cargo.lock contains duplicate workspace package ${packageName}`);
+		if (before.length > 1) throw new Error(`Cargo.lock contains duplicate product-owned package ${packageName}`);
 		if (after[0].version !== expectedVersion) {
-			throw new Error(`Cargo.lock workspace package ${packageName} was not refreshed to ${expectedVersion}`);
+			throw new Error(`Cargo.lock product-owned package ${packageName} was not refreshed to ${expectedVersion}`);
+		}
+	}
+	// Independently versioned members keep their lock entries byte-identical
+	// through a product refresh: workspace membership is not version ownership.
+	for (const packageName of independentMemberNames) {
+		const before = originalPackages.filter((pkg) => pkg.name === packageName && pkg.source === "");
+		const after = updatedPackages.filter((pkg) => pkg.name === packageName && pkg.source === "");
+		if (before.length !== 1 || after.length !== 1 || before[0].section !== after[0].section) {
+			throw new Error(
+				`Cargo.lock entry for independently versioned package ${packageName} changed during the product refresh; bump it through its own release flow`,
+			);
 		}
 	}
 	if (original !== undefined) {
 		const normalizedMultiset = (packages: LockPackage[]): Map<string, number> => packageMultiset(packages.map((pkg) => {
-			if (!isWorkspacePackage(pkg)) return pkg;
-			return { ...pkg, version: "<workspace-version>", section: pkg.section.replace(/^version = "[^"]+"$/m, 'version = "<workspace-version>"') };
+			if (!isProductOwnedPackage(pkg)) return pkg;
+			return { ...pkg, version: "<product-version>", section: pkg.section.replace(/^version = "[^"]+"$/m, 'version = "<product-version>"') };
 		}));
 		if (!sameMultiset(normalizedMultiset(originalPackages), normalizedMultiset(updatedPackages))) {
-			throw new Error("Cargo.lock package multiset changed outside expected workspace version updates");
+			throw new Error("Cargo.lock package multiset changed outside expected product version updates");
 		}
 	}
 }
@@ -288,7 +276,7 @@ try {
 	for (const update of derivedVersionUpdates) {
 		await Bun.write(update.path, update.updated);
 	}
-	console.log("Refreshing only workspace package versions in Cargo.lock...");
+	console.log("Refreshing only product-owned package versions in Cargo.lock...");
 	run(["cargo", "update", "-p", rootPackageName, "--precise", nextVersion]);
 	const refreshedLock = await Bun.file(lockPath).text();
 	verifyLockRefresh(originalLock, refreshedLock, nextVersion);

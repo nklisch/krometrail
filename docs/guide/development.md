@@ -56,7 +56,12 @@ bun run docs:preview
 
 ## Release preparation
 
-Stable Rust releases are published from the root `Cargo.toml`, the sole product-version authority. The Bun release helper updates Cargo metadata, runs the Rust quality gate, and creates the repository release commit/tag/push workflow:
+Stable Rust releases are published from the root `Cargo.toml`, the sole
+product-version authority. The Bun release helper updates Cargo metadata, moves
+every registered version projection from `scripts/release-ownership.ts` (plugin
+manifests, marketplace catalogs, and the launcher marker), leaves independently
+versioned crates and their lock entries untouched, runs the Rust quality gate,
+and creates the repository release commit/tag/push workflow:
 
 ```bash
 bun scripts/bump-version.ts patch
