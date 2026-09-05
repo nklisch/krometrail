@@ -1,5 +1,12 @@
 ---
 id: idea-giant-page-transport-session-kill
+kind: feature
+stage: drafting
+parent: null
+depends_on: []
+release_binding: null
+research_refs: []
+research_origin: null
 created: 2026-07-23
 updated: 2026-07-23
 tags: [cdp, bug]
@@ -67,7 +74,7 @@ fixed. Parked cdpkit byte-fingerprint idea is adjacent but distinct.
 
 ## Execution assessment — 2026-09-05
 
-The [reliability execution topology](epic-a-grade-reliability.md#execution-graph)
+The [reliability execution topology](../../backlog/epic-a-grade-reliability.md#execution-graph)
 places this existing item in the first session-survival queue at proposed P1
 priority. Losing the entire browser session is more severe than losing one
 observation. The report above is historical evidence, not a fresh reproduction
@@ -75,3 +82,7 @@ on the current revision. Reproduce with a bounded local giant-document fixture,
 identify the actual transport/reconnect failure, and retain regressions before
 choosing a fix. This assessment does not authorize implementation or establish
 the oversized-message hypothesis as the cause.
+
+## Authorized execution checkpoint — 2026-09-05
+
+The user authorized continued reliability work. Astra medium owns a diagnosis-first checkpoint: reproduce with a bounded local giant-document fixture using isolated temporary browser/profile/store state; establish the actual command/transport/supervisor failure and why reconnect succeeds or fails before selecting a fix. Do not visit private/public target sites or use the user's reusable profile. Existing Chrome opt-in qualification and process cleanup authorities apply. No transport replacement, fork, raised limits, or blanket observation suppression based on the historical oversized-message hypothesis alone. Record exact versions, fixture size, wire/error evidence, regression shape, diagnosis confidence, narrow design, and remaining uncertainty in this item for parent adjudication. Source/probe/test changes are allowed for the investigation; hold production transport changes until the cause and design are reviewed.

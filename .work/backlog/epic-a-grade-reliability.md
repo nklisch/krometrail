@@ -25,7 +25,7 @@ The concept is strong because agents need what happened over time, not only the 
 ## Scope and evidence integrity
 
 - Origin: personal read-only review at `eb5b4656`, product 1.6.2 and temporal-vision 0.1.1, plus a recent user-reported local browser/agent incident. Record evidence as point-in-time, not guaranteed current behavior.
-- Priorities and waves organize future work; they do not authorize execution, releases, paid model calls, or a settled technical design. All children remain backlog except the explicitly selected clipboard error-classification pilot, whose active item owns its implementation/review status.
+- Priorities and waves organize future work; they do not authorize execution, releases, paid model calls, or a settled technical design. The accepted clipboard pilot is done. After the user asked to continue, result delivery, release ownership, and sequence provenance entered active work; the existing giant-page item entered active investigation alongside them. Other children remain backlog until explicitly dispatched by the execution coordinator.
 - Reproduced: actual Rust 1.85 compile failure; release verifier failure; doctor reclaiming abandoned cache; profile reacquisition failure after owner exit without destructors; temporal provenance round-trip loss; nonadjacent source duplicate acceptance.
 - Code-traced findings and unmeasured performance/object-lifetime risks retain their stated confidence. An investigation may close with reproducible disconfirming evidence rather than an unnecessary code change.
 - Current-compiler format/schema/workspace-test/Clippy and distribution fixture gates passed in review. Those passes did not establish live browser coverage, supported-client result delivery, or the advertised minimum compiler.
@@ -50,12 +50,12 @@ Waves are sequencing guidance, not extra artificial dependency edges. Frontmatte
 
 | Wave | Priority | Outcome | Evidence status |
 | --- | --- | --- | --- |
-| 1 | P1 | [Preserve essential results in the agent-visible MCP response](epic-a-grade-reliability-agent-result-delivery.md) | Code-traced response behavior |
+| 1 | P1 | [Preserve essential results in the agent-visible MCP response](../active/features/epic-a-grade-reliability-agent-result-delivery.md) | Code-traced response behavior |
 | 1 | P1 | [Separate snapshot reference validity from content novelty](epic-a-grade-reliability-snapshot-freshness.md) | Code-traced defect |
 | 2 | P1 | [Make the declared minimum Rust version genuinely compile and gate CI](epic-a-grade-reliability-minimum-rust-gate.md) | Reproduced with explicit Rust 1.85 compiler selection |
-| 2 | P1 | [Keep independent crate and all plugin versions correct through release](epic-a-grade-reliability-release-version-ownership.md) | Release verifier failure reproduced |
+| 2 | P1 | [Keep independent crate and all plugin versions correct through release](../active/features/epic-a-grade-reliability-release-version-ownership.md) | Release verifier failure reproduced |
 | 2 | P1 | [Keep doctor independent of recording storage and reclamation](epic-a-grade-reliability-doctor-discovery-only.md) | Reproduced in isolated storage: doctor removed abandoned recording evidence and preserved managed profiles. |
-| 2 | P1 | [Preserve and validate complete temporal sequence provenance](epic-a-grade-reliability-sequence-provenance.md) | Both silent round-trip loss and nonadjacent duplicate acceptance reproduced through public APIs. |
+| 2 | P1 | [Preserve and validate complete temporal sequence provenance](../active/features/epic-a-grade-reliability-sequence-provenance.md) | Both silent round-trip loss and nonadjacent duplicate acceptance reproduced through public APIs. |
 | 2 | P2 | [Release browser-event capacity when page targets retire](epic-a-grade-reliability-event-target-retirement.md) | Code-traced lifecycle leak |
 | 2 | P2 | [Reclaim resolved-range handle entries and byte budget](epic-a-grade-reliability-range-handle-reclamation.md) | Code-traced: entries and budget are never removed/released. |
 | 2 | P2 | [Release dispatched keyboard state after errors and cancellation](epic-a-grade-reliability-input-release-cleanup.md) | Code-traced missing cleanup path |
@@ -233,3 +233,7 @@ The [clipboard error-classification pilot](../active/features/epic-a-grade-relia
 Requested model/thinking was `zai/glm-5.3-flash` / `xhigh`; the harness reported `max`. Active runs took 17m 27.5s and 9m 39.9s (about 27m 7s combined), including repository onboarding and validation but excluding parent review/integration. Reported usage counters and self-corrected mistakes are retained in the feature; no price, speed advantage, live-browser result, or general model superiority is inferred.
 
 **Execution decision:** use Flash xhigh as the default scoped medium-complexity implementation worker, including settled subunits in Astra-owned lanes. Retain Astra review. Astra **low** is suitable for medium-complexity implementation; **medium** is for complex cross-cutting work, and **high** is a selective escalation for concrete unresolved difficulties. Do not reserve Astra low only for trivial or mechanical tasks. The broader backlog remains planned, not automatically executing.
+
+### Continuing execution — 2026-09-05
+
+After the accepted clipboard pilot, the user authorized continued work. The next bounded wave dispatches agent-result delivery and giant-page session survival as Astra-medium investigation/design checkpoints, plus release-version ownership and sequence provenance as scoped Flash-xhigh implementation units. Each owns an isolated worktree and named files; heavy builds/tests are serialized through the shared build lock, and parent review/integration precede done status. Paid model-effectiveness studies and actual releases remain outside this authorization. The earlier assessment-only statements describe that checkpoint, not a prohibition on this subsequently authorized wave.

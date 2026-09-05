@@ -1,7 +1,7 @@
 ---
 id: epic-a-grade-reliability-agent-result-delivery
 kind: feature
-stage: backlog
+stage: drafting
 tags: [agent-ux, testing]
 parent: epic-a-grade-reliability
 depends_on: []
@@ -18,10 +18,10 @@ updated: 2026-09-05
 
 Text content contains only a success summary while usable result data is separate structured content. A client exposing text alone can hide page IDs and other recovery authorities. A recent local agent report observed exactly a success-only list_pages result, but the server wire response and integration renderer were not captured together.
 
-- **Priority:** P1 — wave 1 of [epic-a-grade-reliability](epic-a-grade-reliability.md). Priority is proposed remediation order, not a release commitment.
+- **Priority:** P1 — wave 1 of [epic-a-grade-reliability](../../backlog/epic-a-grade-reliability.md). Priority is proposed remediation order, not a release commitment.
 - **Evidence status:** Code-traced response behavior; the cause of the reported integration incident is not yet established.
 - **Origin:** Personal read-only repository review at `eb5b4656`, followed by the user's request to backlog the full path to a solid A (2026-09-05). References are point-in-time; revalidate before implementation.
-- **Readiness:** Backlog scope and acceptance criteria, not an approved implementation design. Scope/design before delivery; no implementation or paid qualification is authorized by capture alone.
+- **Readiness:** Authorized for the bounded checkpoint/design below after the user asked to continue execution. No release or paid model-effectiveness qualification is authorized.
 
 ## Evidence
 
@@ -45,3 +45,7 @@ Preserve evidence provenance, explicit gaps and uncertainty, authority revalidat
 ## Related existing work
 
 - `idea-mcp-locator-ergonomics` — related authority/context, not an implicit blocking dependency.
+
+## Authorized execution checkpoint — 2026-09-05
+
+The user asked to continue the reliability plan after the accepted Flash pilot. This item starts with an Astra-medium investigation/design checkpoint: trace the canonical result through supported integration delivery, identify the concrete consumer that loses essential data, and propose the smallest bounded current-contract correction with a reproducer. Preserve action outcomes, resource/image delivery, privacy, and omission accounting. Do not add compatibility text for hypothetical consumers or implement a broad projection redesign before the delivery boundary is established. Record evidence, affected file ownership, and a focused verification plan here for parent adjudication.
