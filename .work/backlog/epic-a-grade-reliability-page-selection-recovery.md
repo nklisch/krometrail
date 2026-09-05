@@ -48,3 +48,14 @@ Preserve evidence provenance, explicit gaps and uncertainty, authority revalidat
 ## Related existing work
 
 - `idea-temporal-range-active-target-defaults` — related authority/context, not an implicit blocking dependency.
+
+## Live usage after user update/restart
+
+The user requested a real example-site exercise after updating Pi Extensions and restarting. Two fresh managed temporary sessions reproduced an attachment/selection failure through the installed Krometrail server, which reported `server_version: 1.6.2`. Browser build and exact binary commit were not captured; this is installed-runtime evidence, not a claim about every client or platform.
+
+- `start_browser {profile:"temporary",focus:"preserve",initial_url:"https://example.com"}` succeeded. Scripted extraction of decoded `list_pages` returned an empty array; status reported ready, page_count 0, selected_target_id null, capture empty, and no retained bounds.
+- A correctly shaped viewport PNG request failed `not_found: selected browser page was not found`. `create_page` for the same site returned degraded live evidence; its subsequent inventory contained one selected hidden target, id `a7e706c2-bf63-4a4e-9789-b14800f26300`, attachment_generation 1. `activate_page {}` also reported incomplete live evidence. The default screenshot still failed `not_found`; explicitly passing that returned target id failed `target_failed: browser page is not currently attached`.
+- After stopping that session, a fresh foreground session at `https://example.org` again reported ready with zero pages, no selection, and empty capture. `create_page` then failed `target_failed: created browser target could not be attached`; a subsequent inventory remained empty.
+- Both owned sessions were stopped successfully. No account, form submission, clipboard, retained artifact generation, desktop fallback, oversized page, or browser mutation outside these test sessions was used. No screenshot, interaction, or capture qualification passed.
+
+A separate installed-adapter defect is also still present: ordinary gateway listing exposed only `list_pages succeeded`, while the scripting path exposed the canonical empty or populated inventory. The actual installed adapter's source and compiled resolver both still contain the early return for nonempty content. Thus missing model-visible facts remain a delivery problem, but the decoded zero-page status and explicit target-attachment failures demonstrate a separate runtime problem. This does not establish the root cause or timing of attachment failure; preserve that distinction during diagnosis.

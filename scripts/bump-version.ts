@@ -309,4 +309,4 @@ run(["git", "commit", "-m", `Release v${nextVersion}`]);
 run(["git", "tag", `v${nextVersion}`]);
 run(["git", "push"]);
 run(["git", "push", "origin", `v${nextVersion}`]);
-console.log(`Released v${nextVersion}`);
+console.log(`Pushed v${nextVersion}; GitHub Actions must finish publishing before the release can be installed.`);
