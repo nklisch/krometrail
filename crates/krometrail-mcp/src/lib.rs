@@ -1,7 +1,10 @@
 //! Model Context Protocol adapter for Krometrail browser control.
 
+mod catalogue;
 mod config;
+mod protocol;
 mod registry;
+mod request_lifecycle;
 mod resources;
 mod response;
 mod schema;

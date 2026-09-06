@@ -168,11 +168,24 @@ async fn selected_real_ffmpeg_generates_both_policies_through_store_mcp_and_loca
         &mut stdin,
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
     );
-    let listed = receive(&mut stdout);
+    let mut listed = receive(&mut stdout);
+    let mut tools = listed["result"]["tools"].as_array().unwrap().clone();
+    while let Some(cursor) = listed["result"].get("nextCursor").cloned() {
+        send(
+            &mut stdin,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"cursor":cursor}}),
+        );
+        listed = receive(&mut stdout);
+        tools.extend(
+            listed["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+        );
+    }
     assert!(
-        listed["result"]["tools"]
-            .as_array()
-            .unwrap()
+        tools
             .iter()
             .any(|tool| tool["name"] == "generate_temporal_video")
     );

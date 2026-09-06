@@ -400,6 +400,22 @@ The common static and moderately dynamic benchmark requires at least 95% success
 
 Every state-changing standalone action must return a valid live observation or a structured explanation of why observation failed.
 
+## MCP interoperability qualification
+
+Default tests exercise the actual executable with modern discovery and both supported legacy
+initialization versions. Raw-wire assertions cover required result/cache fields, complete catalogue
+modern pagination and complete single-response legacy inventory, malformed metadata, unsupported versions, unknown methods, concurrent request IDs,
+EOF and output backpressure. Official-SDK clients separately qualify typed decoding and per-Peer
+catalogue caching. Schema tests compile the public contracts with a JSON Schema validator.
+
+Opt-in Linux/macOS qualification uses real Chrome and a disposable local fixture to verify image
+and artifact decoding, retained reads after stop, cancellation isolation and managed-process cleanup.
+Receipts identify the exact candidate revision, platform, protocol and executable version. Native
+Claude Code/Codex sessions additionally qualify model-visible structured and image delivery; a raw
+wire pass is not a claim about a host's renderer or resource UI. Installation and fresh-session
+activation are reported separately. Staged release assets must pass discovery, legacy initialization,
+all-page listing and bounded EOF probes before publication.
+
 ## Storage and Retention Evaluation
 
 Retention tests run with deliberately small budgets to force segment rotation and eviction.

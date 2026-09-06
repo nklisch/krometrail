@@ -13,9 +13,7 @@ use krometrail_core::{
     ProgressiveEvidenceRequest, ProgressiveEvidenceResult, Result, RetrieveArtifactRequest,
     RetrieveSourceFrameRequest, SessionId, TargetId, TemporalVideoGeneration,
 };
-use rmcp::model::{
-    Annotated, RawResourceTemplate, ReadResourceResult, ResourceContents, ResourceTemplate,
-};
+use rmcp::model::{ReadResourceResult, ResourceContents, ResourceTemplate};
 use serde_json::json;
 
 use crate::config::McpConfig;
@@ -100,29 +98,18 @@ pub(crate) fn resource_templates(config: &McpConfig) -> Vec<ResourceTemplate> {
         .iter()
         .filter(|definition| config.is_enabled(definition.capability))
         .map(|definition| {
-            Annotated::new(
-                RawResourceTemplate {
-                    uri_template: definition.uri_template.to_owned(),
-                    name: definition.name.to_owned(),
-                    title: Some(definition.title.to_owned()),
-                    description: Some(definition.description.to_owned()),
-                    mime_type: definition.mime_type.map(str::to_owned),
-                },
-                None,
-            )
+            let mut template = ResourceTemplate::new(definition.uri_template, definition.name)
+                .with_title(definition.title)
+                .with_description(format!("{} Use URIs from tool results; retained evidence belongs to this process and may expire.", definition.description));
+            template.mime_type = definition.mime_type.map(str::to_owned);
+            template
         })
         .collect::<Vec<_>>();
     if config.is_enabled(CapabilityId::Control) {
-        templates.push(Annotated::new(
-            RawResourceTemplate {
-                uri_template: MANAGED_DOWNLOAD_URI_TEMPLATE.to_owned(),
-                name: "managed-download".to_owned(),
-                title: Some("Active managed-session download".to_owned()),
-                description: Some("Read one completed bounded download while its managed browser session remains active.".to_owned()),
-                mime_type: Some("application/octet-stream".to_owned()),
-            },
-            None,
-        ));
+        templates.push(ResourceTemplate::new(MANAGED_DOWNLOAD_URI_TEMPLATE, "managed-download")
+            .with_title("Active managed-session download")
+            .with_description("Read a completed download URI from tool results while its managed browser session remains active.")
+            .with_mime_type("application/octet-stream"));
     }
     templates
 }
@@ -228,14 +215,14 @@ pub(crate) async fn read_resource_with_local(
                 None,
             ));
         }
-        return Ok(ReadResourceResult {
-            contents: vec![ResourceContents::BlobResourceContents {
+        return Ok(ReadResourceResult::new(vec![
+            ResourceContents::BlobResourceContents {
                 uri: uri.to_owned(),
                 mime_type: Some(read.media_type.as_str().to_owned()),
                 blob: STANDARD.encode(read.bytes),
                 meta: None,
-            }],
-        });
+            },
+        ]));
     }
     read_resource(
         uri,
@@ -659,9 +646,7 @@ pub(crate) async fn read_resource(
             ));
         }
     };
-    Ok(ReadResourceResult {
-        contents: vec![contents],
-    })
+    Ok(ReadResourceResult::new(vec![contents]))
 }
 
 async fn read_video_resource(
@@ -728,9 +713,7 @@ async fn read_video_resource(
         },
         _ => unreachable!("video resource kind checked above"),
     };
-    Ok(ReadResourceResult {
-        contents: vec![contents],
-    })
+    Ok(ReadResourceResult::new(vec![contents]))
 }
 
 fn invalid_uri() -> KrometrailError {

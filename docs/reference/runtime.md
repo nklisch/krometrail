@@ -43,6 +43,10 @@ Krometrail writes bounded private diagnostics under its platform data directory 
 path plus a correlation identifier on failed or degraded MCP calls. Standard error is reserved for
 startup failures that occur before file diagnostics are available.
 
+The same stdio command supports MCP `2026-07-28` discovery and initialization at
+`2025-11-25` or `2025-06-18`. Modern tool discovery is paginated; follow every `nextCursor`.
+Legacy versions receive the complete catalogue in one response.
+
 The MCP server gives an agent:
 
 - managed browser launch or explicit local attachment;

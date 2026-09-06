@@ -22,7 +22,7 @@ use krometrail_core::{
 };
 use rmcp::{
     handler::server::tool::{ToolCallContext, ToolRoute, ToolRouter},
-    model::{EmptyObject, Tool, ToolAnnotations},
+    model::{Tool, ToolAnnotations},
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -63,12 +63,12 @@ const LIFECYCLE_TOOLS: &[LifecycleTool] = &[
     },
     LifecycleTool {
         name: "stop_browser",
-        description: "Close a managed browser or detach from an attached browser.",
+        description: "Close a managed browser or detach from an attached browser. This process keeps retained temporal evidence after stop, subject to retention; active-session downloads become unavailable.",
         kind: LifecycleKind::Stop,
     },
     LifecycleTool {
         name: "list_managed_profiles",
-        description: "List reusable Krometrail-managed profile identities without filesystem paths or browser data.",
+        description: "List reusable Krometrail-managed profile identities without an active browser, filesystem paths or browser data.",
         kind: LifecycleKind::Profiles,
     },
 ];
@@ -80,7 +80,7 @@ struct LifecycleTool {
     kind: LifecycleKind,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum LifecycleKind {
     Start,
     Attach,
@@ -151,10 +151,12 @@ pub(crate) fn build_router(
 ) -> Result<ToolRouter<KrometrailMcpServer>> {
     validate_route_registry(config)?;
     let mut router = ToolRouter::new();
+    let output_schema = tool_response_schema(false)?;
+    let video_output_schema = tool_response_schema(true)?;
 
     if config.is_enabled(CapabilityId::Control) {
         for lifecycle in LIFECYCLE_TOOLS {
-            router.add_route(lifecycle_route(*lifecycle)?);
+            router.add_route(lifecycle_route(*lifecycle, Arc::clone(&output_schema))?);
         }
         for definition in BROWSER_OPERATION_REGISTRY {
             if !config.is_enabled(definition.capability) {
@@ -166,9 +168,9 @@ pub(crate) fn build_router(
             let annotations = operation_annotations(definition.mutability);
             let mut tool =
                 Tool::new(name, definition.description, input_schema).annotate(annotations);
-            tool.output_schema = Some(tool_response_schema(false)?);
+            tool.output_schema = Some(Arc::clone(&output_schema));
             router.add_route(ToolRoute::new_dyn(tool, move |context| {
-                async move { call_operation(context, kind, name).await }.boxed()
+                async move { call_operation(context, kind, name).await.map(Into::into) }.boxed()
             }));
         }
     }
@@ -182,11 +184,16 @@ pub(crate) fn build_router(
             projected_input_schema(type_input_schema::<TemporalDebugBundleRequest>()?)?,
         )
         .annotate(temporal_annotations(definition.mutability, false));
-        tool.output_schema = Some(tool_response_schema(false)?);
+        tool.output_schema = Some(Arc::clone(&output_schema));
         let dependencies = Arc::clone(&dependencies);
         router.add_route(ToolRoute::new_dyn(tool, move |context| {
             let dependencies = Arc::clone(&dependencies);
-            async move { call_bundle(context, dependencies, name).await }.boxed()
+            async move {
+                call_bundle(context, dependencies, name)
+                    .await
+                    .map(Into::into)
+            }
+            .boxed()
         }));
     }
 
@@ -199,11 +206,16 @@ pub(crate) fn build_router(
             projected_input_schema(type_input_schema::<TemporalQueryRequest>()?)?,
         )
         .annotate(temporal_annotations(definition.mutability, false));
-        tool.output_schema = Some(tool_response_schema(false)?);
+        tool.output_schema = Some(Arc::clone(&output_schema));
         let dependencies = Arc::clone(&dependencies);
         router.add_route(ToolRoute::new_dyn(tool, move |context| {
             let dependencies = Arc::clone(&dependencies);
-            async move { call_resolve_temporal_range(context, dependencies, name).await }.boxed()
+            async move {
+                call_resolve_temporal_range(context, dependencies, name)
+                    .await
+                    .map(Into::into)
+            }
+            .boxed()
         }));
     }
 
@@ -218,11 +230,16 @@ pub(crate) fn build_router(
             >()?)?)?,
         )
         .annotate(temporal_annotations(definition.mutability, false));
-        tool.output_schema = Some(tool_response_schema(true)?);
+        tool.output_schema = Some(Arc::clone(&video_output_schema));
         let dependencies = Arc::clone(&dependencies);
         router.add_route(ToolRoute::new_dyn(tool, move |context| {
             let dependencies = Arc::clone(&dependencies);
-            async move { call_temporal_video(context, dependencies, name).await }.boxed()
+            async move {
+                call_temporal_video(context, dependencies, name)
+                    .await
+                    .map(Into::into)
+            }
+            .boxed()
         }));
     }
 
@@ -240,18 +257,21 @@ pub(crate) fn build_router(
         let annotations = temporal_annotations(
             definition.mutability,
             kind == ProgressiveEvidenceOperationKind::UnpinResolvedRange,
-        );
+        )
+        .open_world(progressive_open_world(kind));
         let mut tool = Tool::new(name, definition.description, input_schema).annotate(annotations);
-        tool.output_schema = Some(tool_response_schema(false)?);
+        tool.output_schema = Some(Arc::clone(&output_schema));
         let dependencies = Arc::clone(&dependencies);
         let current_geometry = Arc::clone(&current_geometry);
         router.add_route(ToolRoute::new_dyn(tool, move |context| {
             let dependencies = Arc::clone(&dependencies);
             let current_geometry = Arc::clone(&current_geometry);
             async move {
-                    call_progressive(context, dependencies, current_geometry, kind, name).await
-                }
-                .boxed()
+                call_progressive(context, dependencies, current_geometry, kind, name)
+                    .await
+                    .map(Into::into)
+            }
+            .boxed()
         }));
     }
 
@@ -264,11 +284,16 @@ pub(crate) fn build_router(
             )?)?;
             let mut tool = Tool::new(name, definition.description, input_schema)
                 .annotate(temporal_annotations(definition.mutability, false));
-            tool.output_schema = Some(tool_response_schema(false)?);
+            tool.output_schema = Some(Arc::clone(&output_schema));
             let dependencies = Arc::clone(&dependencies);
             router.add_route(ToolRoute::new_dyn(tool, move |context| {
                 let dependencies = Arc::clone(&dependencies);
-                async move { call_context(context, dependencies, kind, name).await }.boxed()
+                async move {
+                    call_context(context, dependencies, kind, name)
+                        .await
+                        .map(Into::into)
+                }
+                .boxed()
             }));
         }
     }
@@ -280,7 +305,7 @@ fn validate_route_registry(config: &McpConfig) -> Result<()> {
     let mut names = BTreeSet::new();
     for lifecycle in LIFECYCLE_TOOLS {
         register_route_name(&mut names, lifecycle.name, lifecycle.description)?;
-        let _ = lifecycle_route(*lifecycle)?;
+        let _ = lifecycle_route(*lifecycle, tool_response_schema(false)?)?;
     }
     if BROWSER_OPERATION_REGISTRY.len() != krometrail_core::BrowserOperationKind::ALL.len() {
         return Err(registry_error(
@@ -863,12 +888,26 @@ fn progressive_request_range(request: &ProgressiveEvidenceRequest) -> Option<&Re
     }
 }
 
+fn progressive_open_world(kind: ProgressiveEvidenceOperationKind) -> bool {
+    match kind {
+        ProgressiveEvidenceOperationKind::GenerateRegionFilmstrip => true,
+        ProgressiveEvidenceOperationKind::RetrieveArtifact
+        | ProgressiveEvidenceOperationKind::RetrieveSourceFrame
+        | ProgressiveEvidenceOperationKind::ListSourceFrames
+        | ProgressiveEvidenceOperationKind::FetchSourceFrames
+        | ProgressiveEvidenceOperationKind::GenerateArtifacts
+        | ProgressiveEvidenceOperationKind::PinResolvedRange
+        | ProgressiveEvidenceOperationKind::UnpinResolvedRange
+        | ProgressiveEvidenceOperationKind::QueryPinState => false,
+    }
+}
+
 fn temporal_annotations(mutability: OperationMutability, destructive: bool) -> ToolAnnotations {
     ToolAnnotations::new()
         .read_only(mutability == OperationMutability::ReadOnly)
         .destructive(destructive)
         .idempotent(true)
-        .open_world(true)
+        .open_world(false)
 }
 
 fn request_cancelled_error() -> KrometrailError {
@@ -889,21 +928,26 @@ fn request_deadline_error() -> KrometrailError {
     .with_retry(RetryAdvice::Safe)
 }
 
-fn lifecycle_route(tool: LifecycleTool) -> Result<ToolRoute<KrometrailMcpServer>> {
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct NoArguments {}
+
+fn lifecycle_route(
+    tool: LifecycleTool,
+    output_schema: Arc<rmcp::model::JsonObject>,
+) -> Result<ToolRoute<KrometrailMcpServer>> {
     let schema = match tool.kind {
-        LifecycleKind::Start => type_input_schema::<LaunchBrowser>()?,
-        LifecycleKind::Attach => type_input_schema::<AttachBrowser>()?,
-        LifecycleKind::Status => {
-            projected_input_schema(type_input_schema::<rmcp::model::EmptyObject>()?)?
-        }
-        LifecycleKind::Stop | LifecycleKind::Profiles => type_input_schema::<EmptyObject>()?,
+        LifecycleKind::Start => projected_input_schema(type_input_schema::<LaunchBrowser>()?)?,
+        LifecycleKind::Attach => projected_input_schema(type_input_schema::<AttachBrowser>()?)?,
+        LifecycleKind::Status => projected_input_schema(type_input_schema::<NoArguments>()?)?,
+        LifecycleKind::Stop | LifecycleKind::Profiles => type_input_schema::<NoArguments>()?,
     };
     let annotations = match tool.kind {
         LifecycleKind::Status | LifecycleKind::Profiles => ToolAnnotations::new()
             .read_only(true)
             .destructive(false)
             .idempotent(true)
-            .open_world(true),
+            .open_world(tool.kind != LifecycleKind::Profiles),
         LifecycleKind::Stop => ToolAnnotations::new()
             .read_only(false)
             .destructive(true)
@@ -916,9 +960,9 @@ fn lifecycle_route(tool: LifecycleTool) -> Result<ToolRoute<KrometrailMcpServer>
             .open_world(true),
     };
     let mut route = Tool::new(tool.name, tool.description, schema).annotate(annotations);
-    route.output_schema = Some(tool_response_schema(false)?);
+    route.output_schema = Some(output_schema);
     Ok(ToolRoute::new_dyn(route, move |context| {
-        async move { call_lifecycle(context, tool).await }.boxed()
+        async move { call_lifecycle(context, tool).await.map(Into::into) }.boxed()
     }))
 }
 
@@ -985,77 +1029,59 @@ async fn call_lifecycle(
 ) -> std::result::Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
     let arguments = context.arguments.unwrap_or_default();
     let sessions = context.service.sessions();
-    // Capture health is read before the transition for `stop`, because the session that owned the
-    // failing writer is gone by the time the outcome is mapped, and after the transition for every
-    // other lifecycle tool, so a freshly started session cannot report a green light on a writer
-    // that is already terminal.
-    let pre_transition_health = match tool.kind {
-        LifecycleKind::Stop => capture_health(sessions).await,
-        _ => Vec::new(),
+    if matches!(
+        tool.kind,
+        LifecycleKind::Start | LifecycleKind::Attach | LifecycleKind::Status
+    ) {
+        let (arguments, response) = match split_response_request(arguments) {
+            Ok(value) => value,
+            Err(error) => return Ok(visible_error(tool.name, error)),
+        };
+        // Decode completely before contacting a browser.
+        let status = match tool.kind {
+            LifecycleKind::Start => match parse_arguments::<LaunchBrowser>(arguments) {
+                Ok(request) => sessions.start(request).await,
+                Err(error) => return Ok(visible_error(tool.name, error)),
+            },
+            LifecycleKind::Attach => match parse_arguments::<AttachBrowser>(arguments) {
+                Ok(request) => sessions.attach(request).await,
+                Err(error) => return Ok(visible_error(tool.name, error)),
+            },
+            LifecycleKind::Status => {
+                if let Err(error) = parse_arguments::<NoArguments>(arguments) {
+                    return Ok(visible_error(tool.name, error));
+                }
+                sessions.status().await
+            }
+            _ => unreachable!("status-producing lifecycle only"),
+        };
+        return match status {
+            Ok(status) => {
+                let health = capture_health(sessions).await;
+                map_browser_status(tool.name, status, response.with_inline_default(false))
+                    .map_err(|_| {
+                        rmcp::ErrorData::internal_error(
+                            "browser status response mapping failed",
+                            None,
+                        )
+                    })
+                    .and_then(|mapped| into_call_tool_result(mapped, &health))
+            }
+            Err(error) => Ok(visible_error(tool.name, error)),
+        };
+    }
+    if let Err(error) = parse_arguments::<NoArguments>(arguments) {
+        return Ok(visible_error(tool.name, error));
+    }
+    let health = if tool.kind == LifecycleKind::Stop {
+        capture_health(sessions).await
+    } else {
+        Vec::new()
     };
     let result = match tool.kind {
-        LifecycleKind::Start => match parse_arguments::<LaunchBrowser>(arguments) {
-            Ok(request) => context
-                .service
-                .sessions()
-                .start(request)
-                .await
-                .and_then(serializable),
-            Err(error) => Err(error),
-        },
-        LifecycleKind::Attach => match parse_arguments::<AttachBrowser>(arguments) {
-            Ok(request) => context
-                .service
-                .sessions()
-                .attach(request)
-                .await
-                .and_then(serializable),
-            Err(error) => Err(error),
-        },
-        LifecycleKind::Status => {
-            let response = match split_response_request(arguments) {
-                Ok((arguments, response)) if arguments.is_empty() => {
-                    response.with_inline_default(false)
-                }
-                Ok(_) => {
-                    return Ok(visible_error(
-                        tool.name,
-                        invalid_arguments("browser_status", None),
-                    ));
-                }
-                Err(error) => return Ok(visible_error(tool.name, error)),
-            };
-            return match sessions.status().await {
-                Ok(status) => {
-                    let health = capture_health(sessions).await;
-                    map_browser_status(tool.name, status, response)
-                        .map_err(|_| {
-                            rmcp::ErrorData::internal_error(
-                                "browser status response mapping failed",
-                                None,
-                            )
-                        })
-                        .and_then(|mapped| into_call_tool_result(mapped, &health))
-                }
-                Err(error) => Ok(visible_error(tool.name, error)),
-            };
-        }
-        LifecycleKind::Stop => context
-            .service
-            .sessions()
-            .stop()
-            .await
-            .and_then(serializable),
-        LifecycleKind::Profiles => context
-            .service
-            .sessions()
-            .managed_profiles()
-            .await
-            .and_then(serializable),
-    };
-    let health = match tool.kind {
-        LifecycleKind::Stop => pre_transition_health,
-        _ => capture_health(sessions).await,
+        LifecycleKind::Stop => sessions.stop().await.and_then(serializable),
+        LifecycleKind::Profiles => sessions.managed_profiles().await.and_then(serializable),
+        _ => unreachable!("status-producing lifecycle already returned"),
     };
     match result {
         Ok(value) => map_lifecycle_result(tool.name, value)
@@ -1475,7 +1501,31 @@ mod tests {
             if let Some(branches) = schema.get("oneOf").and_then(Value::as_array) {
                 let mut cases = Vec::new();
                 for (index, branch) in branches.iter().enumerate() {
-                    let branch_cases = schema_cases(branch, pointer);
+                    let mut effective = branch.clone();
+                    if branch.get("properties").is_none() && schema.get("properties").is_some() {
+                        effective = schema.clone();
+                        effective.as_object_mut().unwrap().remove("oneOf");
+                        let required = effective
+                            .as_object_mut()
+                            .unwrap()
+                            .entry("required")
+                            .or_insert(json!([]))
+                            .as_array_mut()
+                            .unwrap();
+                        required.extend(branch["required"].as_array().unwrap().iter().cloned());
+                        // Required-only selector branches exclude the other selector; testing both is invalid.
+                        let selected = branch["required"][0].as_str().unwrap();
+                        let other = if selected == "range" {
+                            "range_handle"
+                        } else {
+                            "range"
+                        };
+                        effective["properties"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove(other);
+                    }
+                    let branch_cases = schema_cases(&effective, pointer);
                     if let Some(first) = branch_cases.first() {
                         cases.push(Case {
                             value: first.value.clone(),
@@ -1917,11 +1967,9 @@ mod tests {
                 LifecycleKind::Start => type_input_schema::<krometrail_core::LaunchBrowser>(),
                 LifecycleKind::Attach => type_input_schema::<krometrail_core::AttachBrowser>(),
                 LifecycleKind::Status => {
-                    projected_input_schema(type_input_schema::<rmcp::model::EmptyObject>().unwrap())
+                    projected_input_schema(type_input_schema::<NoArguments>().unwrap())
                 }
-                LifecycleKind::Stop | LifecycleKind::Profiles => {
-                    type_input_schema::<rmcp::model::EmptyObject>()
-                }
+                LifecycleKind::Stop | LifecycleKind::Profiles => type_input_schema::<NoArguments>(),
             }
             .unwrap();
             contracts.push((lifecycle.name, Value::Object(schema.as_ref().clone())));

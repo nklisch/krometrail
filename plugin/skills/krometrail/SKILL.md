@@ -14,6 +14,17 @@ and response schemas; a harness may prefix tool names with `krometrail`.
 If tools are absent, read [setup and activation](references/setup.md). The plugin manages its exact
 release binary. Do not install a separate binary merely because this skill loaded.
 
+Modern tool discovery is paginated; legacy clients receive the complete catalogue in one response. Hosts must follow every `tools/list` `nextCursor`; discard old
+pages/cursors after an MCP restart or capability change. Start/attach/status accept the same
+response-detail preference. `stop_browser` and `list_managed_profiles` accept only omitted
+arguments or `{}`; profile listing needs no active browser.
+
+`resources/list` is intentionally empty: use exact URIs from tool results and resource templates.
+Retained temporal evidence remains readable after browser stop in this process, subject to
+retention. Range handles and retained-resource access do not survive MCP process restart.
+Downloads additionally require their managed browser session to remain active. A plugin update
+is not a reload of the current MCP process; verify identity in a fresh connection.
+
 ## Use the cheapest sufficient evidence
 
 Krometrail defaults to concise, action-centric structured responses. Omit `response` for normal navigation

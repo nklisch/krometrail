@@ -20,6 +20,43 @@ Krometrail does not require the inspected application to install a package or mo
 
 Video export is optional. Krometrail does not download, bundle, or redistribute FFmpeg. At MCP startup it qualifies a user-installed `ffmpeg` executable and an available MP4/H.264 encoding path. When qualification fails, the temporal-video capability and its tools are omitted while browser control, recording, and still-image artifacts continue normally.
 
+## MCP protocol and discovery
+
+The stdio adapter supports MCP `2026-07-28` through discovery and per-request metadata,
+and `2025-11-25` and `2025-06-18` through initialization. The official Rust SDK owns
+negotiation and version-specific response serialization. A modern request does not require
+an initialization handshake. Unsupported continuation state is rejected before tool execution.
+
+Modern `tools/list` returns an immutable, name-sorted catalogue in pages of at most eight tools and
+192 KiB per serialized result. Follow `nextCursor` until it is absent. Cursors belong to the
+exact process and startup capability configuration; an invalid cursor requires restarting the
+listing without a cursor. Paging bounds individual responses, not the total tool context a host
+may load. Input/output schemas preserve their validation constraints. Both legacy versions receive the
+complete same catalogue in one response, without continuation or modern cache fields. Any supplied
+legacy cursor is invalid, including a modern cursor. Legacy aggregate schema overhead remains.
+The SDK-resolved version applies per request, not by client identity. An oversized modern descriptor
+does not prevent legacy listing.
+
+Modern list/read results carry private cache hints. Tool pages and resource templates have a
+60-second TTL; discovery, the empty concrete-resource inventory, and resource reads have zero TTL.
+Hosts must discard catalogue caches when reconnecting to a new process or configuration. Private
+scope is not authorization, and zero TTL cannot erase content a host has already received.
+
+`resources/list` is intentionally empty. Exact evidence URIs come from tool results and resource
+templates. Retained temporal evidence can be read after browser stop in the same process, subject
+to retention. Process restart invalidates range handles and access to that process's retained
+evidence. Download resources additionally require their managed browser session to remain active.
+
+Start, attach and status share the concise/expanded/full response preference. Stop and managed-profile
+listing accept no arguments beyond an empty object; unknown arguments fail before any transition.
+
+Cancellation is cooperative, not rollback or permission to replay an action. Application execution
+remains owned even when its MCP response waiter is dropped. Shutdown stops admission and drains
+request/browser cleanup against one 30-second application deadline. Deadline exhaustion reports
+incomplete cleanup. A client that stops reading stdout cannot indefinitely prevent process exit;
+unread response bytes may be interrupted during shutdown. The SDK processes the first modern request
+before its concurrent receive loop, so cancellation sent behind a long first action can be delayed.
+
 ## Browser Lifecycle
 
 Krometrail can:

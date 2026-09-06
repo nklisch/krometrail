@@ -36,8 +36,13 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --locked
 
+      - name: Install qualified linter
+        run: rustup toolchain install 1.98.0 --profile minimal --component clippy
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        # This style-only lint has 13 pre-existing findings in independently versioned temporal-vision.
+        run: |
+          rustup run 1.98.0 cargo-clippy clippy --version
+          rustup run 1.98.0 cargo-clippy clippy --workspace --all-targets --locked -- -D warnings -A clippy::chunks_exact_to_as_chunks
 
   temporal-vision-version-gate:
     # temporal-vision is versioned independently of the workspace. Policy:

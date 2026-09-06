@@ -7,9 +7,9 @@ use rmcp::{
     ErrorData, ServerHandler,
     handler::server::tool::{ToolCallContext, ToolRouter},
     model::{
-        CallToolRequestParam, CallToolResult, Implementation, ListResourceTemplatesResult,
-        ListResourcesResult, ListToolsResult, PaginatedRequestParam, ProtocolVersion,
-        ReadResourceRequestParam, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
+        ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+        ProtocolVersion, ReadResourceRequestParams, ServerCapabilities, ServerInfo,
     },
     service::{QuitReason, RequestContext, RoleServer, ServerInitializeError, ServiceExt as _},
 };
@@ -26,6 +26,8 @@ use crate::{
 #[derive(Clone)]
 pub struct KrometrailMcpServer {
     sessions: Arc<BrowserSessionOwner>,
+    catalogue: Arc<crate::catalogue::Catalogue>,
+    requests: crate::request_lifecycle::Requests,
     router: Arc<ToolRouter<KrometrailMcpServer>>,
     dependencies: Arc<McpDependencies>,
     config: McpConfig,
@@ -50,8 +52,11 @@ impl KrometrailMcpServer {
             Arc::clone(&sessions),
         )?);
         let diagnostics = dependencies.diagnostics.clone();
+        let catalogue = Arc::new(crate::catalogue::Catalogue::new(router.list_all()));
         let server = Self {
             sessions,
+            catalogue,
+            requests: crate::request_lifecycle::Requests::default(),
             router,
             dependencies,
             config: config.clone(),
@@ -64,47 +69,148 @@ impl KrometrailMcpServer {
         &self.sessions
     }
 
+    #[cfg(test)]
     pub(crate) fn tools(&self) -> Vec<rmcp::model::Tool> {
-        let mut tools = self.router.list_all();
-        tools.sort_by(|left, right| left.name.cmp(&right.name));
-        tools
+        self.catalogue.tools().to_vec()
     }
 }
 
 impl ServerHandler for KrometrailMcpServer {
     async fn list_tools(
         &self,
-        _request: Option<PaginatedRequestParam>,
-        _context: RequestContext<RoleServer>,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(self.tools()))
+        self.catalogue.page(
+            request.as_ref().and_then(|r| r.cursor.as_deref()),
+            crate::protocol::modern(&context),
+        )
     }
 
     async fn list_resources(
         &self,
-        _request: Option<PaginatedRequestParam>,
-        _context: RequestContext<RoleServer>,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListResourcesResult, ErrorData> {
         // Retained evidence is dynamic and potentially large. Agents discover
         // concrete handles from tool responses and follow the strict URI back.
-        Ok(ListResourcesResult::with_all_items(Vec::new()))
+        crate::protocol::no_cursor(&request)?;
+        let mut result = ListResourcesResult::with_all_items(Vec::new());
+        (result.ttl_ms, result.cache_scope) =
+            crate::protocol::cache_fields(crate::protocol::modern(&context), 0);
+        Ok(result)
     }
 
     async fn list_resource_templates(
         &self,
-        _request: Option<PaginatedRequestParam>,
-        _context: RequestContext<RoleServer>,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListResourceTemplatesResult, ErrorData> {
-        Ok(ListResourceTemplatesResult::with_all_items(
-            resource_templates(&self.config),
-        ))
+        crate::protocol::no_cursor(&request)?;
+        let mut result =
+            ListResourceTemplatesResult::with_all_items(resource_templates(&self.config));
+        (result.ttl_ms, result.cache_scope) = crate::protocol::cache_fields(
+            crate::protocol::modern(&context),
+            crate::protocol::CATALOGUE_TTL_MS,
+        );
+        Ok(result)
     }
 
     async fn read_resource(
         &self,
-        request: ReadResourceRequestParam,
+        request: ReadResourceRequestParams,
+        mut context: RequestContext<RoleServer>,
+    ) -> std::result::Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        let server = self.clone();
+        context.ct = context.ct.child_token();
+        self.requests
+            .run(context.ct.clone(), async move {
+                server.read_resource_owned(request, context).await
+            })
+            .await
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        mut context: RequestContext<RoleServer>,
+    ) -> std::result::Result<CallToolResponse, ErrorData> {
+        let server = self.clone();
+        context.ct = context.ct.child_token();
+        self.requests
+            .run(context.ct.clone(), async move {
+                server.call_tool_owned(request, context).await
+            })
+            .await
+    }
+
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(crate::protocol::VERSIONS)
+    }
+
+    async fn on_custom_request(
+        &self,
+        _request: rmcp::model::CustomRequest,
+        _context: RequestContext<RoleServer>,
+    ) -> std::result::Result<rmcp::model::CustomResult, ErrorData> {
+        let mut error = ErrorData::new(
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+            "Unknown MCP method.",
+            None,
+        );
+        attach_error_diagnostics(&mut error, &Uuid::new_v4().to_string(), &self.diagnostics);
+        Err(error)
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> std::result::Result<rmcp::model::ListPromptsResult, ErrorData> {
+        Err(ErrorData::method_not_found::<
+            rmcp::model::ListPromptsRequestMethod,
+        >())
+    }
+
+    async fn complete(
+        &self,
+        _request: rmcp::model::CompleteRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> std::result::Result<rmcp::model::CompleteResult, ErrorData> {
+        Err(ErrorData::method_not_found::<
+            rmcp::model::CompleteRequestMethod,
+        >())
+    }
+
+    fn get_info(&self) -> ServerInfo {
+        let capabilities = if resource_templates(&self.config).is_empty() {
+            ServerCapabilities::builder().enable_tools().build()
+        } else {
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build()
+        };
+        ServerInfo::new(capabilities)
+            .with_protocol_version(ProtocolVersion::V_2026_07_28)
+            .with_server_info(Implementation::new("krometrail", env!("CARGO_PKG_VERSION")).with_title("Krometrail browser control"))
+            .with_instructions("One active browser per process. Start/attach before browser control; list_managed_profiles needs no browser. Temporal evidence remains readable after stop in this process, subject to retention. Range handles and retained resources do not survive process restart. Resource inventories are intentionally empty: use exact URIs from tool results and resource templates, never guess. Downloads require their managed session to remain active. Follow tools/list nextCursor until absent.")
+    }
+}
+
+impl KrometrailMcpServer {
+    async fn read_resource_owned(
+        &self,
+        request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> std::result::Result<rmcp::model::ReadResourceResult, ErrorData> {
+    ) -> std::result::Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        if request.input_responses.is_some() || request.request_state.is_some() {
+            return Err(ErrorData::invalid_params(
+                "Resource continuations are not supported.",
+                None,
+            ));
+        }
+        let modern = crate::protocol::modern(&context);
         if resource_templates(&self.config).is_empty() {
             return Err(ErrorData::method_not_found::<
                 rmcp::model::ReadResourceRequestMethod,
@@ -142,31 +248,56 @@ impl ServerHandler for KrometrailMcpServer {
                 },
                 "mcp.request.completed"
             );
-            result
+            result.map(|mut result| {
+                (result.ttl_ms, result.cache_scope) = crate::protocol::cache_fields(modern, 0);
+                result.into()
+            })
         }
         .instrument(span)
         .await
     }
+}
 
-    async fn call_tool(
+impl KrometrailMcpServer {
+    async fn call_tool_owned(
         &self,
-        request: CallToolRequestParam,
+        request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> std::result::Result<CallToolResult, ErrorData> {
+    ) -> std::result::Result<CallToolResponse, ErrorData> {
         let correlation_id = Uuid::new_v4().to_string();
-        let route = request.name.to_string();
+        if request.input_responses.is_some() || request.request_state.is_some() {
+            return Err(ErrorData::invalid_params(
+                "Tool continuations are not supported.",
+                None,
+            ));
+        }
+        let known = self.catalogue.contains(&request.name);
+        let route = if known {
+            request.name.to_string()
+        } else {
+            "unknown_tool".into()
+        };
         let span = tracing::info_span!(
             "mcp.request",
             correlation_id = %correlation_id,
             route = %route
         );
         async {
-            let mut result = self
-                .router
-                .call(ToolCallContext::new(self, request, context))
-                .await;
+            let mut result = if known {
+                self.router
+                    .call(ToolCallContext::new(self, request, context))
+                    .await
+            } else {
+                Err(ErrorData::invalid_params(
+                    "Unknown tool; use tools/list to select a registered tool.",
+                    None,
+                ))
+            };
             let outcome = match &mut result {
-                Ok(result) => attach_diagnostics(result, &correlation_id, &self.diagnostics),
+                Ok(CallToolResponse::Complete(result)) => {
+                    attach_diagnostics(result, &correlation_id, &self.diagnostics)
+                }
+                Ok(_) => "failed",
                 Err(error) => {
                     attach_error_diagnostics(error, &correlation_id, &self.diagnostics);
                     "failed"
@@ -181,31 +312,6 @@ impl ServerHandler for KrometrailMcpServer {
         }
         .instrument(span)
         .await
-    }
-
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2025_06_18,
-            capabilities: if resource_templates(&self.config).is_empty() {
-                ServerCapabilities::builder().enable_tools().build()
-            } else {
-                ServerCapabilities::builder()
-                    .enable_tools()
-                    .enable_resources()
-                    .build()
-            },
-            server_info: Implementation {
-                name: "krometrail".into(),
-                title: Some("Krometrail browser control".into()),
-                version: env!("CARGO_PKG_VERSION").into(),
-                icons: None,
-                website_url: None,
-            },
-            instructions: Some(
-                "Start or attach one local browser session before calling browser operations."
-                    .into(),
-            ),
-        }
     }
 }
 
@@ -271,33 +377,141 @@ pub struct McpService {
 
 impl McpService {
     pub async fn serve_stdio(self) -> Result<()> {
-        let running = match self.server.serve(rmcp::transport::stdio()).await {
-            Ok(running) => running,
-            Err(ServerInitializeError::ConnectionClosed(_)) => {
-                return self.sessions.shutdown().await;
-            }
-            Err(_) => return Err(service_error("MCP stdio service could not start")),
-        };
-        let cancellation = running.cancellation_token();
-        let signal_task = tokio::spawn(async move {
+        let stop = tokio_util::sync::CancellationToken::new();
+        let signal_stop = stop.clone();
+        let signal = tokio::spawn(async move {
             wait_for_shutdown_signal().await;
-            cancellation.cancel();
+            signal_stop.cancel();
         });
-        let service_result = match running.waiting().await {
-            Ok(QuitReason::Closed | QuitReason::Cancelled) => Ok(()),
-            Ok(QuitReason::JoinError(_)) | Err(_) => {
-                Err(service_error("MCP stdio service ended unexpectedly"))
-            }
+        let reader = EofReader {
+            inner: tokio::io::stdin(),
+            stop: stop.clone(),
         };
-        signal_task.abort();
-        let _ = signal_task.await;
-        let shutdown_result = self.sessions.shutdown().await;
-        service_result.and(shutdown_result)
+        let result = self
+            .serve_transport(
+                (reader, tokio::io::stdout()),
+                stop,
+                std::time::Duration::from_secs(30),
+            )
+            .await;
+        signal.abort();
+        let _ = signal.await;
+        result
+    }
+
+    async fn serve_transport<T, A>(
+        self,
+        transport: T,
+        stop: tokio_util::sync::CancellationToken,
+        budget: std::time::Duration,
+    ) -> Result<()>
+    where
+        T: rmcp::transport::IntoTransport<RoleServer, std::io::Error, A> + Send + 'static,
+    {
+        let requests = self.server.requests.clone();
+        let watch_requests = requests.clone();
+        let sessions = Arc::clone(&self.sessions);
+        let watch_stop = stop.clone();
+        let watcher = tokio::spawn(async move {
+            watch_stop.cancelled().await;
+            sessions.begin_shutdown();
+            watch_requests.stop(budget);
+        });
+        let initialized = await_sdk_phase(
+            self.server.serve_with_ct(transport, stop.clone()),
+            &stop,
+            &requests,
+            budget,
+        )
+        .await;
+        let result = match initialized {
+            Some(Ok(running)) => {
+                match await_sdk_phase(running.waiting(), &stop, &requests, budget).await {
+                    Some(Ok(QuitReason::Closed | QuitReason::Cancelled)) => Ok(()),
+                    Some(_) => Err(service_error("MCP stdio service ended unexpectedly")),
+                    None => Err(interrupted_transport()),
+                }
+            }
+            Some(Err(
+                ServerInitializeError::ConnectionClosed(_) | ServerInitializeError::Cancelled,
+            )) => Ok(()),
+            Some(Err(_)) => Err(service_error("MCP stdio service could not start")),
+            None => Err(interrupted_transport()),
+        };
+        stop.cancel();
+        self.sessions.begin_shutdown();
+        let deadline = requests.stop(budget);
+        let cleanup = tokio::time::timeout_at(deadline, async {
+            let ((), browser) = tokio::join!(requests.drained(), self.sessions.shutdown());
+            browser
+        })
+        .await;
+        watcher.abort();
+        let _ = watcher.await;
+        match cleanup {
+            Ok(cleanup) => result.and(cleanup),
+            Err(_) => {
+                requests.abort_remaining();
+                Err(service_error(
+                    "MCP shutdown deadline exhausted; application cleanup is incomplete",
+                ))
+            }
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn server(&self) -> &KrometrailMcpServer {
         &self.server
+    }
+}
+
+/// Forward bytes unchanged and report only actual EOF/read failure.
+fn interrupted_transport() -> KrometrailError {
+    service_error(
+        "MCP response transport did not finish shutdown; unread responses were interrupted",
+    )
+}
+
+async fn await_sdk_phase<T>(
+    future: impl std::future::Future<Output = T>,
+    stop: &tokio_util::sync::CancellationToken,
+    requests: &crate::request_lifecycle::Requests,
+    budget: std::time::Duration,
+) -> Option<T> {
+    tokio::pin!(future);
+    tokio::select! {
+        result = &mut future => Some(result),
+        () = stop.cancelled() => {
+            let deadline=requests.stop(budget);
+            // The SDK's response-drain timeout does not bound transport.close().
+            // Reserve time for application cleanup when a client leaves stdout blocked.
+            let transport_deadline=deadline.min(deadline-budget+std::time::Duration::from_secs(3));
+            tokio::time::timeout_at(transport_deadline,&mut future).await.ok()
+        }
+    }
+}
+
+struct EofReader<R> {
+    inner: R,
+    stop: tokio_util::sync::CancellationToken,
+}
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for EofReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let capacity = buf.remaining();
+        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        match &result {
+            std::task::Poll::Ready(Err(_)) => self.stop.cancel(),
+            std::task::Poll::Ready(Ok(())) if capacity > 0 && buf.filled().len() == before => {
+                self.stop.cancel()
+            }
+            _ => {}
+        }
+        result
     }
 }
 
@@ -1394,7 +1608,10 @@ mod tests {
         for tool in tools {
             assert_eq!(tool.output_schema.as_ref(), Some(&output_schema));
             let annotations = tool.annotations.unwrap();
-            assert_eq!(annotations.open_world_hint, Some(true));
+            assert_eq!(
+                annotations.open_world_hint,
+                Some(tool.name != "list_managed_profiles")
+            );
             if let Some(definition) = BROWSER_OPERATION_REGISTRY
                 .iter()
                 .find(|definition| definition.stable_name == tool.name)
@@ -1831,32 +2048,18 @@ mod tests {
                    "params":{"name":"list_pages","arguments":{}}}),
         )
         .await;
-        // Both requests answer, and completion order is not guaranteed, so index by id.
-        let mut responses = std::collections::BTreeMap::new();
-        for _ in 0..2 {
-            let response =
-                tokio::time::timeout(std::time::Duration::from_secs(5), read_json(&mut read))
-                    .await
-                    .expect("an unrelated request must not be blocked by a cancelled one");
-            responses.insert(response["id"].as_u64().unwrap(), response);
-        }
-
-        // The cancelled operation is reported to the caller as a cancellation rather than
-        // silently abandoned or mapped to a generic internal failure.
-        let cancelled = &responses[&3];
-        assert_eq!(cancelled["result"]["isError"], true);
-        assert_eq!(
-            cancelled["result"]["structuredContent"]["error"]["code"],
-            "cancelled"
-        );
-
-        let unaffected = &responses[&4];
+        // Current rmcp suppresses the cancelled request's response, but its owned work
+        // must still observe cancellation while the unrelated request completes.
+        let unaffected =
+            tokio::time::timeout(std::time::Duration::from_secs(5), read_json(&mut read))
+                .await
+                .unwrap();
+        assert_eq!(unaffected["id"], 4);
         assert_eq!(unaffected["result"]["isError"], false);
         assert_eq!(
             unaffected["result"]["structuredContent"]["status"],
             "succeeded"
         );
-
         assert!(
             session.first_observed_cancellation.load(Ordering::SeqCst),
             "the client's cancellation must reach the in-flight browser operation"
@@ -2400,6 +2603,7 @@ mod tests {
     }
 
     struct LifecycleConnector {
+        profile_calls: AtomicUsize,
         connect_calls: AtomicUsize,
         requests: Mutex<Vec<BrowserConnectRequest>>,
         session: Mutex<Option<Arc<LifecycleSession>>>,
@@ -2408,6 +2612,7 @@ mod tests {
     impl LifecycleConnector {
         fn new() -> Arc<Self> {
             Arc::new(Self {
+                profile_calls: AtomicUsize::new(0),
                 connect_calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
                 session: Mutex::new(None),
@@ -2438,6 +2643,7 @@ mod tests {
             &self,
         ) -> PortFuture<'_, krometrail_core::Result<Vec<krometrail_core::ManagedProfileSummary>>>
         {
+            self.profile_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(std::future::ready(Ok(Vec::new())))
         }
 
@@ -3392,8 +3598,23 @@ mod tests {
             json!({"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}),
         )
         .await;
-        let listed = read_json(&mut read).await;
-        let tools = listed["result"]["tools"].as_array().unwrap();
+        let mut listed = read_json(&mut read).await;
+        let mut tools = listed["result"]["tools"].as_array().unwrap().clone();
+        while let Some(cursor) = listed["result"].get("nextCursor").cloned() {
+            send_json(
+                &mut write,
+                json!({"jsonrpc":"2.0","id":3,"method":"tools/list","params":{"cursor":cursor}}),
+            )
+            .await;
+            listed = read_json(&mut read).await;
+            tools.extend(
+                listed["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+            );
+        }
         assert_eq!(
             tools.len(),
             BROWSER_OPERATION_REGISTRY.len() + lifecycle_tool_names().count()
@@ -3945,5 +4166,173 @@ mod tests {
         drop(write);
         drop(read);
         assert!(matches!(server_task.await.unwrap(), QuitReason::Closed));
+    }
+    #[test]
+    fn catalogue_schemas_compile_and_selector_contracts_match_validation() {
+        let service = build_service(
+            dependencies(Arc::new(UnusedConnector)),
+            McpConfig::default(),
+        )
+        .unwrap();
+        let tools = service.server.tools();
+        for tool in &tools {
+            let input = Value::Object((*tool.input_schema).clone());
+            jsonschema::options()
+                .with_draft(jsonschema::Draft::Draft202012)
+                .build(&input)
+                .unwrap_or_else(|e| panic!("{} input: {e}", tool.name));
+            let output = Value::Object((**tool.output_schema.as_ref().unwrap()).clone());
+            let validator = jsonschema::options()
+                .with_draft(jsonschema::Draft::Draft202012)
+                .build(&output)
+                .unwrap();
+            let mut error = crate::response::visible_error(
+                &tool.name,
+                KrometrailError::new(
+                    ErrorCode::InvalidInput,
+                    NonEmptyText::new("fixture invalid input").unwrap(),
+                ),
+            );
+            attach_diagnostics(
+                &mut error,
+                "fixture-correlation",
+                &DiagnosticContext::default(),
+            );
+            validator
+                .validate(error.structured_content.as_ref().unwrap())
+                .unwrap();
+        }
+        let tool = tools.iter().find(|t| t.name == "query_pin_state").unwrap();
+        let schema = Value::Object((*tool.input_schema).clone());
+        let validator = jsonschema::options()
+            .with_draft(jsonschema::Draft::Draft202012)
+            .build(&schema)
+            .unwrap();
+        let range = serde_json::to_value(resolved_range()).unwrap();
+        for (value, valid) in [
+            (json!({"range": range}), true),
+            (json!({"range_handle": range_handle_id().to_string()}), true),
+            (
+                json!({"range_handle": range_handle_id().to_string(), "response":{"detail":"full"}}),
+                true,
+            ),
+            (
+                json!({"range": range,"range_handle":range_handle_id().to_string()}),
+                false,
+            ),
+            (json!({}), false),
+            (json!({"range": range,"extra":1}), false),
+            (json!({"range_handle":1}), false),
+            (
+                json!({"range_handle":range_handle_id().to_string(),"response":{"detail":"enormous"}}),
+                false,
+            ),
+        ] {
+            assert_eq!(validator.is_valid(&value), valid, "{value}");
+        }
+        for name in ["stop_browser", "list_managed_profiles"] {
+            let tool = tools.iter().find(|t| t.name == name).unwrap();
+            let validator =
+                jsonschema::validator_for(&Value::Object((*tool.input_schema).clone())).unwrap();
+            assert!(validator.is_valid(&json!({})));
+            assert!(!validator.is_valid(&json!({"session":"wrong"})));
+        }
+    }
+
+    #[tokio::test]
+    async fn service_shutdown_owns_cancelled_video_cleanup_beyond_response_waiter() {
+        let video = Arc::new(CleanupVideo {
+            publication_started: Notify::new(),
+            publication_cleanup_complete: Notify::new(),
+            cleaned: AtomicBool::new(false),
+        });
+        let mut deps = dependencies(Arc::new(UnusedConnector));
+        deps.temporal_video = Some(video.clone());
+        let service = build_service(deps, qualified_video_config()).unwrap();
+        let (client, server) = tokio::io::duplex(256 * 1024);
+        let stop = tokio_util::sync::CancellationToken::new();
+        let server_stop = stop.clone();
+        let task = tokio::spawn(async move {
+            service
+                .serve_transport(server, server_stop, std::time::Duration::from_secs(3))
+                .await
+        });
+        let (read, mut write) = tokio::io::split(client);
+        let mut read = BufReader::new(read);
+        let meta = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}});
+        send_json(
+            &mut write,
+            json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":meta}}),
+        )
+        .await;
+        let _ = read_json(&mut read).await;
+        send_json(&mut write,json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"_meta":meta,"name":"generate_temporal_video","arguments":serde_json::to_value(crate::test_fixture::video_fixture().request).unwrap()}})).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            video.publication_started.notified(),
+        )
+        .await
+        .unwrap();
+        stop.cancel();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_ok()
+        );
+        assert!(video.cleaned.load(Ordering::SeqCst));
+    }
+    #[tokio::test]
+    async fn lifecycle_validation_precedes_dispatch_and_status_projection_is_shared() {
+        let connector = LifecycleConnector::new();
+        let responses = invoke_control_tools(
+            connector.clone(),
+            vec![
+                ("start_browser", json!({"response":{"detail":"invalid"}})),
+                ("list_managed_profiles", json!({"unsupported":true})),
+                ("start_browser", json!({})),
+                ("stop_browser", json!({"session":"wrong"})),
+                ("browser_status", json!({})),
+                ("browser_status", json!({"response":{"detail":"full"}})),
+                ("stop_browser", json!({})),
+                (
+                    "attach_browser",
+                    json!({"endpoint":"http://127.0.0.1:9222","response":{"detail":"full"}}),
+                ),
+                ("stop_browser", json!({})),
+            ],
+        )
+        .await;
+        for index in [0, 1, 3] {
+            assert_eq!(
+                responses[index]["result"]["structuredContent"]["error"]["code"],
+                "invalid_input"
+            );
+        }
+        assert_eq!(connector.profile_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 2);
+        for index in [2, 4, 5, 6, 7, 8] {
+            assert_eq!(responses[index]["result"]["isError"], false);
+        }
+        assert_eq!(
+            responses[2]["result"]["structuredContent"]["result"],
+            responses[4]["result"]["structuredContent"]["result"]
+        );
+        assert!(
+            responses[2]["result"]["structuredContent"]["result"]
+                .get("compatibility")
+                .is_none()
+        );
+        assert!(
+            responses[5]["result"]["structuredContent"]["result"]
+                .get("compatibility")
+                .is_some()
+        );
+        assert!(
+            responses[7]["result"]["structuredContent"]["result"]
+                .get("compatibility")
+                .is_some()
+        );
     }
 }

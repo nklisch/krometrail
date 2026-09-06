@@ -73,6 +73,12 @@ Do not run `krometrail mcp` as an interactive health check. It is a standard-inp
 
 See [Manual MCP configuration](mcp-configuration.md) for client commands and JSON configuration.
 
+If only a few tools appear, confirm the client follows every `tools/list` continuation page.
+An invalid catalogue cursor means the listing belongs to another process/configuration or is
+malformed: discard the cached listing and start again without a cursor. After a plugin update,
+start a fresh MCP connection and check the reported server version; installation alone does not
+refresh an existing connection.
+
 ## The agent asks for permission before controlling the browser
 
 This is expected. The plugin does not bypass your agent harness's tool-approval policy. Review and approve the requested browser lifecycle or control action according to your local policy.

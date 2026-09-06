@@ -167,7 +167,9 @@ fi
 require_text "$CI" 'cargo fmt --all --check'
 require_text "$CI" 'cargo check --workspace --all-targets --locked'
 require_text "$CI" 'cargo test --workspace --all-targets --locked'
-require_text "$CI" 'cargo clippy --workspace --all-targets --locked -- -D warnings'
+require_text "$CI" 'rustup run 1.98.0 cargo-clippy clippy --workspace --all-targets --locked -- -D warnings -A clippy::chunks_exact_to_as_chunks'
+require_text "$ROOT/scripts/bump-version.ts" '["rustup", "run", "1.98.0", "cargo-clippy", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings", "-A", "clippy::chunks_exact_to_as_chunks"]'
+require_text "$CI" 'rustup toolchain install 1.98.0 --profile minimal --component clippy'
 # Parse the actual YAML/TOML and exercise negative toolchain-selection mutations.
 bun test "$ROOT/tests/minimum-rust-workflow.test.ts"
 require_text "$CI" 'name: Rust quality gate'

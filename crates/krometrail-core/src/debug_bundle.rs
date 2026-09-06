@@ -171,7 +171,7 @@ pub struct TemporalDebugBundleOperationDefinition {
 pub const TEMPORAL_DEBUG_BUNDLE_OPERATION: TemporalDebugBundleOperationDefinition =
     TemporalDebugBundleOperationDefinition {
         stable_name: "temporal_debug_bundle",
-        description: "Inspect a resolved interaction or temporal range as a compact evidence bundle.",
+        description: "Inspect an interaction or temporal range as a compact evidence bundle. This process can query retained evidence after browser stop, subject to retention. Follow exact resource URIs returned here; handles do not survive MCP restart.",
         capability: CapabilityId::TemporalVision,
         mutability: OperationMutability::ReadOnly,
     };

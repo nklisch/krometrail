@@ -1,0 +1,68 @@
+name: MCP live qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Exact candidate commit SHA to qualify
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.runner }}
+    env:
+      CANDIDATE_SHA: ${{ inputs.sha }}
+      KROMETRAIL_REAL_CHROME_TESTS: "1"
+      KROMETRAIL_MCP_EVIDENCE_DIR: target/mcp-evidence
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.sha }}
+      - name: Verify exact checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Locate required Chrome
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            if [[ ! -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' ]]; then
+              brew install --cask google-chrome
+            fi
+            echo 'CHROME_BIN=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' >> "$GITHUB_ENV"
+          else
+            command -v google-chrome
+            echo "CHROME_BIN=$(command -v google-chrome)" >> "$GITHUB_ENV"
+          fi
+      - name: Qualify actual executable and browser lifecycle
+        run: cargo test --locked --features qualification-support --test mcp-protocol --test mcp-sdk-client --test mcp-browser-live -- --nocapture
+      - name: Require revision-bound receipt
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import glob, json, os
+          files = glob.glob('target/mcp-evidence/mcp-*.json')
+          assert len(files) == 1
+          receipt = json.load(open(files[0]))
+          assert receipt['revision'] == os.environ['CANDIDATE_SHA']
+          assert receipt['managed_eof_cleanup'] and receipt['retained_after_stop']
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: mcp-${{ matrix.runner }}-${{ inputs.sha }}
+          path: target/mcp-evidence/*.json
+          if-no-files-found: error

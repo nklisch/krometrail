@@ -411,7 +411,7 @@ fn tall_screenshot_guidance(target_id: krometrail_core::TargetId, height: u32) -
 mod tests {
     use std::sync::Arc;
 
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::engine::general_purpose::STANDARD;
     use krometrail_core::{IdSource, IdValue, MonotonicClock, ObservedTime, SessionOrigin};
 
     use super::*;

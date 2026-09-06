@@ -62,11 +62,16 @@ cargo fmt --all -- --check
 bash scripts/check-wire-enum-schemas.sh
 cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
+rustup toolchain install 1.98.0 --profile minimal --component clippy
+rustup run 1.98.0 cargo-clippy clippy --workspace --all-targets --locked -- -D warnings -A clippy::chunks_exact_to_as_chunks
 cargo run -- --version
 cargo run -- --help
 cargo run -- doctor
 ```
+
+The exact Clippy toolchain and sole style exemption match CI and the release helper.
+The exemption leaves existing chunk-iteration style in independently versioned `temporal-vision`
+outside this release; other warnings and newer correctness lints remain errors.
 
 `doctor` is discovery-only: it reports discovered Chrome/Chromium installations or a structured `browser_not_found` failure without launching. `mcp` serves lifecycle, browser-control, temporal, browser-event, and retained-evidence resource surfaces over stdio; stdout is reserved for JSON-RPC and the server exits cleanly on stdin EOF.
 

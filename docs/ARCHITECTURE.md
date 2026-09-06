@@ -605,7 +605,16 @@ Unavailable extension capabilities have contracts but no active implementation.
 
 ## MCP Boundary
 
-The Rust MCP adapter uses the official Rust MCP SDK.
+The Rust MCP adapter uses exact official Rust MCP SDK 3.2.0. `protocol.rs` owns the
+three qualified protocol versions and private cache policy, while the SDK owns negotiation,
+metadata validation and version-specific wire serialization. `catalogue.rs` projects the configured
+router into immutable, byte/item-bounded modern pages with process-scoped continuation cursors.
+Both legacy wire versions project that same complete catalogue into one response for supported
+hosts that do not follow pagination; they retain aggregate schema overhead.
+`request_lifecycle.rs` owns admitted execution independently of SDK response waiters. Shutdown
+cancels and drains that work plus the closing browser owner against one application deadline;
+composition-root executor teardown is bounded separately so blocked stdio workers cannot hold
+process exit indefinitely.
 
 Tool handlers:
 
@@ -633,7 +642,7 @@ registry and generated schemas rather than introducing a parallel automation ada
 
 Large binary outputs are persisted and returned as MCP resources or file references. This includes local `video/mp4` resources when temporal video is available. Krometrail does not upload or attach them to a provider. A response can additionally include one context-sized image for immediate inspection.
 
-Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates. In particular, `start_browser` and `attach_browser` expose the same generated `every_nth_frame` field from the core launch and attach requests, while `start_browser` alone exposes the generated managed-launch `focus` policy. The flat MCP adapter modules are `config.rs`, `registry.rs`, `resources.rs`, `response.rs`, `schema.rs`, `server.rs`, and `session.rs`; there are no parallel directory-based tool, schema, or response registries.
+Tool schemas derive from the same Rust contracts used by application services. Generated schemas are build artifacts, not hand-maintained duplicates. In particular, `start_browser` and `attach_browser` expose the same generated `every_nth_frame` field from the core launch and attach requests, while `start_browser` alone exposes the generated managed-launch `focus` policy. The flat MCP adapter modules are `config.rs`, `registry.rs`, `resources.rs`, `response.rs`, `schema.rs`, `server.rs`, `session.rs`, `protocol.rs`, `catalogue.rs`, and `request_lifecycle.rs`; there are no parallel directory-based tool, schema, or response registries.
 
 ## Configuration
 

@@ -1,6 +1,6 @@
 [package]
 name = "krometrail"
-version = "1.6.3"
+version = "1.7.0"
 edition = "2024"
 rust-version = "1.88"
 license.workspace = true
@@ -19,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.6.3"
+version = "1.7.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -48,7 +48,7 @@ cdpkit = "=0.4.0"
 futures-util = "0.3"
 image = { version = "=0.25.9", default-features = false, features = ["jpeg", "png"] }
 schemars = { version = "1", features = ["uuid1"] }
-rmcp = { version = "=0.11.0", features = ["transport-io"] }
+rmcp = { version = "=3.2.0", default-features = false, features = ["server", "transport-io"] }
 tokio-util = "0.7"
 sha2 = "0.10"
 png = "=0.17.16"
@@ -87,3 +87,8 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+tempfile.workspace = true
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }

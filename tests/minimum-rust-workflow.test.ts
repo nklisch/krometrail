@@ -54,8 +54,8 @@ function validate(workflow: Workflow, manifest: Manifest): void {
 	}
 	const stable = workflow.jobs.rust;
 	expect(stable.steps.some((step) => step.uses === "dtolnay/rust-toolchain@stable")).toBe(true);
-	for (const command of ["cargo fmt --all --check", "cargo clippy --workspace --all-targets --locked -- -D warnings"]) {
-		expect(stable.steps.some((step) => step.run === command)).toBe(true);
+	for (const command of ["cargo fmt --all --check", "cargo check --workspace --all-targets --locked", "cargo test --workspace --all-targets --locked", "rustup toolchain install 1.98.0 --profile minimal --component clippy", "rustup run 1.98.0 cargo-clippy clippy --version", "rustup run 1.98.0 cargo-clippy clippy --workspace --all-targets --locked -- -D warnings -A clippy::chunks_exact_to_as_chunks"]) {
+		expect(stable.steps.some((step) => step.run?.trim().split("\n").includes(command))).toBe(true);
 	}
 }
 
@@ -73,6 +73,7 @@ test("unrelated environment, labels and cache actions do not change compiler sel
 });
 
 const mutations: [string, (workflow: Workflow, manifest: Manifest) => void][] = [
+	["linter policy drift", (w) => { const step=w.jobs.rust.steps.find(s=>s.run?.includes("-A clippy::chunks_exact_to_as_chunks"))!; step.run=step.run!.replace("1.98.0", "1.95.0"); }],
 	["wrong compiler", (w) => { w.jobs["rust-msrv"].env!.MSRV_TOOLCHAIN = "stable"; }],
 	["wrong installer compiler", (w) => { w.jobs["rust-msrv"].steps[1].run = "rustup toolchain install stable --profile minimal"; }],
 	["workspace metadata drift", (_, m) => { m.workspace.package["rust-version"] = "1.85"; }],

@@ -33,6 +33,23 @@ Restart or reload the client, then check its MCP status for a connected Krometra
 
 The MCP client must be able to find `krometrail` on `PATH`. The default standalone install location is `~/.local/bin/krometrail`.
 
+## Protocol and catalogue expectations
+
+Krometrail supports MCP `2026-07-28` discovery and the `2025-11-25` / `2025-06-18`
+initialization handshakes over the same stdio command. Modern clients must follow `tools/list`
+`nextCursor` values to obtain every tool; one page is not the complete catalogue.
+
+Tool pages and resource templates may be cached privately for 60 seconds within the same
+process/configuration. Discard cached pages and cursors when reconnecting after an update or
+configuration change. Updating the plugin does not reload an already running MCP process.
+
+Legacy clients receive the full catalogue in one response, without continuation or modern cache fields; legacy aggregate schema overhead remains.
+
+The concrete resource inventory is intentionally empty. Use exact URIs returned by tools and
+resource templates. This process can read retained temporal evidence after browser stop, subject
+to retention; range handles and retained-resource access do not survive MCP restart. Downloads
+require the managed browser session to stay active.
+
 ## Do not run `mcp` as a health check
 
 `krometrail mcp` is a standard-input/output protocol server. It waits for an MCP client and writes protocol traffic—not a user interface—to standard output. Use these checks in a terminal instead:

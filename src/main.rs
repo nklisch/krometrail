@@ -80,7 +80,13 @@ fn main() -> ExitCode {
                 Ok(runtime) => runtime,
                 Err(error) => return report_error(&error),
             };
-            match executor.block_on(runtime.run_mcp()) {
+            let outcome = executor.block_on(runtime.run_mcp());
+            // Application-owned browser/encoder work has already drained or reported an
+            // incomplete shutdown. Tokio's blocking stdout worker can still be stuck on
+            // an unread client pipe; runtime Drop would wait for it forever. Bound only
+            // executor teardown here, never the application's cooperative cleanup.
+            executor.shutdown_timeout(std::time::Duration::from_millis(100));
+            match outcome {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => report_error(&error),
             }

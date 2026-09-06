@@ -91,7 +91,7 @@ pub struct TemporalRangeResolutionOperationDefinition {
 pub const TEMPORAL_RANGE_RESOLUTION_OPERATION: TemporalRangeResolutionOperationDefinition =
     TemporalRangeResolutionOperationDefinition {
         stable_name: "resolve_temporal_range",
-        description: "Resolve a natural temporal anchor into a range handle and capture quality.",
+        description: "Resolve a natural temporal anchor into a process-scoped range handle and capture quality. Handles do not survive MCP restart; backing evidence may expire or be evicted.",
         capability: CapabilityId::TemporalVision,
         mutability: OperationMutability::ReadOnly,
     };

@@ -148,6 +148,24 @@ jobs:
               ;;
           esac
 
+      - name: Qualify staged asset MCP protocols before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-musl|aarch64-unknown-linux-musl)
+              container="mcp-smoke-${{ github.run_id }}-${{ matrix.asset }}"
+              trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+              python3 scripts/mcp-asset-smoke.py --version "${RELEASE_TAG#v}" -- \
+                docker run --rm -i --name "$container" --platform "${{ matrix.smoke_platform }}" \
+                -v "$PWD/dist:/dist:ro" "${{ matrix.smoke_image }}" \
+                "/dist/${{ matrix.asset }}" mcp
+              ;;
+            *)
+              python3 scripts/mcp-asset-smoke.py --version "${RELEASE_TAG#v}" -- "./dist/${{ matrix.asset }}" mcp
+              ;;
+          esac
+
       - name: Attest release asset
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:

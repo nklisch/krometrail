@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use krometrail_core::{
     AttachBrowser, BrowserConnectRequest, BrowserConnector, BrowserOperationContext,
@@ -14,6 +20,7 @@ pub struct BrowserSessionOwner {
     connector: Arc<dyn BrowserConnector>,
     active: Arc<Mutex<Option<Arc<dyn BrowserSessionPort>>>>,
     projected_snapshots: Arc<Mutex<ProjectedSnapshotMemory>>,
+    closing: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -58,6 +65,7 @@ impl BrowserSessionOwner {
     pub fn new(connector: Arc<dyn BrowserConnector>) -> Self {
         Self {
             connector,
+            closing: Arc::new(AtomicBool::new(false)),
             active: Arc::new(Mutex::new(None)),
             projected_snapshots: Arc::new(Mutex::new(ProjectedSnapshotMemory::default())),
         }
@@ -96,6 +104,7 @@ impl BrowserSessionOwner {
         // Keep the slot locked until the candidate proves it can report status. This prevents two
         // concurrent lifecycle calls from creating competing browser owners.
         let mut active = self.active.lock().await;
+        self.ensure_open()?;
         if let Some(session) = active.as_ref() {
             match session.status().await {
                 Ok(status) if status.state == krometrail_core::BrowserSessionState::Ended => {
@@ -112,9 +121,17 @@ impl BrowserSessionOwner {
             }
         }
         let session = self.connector.connect(request).await?;
-        let status = session.status().await?;
+        let status = session.status().await;
+        if status.is_err() || self.closing.load(Ordering::Acquire) {
+            // Keep ownership while cleaning a failed or late candidate.
+            *active = Some(Arc::clone(&session));
+            session.stop().await?;
+            active.take();
+            self.ensure_open()?;
+            return status;
+        }
         *active = Some(session);
-        Ok(status)
+        status
     }
 
     pub async fn status(&self) -> Result<BrowserStatus> {
@@ -156,20 +173,43 @@ impl BrowserSessionOwner {
     }
 
     pub async fn stop(&self) -> Result<BrowserStopOutcome> {
-        let session = self.active.lock().await.take().ok_or_else(|| {
+        let mut active = self.active.lock().await;
+        let session = active.as_ref().ok_or_else(|| {
             lifecycle_error(
                 "no browser session is active",
                 "start or attach a browser session before stopping it",
             )
         })?;
-        session.stop().await
+        // The slot and transition stay owned until stop finishes; a new start cannot race it.
+        let outcome = session.stop().await?;
+        active.take();
+        Ok(outcome)
+    }
+
+    pub(crate) fn begin_shutdown(&self) {
+        self.closing.store(true, Ordering::Release);
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        let Some(session) = self.active.lock().await.take() else {
+        self.begin_shutdown();
+        let mut active = self.active.lock().await;
+        let Some(session) = active.as_ref() else {
             return Ok(());
         };
-        session.stop().await.map(|_| ())
+        session.stop().await?;
+        active.take();
+        Ok(())
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.closing.load(Ordering::Acquire) {
+            Err(lifecycle_error(
+                "browser owner is shutting down",
+                "start a fresh MCP process",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     async fn active_session(&self) -> Result<Arc<dyn BrowserSessionPort>> {
@@ -292,6 +332,8 @@ mod tests {
         status: BrowserStatus,
         execute_calls: AtomicUsize,
         stop_calls: AtomicUsize,
+        stop_gate: Option<Arc<(tokio::sync::Notify, tokio::sync::Notify)>>,
+        status_error: bool,
     }
 
     impl BrowserSessionPort for FakeSession {
@@ -299,7 +341,14 @@ mod tests {
             SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0))
         }
         fn status(&self) -> PortFuture<'_, Result<BrowserStatus>> {
-            Box::pin(std::future::ready(Ok(self.status.clone())))
+            Box::pin(std::future::ready(if self.status_error {
+                Err(lifecycle_error(
+                    "candidate status failed",
+                    "fixture recovery",
+                ))
+            } else {
+                Ok(self.status.clone())
+            }))
         }
         fn subscribe(&self) -> PortFuture<'_, Result<Box<dyn BrowserSessionEvents>>> {
             Box::pin(std::future::ready(Ok(
@@ -342,14 +391,20 @@ mod tests {
 
         fn stop(&self) -> PortFuture<'_, Result<BrowserStopOutcome>> {
             self.stop_calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(std::future::ready(Ok(BrowserStopOutcome::new(
-                krometrail_core::BrowserClosure::Detached,
-                krometrail_core::ShutdownQuality::Clean,
-                None,
-                None,
-                None,
-            )
-            .unwrap())))
+            Box::pin(async move {
+                if let Some(gate) = &self.stop_gate {
+                    gate.0.notify_one();
+                    gate.1.notified().await;
+                }
+                Ok(BrowserStopOutcome::new(
+                    krometrail_core::BrowserClosure::Detached,
+                    krometrail_core::ShutdownQuality::Clean,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap())
+            })
         }
     }
 
@@ -424,6 +479,8 @@ mod tests {
             status: status(),
             execute_calls: AtomicUsize::new(0),
             stop_calls: AtomicUsize::new(0),
+            stop_gate: None,
+            status_error: false,
         });
         let connector = Arc::new(FakeConnector {
             session: Arc::clone(&session),
@@ -477,6 +534,8 @@ mod tests {
             status: ended_status(),
             execute_calls: AtomicUsize::new(0),
             stop_calls: AtomicUsize::new(0),
+            stop_gate: None,
+            status_error: false,
         });
         let connector = Arc::new(FakeConnector {
             session: Arc::clone(&session),
@@ -494,6 +553,8 @@ mod tests {
             status: status(),
             execute_calls: AtomicUsize::new(0),
             stop_calls: AtomicUsize::new(0),
+            stop_gate: None,
+            status_error: false,
         });
         let owner = BrowserSessionOwner::new(Arc::new(FakeConnector {
             session,
@@ -525,6 +586,8 @@ mod tests {
             status: status(),
             execute_calls: AtomicUsize::new(0),
             stop_calls: AtomicUsize::new(0),
+            stop_gate: None,
+            status_error: false,
         });
         let owner = BrowserSessionOwner::new(Arc::new(FakeConnector {
             session: Arc::clone(&session),
@@ -574,5 +637,103 @@ mod tests {
                 .code,
             ErrorCode::InvalidLifecycleTransition
         );
+    }
+    struct GatedConnector {
+        inner: FakeConnector,
+        gate: Arc<(tokio::sync::Notify, tokio::sync::Notify)>,
+    }
+    impl BrowserConnector for GatedConnector {
+        fn installations(&self) -> PortFuture<'_, Result<Vec<BrowserInstallation>>> {
+            self.inner.installations()
+        }
+        fn managed_profiles(
+            &self,
+        ) -> PortFuture<'_, Result<Vec<krometrail_core::ManagedProfileSummary>>> {
+            self.inner.managed_profiles()
+        }
+        fn connect(
+            &self,
+            request: BrowserConnectRequest,
+        ) -> PortFuture<'_, Result<Arc<dyn BrowserSessionPort>>> {
+            Box::pin(async move {
+                self.gate.0.notify_one();
+                self.gate.1.notified().await;
+                self.inner.connect(request).await
+            })
+        }
+    }
+    #[tokio::test]
+    async fn shutdown_stops_a_late_candidate_instead_of_installing_it() {
+        let session = Arc::new(FakeSession {
+            status: status(),
+            execute_calls: AtomicUsize::new(0),
+            stop_calls: AtomicUsize::new(0),
+            stop_gate: None,
+            status_error: false,
+        });
+        let gate = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
+        let owner = BrowserSessionOwner::new(Arc::new(GatedConnector {
+            inner: FakeConnector {
+                session: session.clone(),
+                connect_calls: AtomicUsize::new(0),
+            },
+            gate: gate.clone(),
+        }));
+        let starting = owner.clone();
+        let task = tokio::spawn(async move { starting.start(LaunchBrowser::default()).await });
+        gate.0.notified().await;
+        owner.begin_shutdown();
+        gate.1.notify_one();
+        assert!(task.await.unwrap().is_err());
+        owner.shutdown().await.unwrap();
+        assert_eq!(session.stop_calls.load(Ordering::SeqCst), 1);
+        assert!(owner.status().await.is_err());
+        assert!(owner.start(LaunchBrowser::default()).await.is_err());
+    }
+    #[tokio::test]
+    async fn candidate_status_failure_is_cleaned_and_stop_serializes_new_start() {
+        let bad = Arc::new(FakeSession {
+            status: status(),
+            execute_calls: AtomicUsize::new(0),
+            stop_calls: AtomicUsize::new(0),
+            stop_gate: None,
+            status_error: true,
+        });
+        let owner = BrowserSessionOwner::new(Arc::new(FakeConnector {
+            session: bad.clone(),
+            connect_calls: AtomicUsize::new(0),
+        }));
+        assert!(owner.start(LaunchBrowser::default()).await.is_err());
+        assert_eq!(bad.stop_calls.load(Ordering::SeqCst), 1);
+        owner.shutdown().await.unwrap();
+        assert_eq!(bad.stop_calls.load(Ordering::SeqCst), 1);
+        let gate = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
+        let session = Arc::new(FakeSession {
+            status: status(),
+            execute_calls: AtomicUsize::new(0),
+            stop_calls: AtomicUsize::new(0),
+            stop_gate: Some(gate.clone()),
+            status_error: false,
+        });
+        let connector = Arc::new(FakeConnector {
+            session,
+            connect_calls: AtomicUsize::new(0),
+        });
+        let owner = BrowserSessionOwner::new(connector.clone());
+        owner.start(LaunchBrowser::default()).await.unwrap();
+        let stopping = owner.clone();
+        let stop = tokio::spawn(async move { stopping.stop().await });
+        gate.0.notified().await;
+        let starting = owner.clone();
+        let start = tokio::spawn(async move { starting.start(LaunchBrowser::default()).await });
+        tokio::task::yield_now().await;
+        assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 1);
+        assert!(!start.is_finished());
+        gate.1.notify_one();
+        stop.await.unwrap().unwrap();
+        start.await.unwrap().unwrap();
+        assert_eq!(connector.connect_calls.load(Ordering::SeqCst), 2);
+        gate.1.notify_one();
+        owner.shutdown().await.unwrap();
     }
 }

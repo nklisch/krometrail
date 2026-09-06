@@ -1,6 +1,6 @@
 use std::{
     ffi::OsString,
-    io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Write as _},
+    io::{Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     time::Duration,
@@ -473,170 +473,45 @@ fn mcp_startup_clears_the_legacy_flat_store_and_owns_an_instance_root() {
     std::fs::remove_dir_all(data).unwrap();
 }
 
+#[path = "support/mcp_process.rs"]
+mod mcp_process;
+
 #[test]
 fn mcp_binary_initializes_lists_json_rpc_and_keeps_stderr_separate() {
-    let data = std::env::temp_dir().join(format!(
-        "krometrail-mcp-protocol-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let mut child = Command::new(env!("CARGO_BIN_EXE_krometrail"))
-        .arg("mcp")
-        .env("KROMETRAIL_DATA_DIR", &data)
-        .env("KROMETRAIL_FFMPEG_PATH", data.join("missing-ffmpeg"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("MCP binary should spawn");
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut first = String::new();
-    {
-        let stdin = child.stdin.as_mut().unwrap();
-        writeln!(
-            stdin,
-            "{}",
-            serde_json::json!({
-                "jsonrpc":"2.0","id":1,"method":"initialize","params":{
-                    "protocolVersion":"2025-06-18","capabilities":{},
-                    "clientInfo":{"name":"binary-smoke","version":"1"}
-                }
-            })
-        )
-        .unwrap();
-        stdin.flush().unwrap();
-    }
-    stdout.read_line(&mut first).unwrap();
-    let initialized: serde_json::Value = serde_json::from_str(first.trim()).unwrap();
-    assert_eq!(initialized["id"], 1);
-    assert_eq!(initialized["result"]["protocolVersion"], "2025-06-18");
-
-    {
-        let stdin = child.stdin.as_mut().unwrap();
-        writeln!(
-            stdin,
-            "{}",
-            serde_json::json!({
-                "jsonrpc":"2.0","method":"notifications/initialized"
-            })
-        )
-        .unwrap();
-        writeln!(
-            stdin,
-            "{}",
-            serde_json::json!({
-                "jsonrpc":"2.0","id":2,"method":"tools/list","params":{}
-            })
-        )
-        .unwrap();
-        stdin.flush().unwrap();
-    }
-    let mut second = String::new();
-    stdout.read_line(&mut second).unwrap();
-    let listed: serde_json::Value = serde_json::from_str(second.trim()).unwrap();
-    assert_eq!(listed["id"], 2);
-    let expected_tools = 6
+    let mut process = mcp_process::McpProcess::start();
+    assert_eq!(
+        process.initialize("2025-06-18")["result"]["protocolVersion"],
+        "2025-06-18"
+    );
+    let tools = process.tools();
+    let expected = 6
         + krometrail_core::BROWSER_OPERATION_REGISTRY.len()
         + 1
         + krometrail_core::PROGRESSIVE_EVIDENCE_REGISTRY
             .iter()
-            .filter(|definition| definition.exposure == krometrail_core::OperationExposure::Tool)
+            .filter(|d| d.exposure == krometrail_core::OperationExposure::Tool)
             .count()
         + krometrail_core::TEMPORAL_CONTEXT_OPERATION_REGISTRY.len();
-    assert_eq!(
-        listed["result"]["tools"].as_array().unwrap().len(),
-        expected_tools
-    );
-
-    drop(child.stdin.take());
-    let mut trailing_stdout = String::new();
-    stdout.read_to_string(&mut trailing_stdout).unwrap();
-    let status = child.wait().unwrap();
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
-    assert!(status.success(), "stderr: {stderr}");
-    assert!(stderr.is_empty(), "stderr: {stderr}");
-    assert!(
-        trailing_stdout.trim().is_empty(),
-        "stdout: {trailing_stdout}"
-    );
-    std::fs::remove_dir_all(data).unwrap();
+    assert_eq!(tools.len(), expected);
+    assert!(process.finish(true).is_empty());
 }
 
 #[test]
 fn mcp_without_qualified_ffmpeg_keeps_the_still_surface_and_omits_video() {
-    let data = std::env::temp_dir().join(format!(
-        "krometrail-mcp-no-ffmpeg-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let mut child = Command::new(env!("CARGO_BIN_EXE_krometrail"))
-        .arg("mcp")
-        .env("KROMETRAIL_DATA_DIR", &data)
-        .env("KROMETRAIL_FFMPEG_PATH", data.join("missing-ffmpeg"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("MCP binary should spawn without FFmpeg");
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let stdin = child.stdin.as_mut().unwrap();
-    for request in [
-        serde_json::json!({
-            "jsonrpc":"2.0","id":1,"method":"initialize","params":{
-                "protocolVersion":"2025-06-18","capabilities":{},
-                "clientInfo":{"name":"no-ffmpeg-smoke","version":"1"}
-            }
-        }),
-        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        serde_json::json!({
-            "jsonrpc":"2.0","id":3,"method":"resources/templates/list","params":{}
-        }),
-    ] {
-        writeln!(stdin, "{request}").unwrap();
-    }
-    stdin.flush().unwrap();
-
-    let mut line = String::new();
-    stdout.read_line(&mut line).unwrap();
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(line.trim()).unwrap()["id"],
-        1
-    );
-    line.clear();
-    stdout.read_line(&mut line).unwrap();
-    let listed: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    let tool_names = listed["result"]["tools"]
+    let mut process = mcp_process::McpProcess::start();
+    process.initialize("2025-06-18");
+    let tools = process.tools();
+    assert!(tools.iter().any(|t| t["name"] == "temporal_debug_bundle"));
+    assert!(!tools.iter().any(|t| t["name"] == "generate_temporal_video"));
+    let templates = process.request("resources/templates/list", serde_json::json!({}));
+    let names = templates["result"]["resourceTemplates"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|tool| tool["name"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert!(tool_names.contains(&"temporal_debug_bundle"));
-    assert!(!tool_names.contains(&"generate_temporal_video"));
-    line.clear();
-    stdout.read_line(&mut line).unwrap();
-    let templates: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-    let template_names = templates["result"]["resourceTemplates"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|template| template["name"].as_str().unwrap())
+        .map(|t| t["name"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(
-        template_names,
+        names,
         vec![
             "temporal-artifact",
             "temporal-artifact-manifest",
@@ -644,19 +519,7 @@ fn mcp_without_qualified_ffmpeg_keeps_the_still_surface_and_omits_video() {
             "managed-download"
         ]
     );
-
-    drop(child.stdin.take());
-    let status = child.wait().unwrap();
-    let mut stderr = String::new();
-    child
-        .stderr
-        .take()
-        .unwrap()
-        .read_to_string(&mut stderr)
-        .unwrap();
-    assert!(status.success(), "stderr: {stderr}");
-    assert!(stderr.is_empty(), "stderr: {stderr}");
-    std::fs::remove_dir_all(data).unwrap();
+    assert!(process.finish(true).is_empty());
 }
 
 /// A running process must hold its instance root's lock for as long as it lives.

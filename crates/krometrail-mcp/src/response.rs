@@ -16,7 +16,7 @@ use krometrail_core::{
     TemporalRangeResolution, TemporalVideoGenerationResult, VideoPresentationPolicy, WaitOutcome,
 };
 use rmcp::model::JsonObject;
-use rmcp::model::{CallToolResult, Content, RawResource};
+use rmcp::model::{CallToolResult, ContentBlock, Resource};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -992,7 +992,7 @@ pub(crate) fn into_call_tool_result(
 ) -> Result<CallToolResult, rmcp::ErrorData> {
     apply_capture_health(&mut mapped, capture_statuses);
     let mut content = Vec::with_capacity(1 + mapped.images.len() + mapped.response.resources.len());
-    content.push(Content::text(mapped.summary));
+    content.push(ContentBlock::text(mapped.summary));
     for image in mapped.images {
         match image {
             EncodedMcpImage::Screenshot { screenshot, .. } => {
@@ -1002,7 +1002,10 @@ pub(crate) fn into_call_tool_result(
                         None,
                     )
                 })?;
-                content.push(Content::image(STANDARD.encode(screenshot.bytes()), mime));
+                content.push(ContentBlock::image(
+                    STANDARD.encode(screenshot.bytes()),
+                    mime,
+                ));
             }
             EncodedMcpImage::Artifact {
                 media_type, bytes, ..
@@ -1010,24 +1013,15 @@ pub(crate) fn into_call_tool_result(
             | EncodedMcpImage::SourceFrame {
                 media_type, bytes, ..
             } => {
-                content.push(Content::image(STANDARD.encode(&bytes), media_type));
+                content.push(ContentBlock::image(STANDARD.encode(&bytes), media_type));
             }
         }
     }
     content.extend(mapped.response.resources.iter().map(|resource| {
-        let raw = RawResource {
-            uri: resource.uri.clone(),
-            name: resource.name.clone(),
-            title: None,
-            description: None,
-            mime_type: resource.mime_type.clone(),
-            size: resource
-                .encoded_byte_len
-                .and_then(|length| u32::try_from(length).ok()),
-            icons: None,
-            meta: None,
-        };
-        Content::resource_link(raw)
+        let mut raw = Resource::new(resource.uri.clone(), resource.name.clone());
+        raw.mime_type = resource.mime_type.clone();
+        raw.size = resource.encoded_byte_len;
+        ContentBlock::resource_link(raw)
     }));
     let structured = serde_json::to_value(mapped.response).map_err(|_| {
         rmcp::ErrorData::internal_error("tool response could not be serialized", None)

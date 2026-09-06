@@ -285,7 +285,9 @@ try {
 	run(["cargo", "fmt", "--all", "--check"]);
 	run(["cargo", "check", "--workspace", "--all-targets", "--locked"]);
 	run(["cargo", "test", "--workspace", "--all-targets", "--locked"]);
-	run(["cargo", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings"]);
+	// Direct cargo-clippy avoids a PATH-shadowed Cargo subcommand. Match CI exactly.
+	run(["rustup", "run", "1.98.0", "cargo-clippy", "clippy", "--version"]);
+	run(["rustup", "run", "1.98.0", "cargo-clippy", "clippy", "--workspace", "--all-targets", "--locked", "--", "-D", "warnings", "-A", "clippy::chunks_exact_to_as_chunks"]);
 } catch (error) {
 	await Bun.write(cargoPath, originalCargo);
 	if (originalLock === undefined) {
