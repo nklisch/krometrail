@@ -52,6 +52,7 @@ function validate(workflow: Workflow, manifest: Manifest): void {
 		const env = step.env as Record<string, unknown> | undefined;
 		expect(env?.MSRV_TOOLCHAIN).toBeUndefined();
 	}
+	expect(workflow.jobs.distribution.steps.some(step=>step.run === "rustup toolchain install 1.98.0 --profile minimal --component clippy")).toBe(true);
 	const stable = workflow.jobs.rust;
 	expect(stable.steps.some((step) => step.uses === "dtolnay/rust-toolchain@stable")).toBe(true);
 	for (const command of ["cargo fmt --all --check", "cargo check --workspace --all-targets --locked", "cargo test --workspace --all-targets --locked", "rustup toolchain install 1.98.0 --profile minimal --component clippy", "rustup run 1.98.0 cargo-clippy clippy --version", "rustup run 1.98.0 cargo-clippy clippy --workspace --all-targets --locked -- -D warnings -A clippy::chunks_exact_to_as_chunks"]) {

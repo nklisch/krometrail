@@ -109,6 +109,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install release-helper linter
+        run: rustup toolchain install 1.98.0 --profile minimal --component clippy
+
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
 

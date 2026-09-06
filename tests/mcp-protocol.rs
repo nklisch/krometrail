@@ -194,3 +194,14 @@ fn shutdown_is_bounded_when_stdout_is_not_consumed() {
     let stderr = p.finish(false);
     assert!(stderr.contains("response transport did not finish shutdown"));
 }
+
+#[test]
+fn eof_alone_bounds_an_established_unread_response_pipe() {
+    let mut p = McpProcess::start_with_output_paused();
+    p.request("server/discover", json!({}));
+    for id in 0..30 {
+        p.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/list","params":{"_meta":metadata("2026-07-28")}}));
+    }
+    let stderr = p.finish(false);
+    assert!(stderr.contains("response transport did not finish shutdown"));
+}

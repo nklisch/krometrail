@@ -237,6 +237,30 @@ fn attached_browser_survives_mcp_eof() {
         .unwrap()
         .parse()
         .unwrap();
+    // DevToolsActivePort can appear before Chrome's HTTP discovery is responsive,
+    // particularly during macOS startup. Establish fixture readiness before testing attach.
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let ready_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        match runtime.block_on(krometrail_cdp::LocalCdpEndpoint::resolve(&endpoint)) {
+            Ok(_) => break,
+            Err(error) => {
+                assert!(
+                    external.0.try_wait().unwrap().is_none(),
+                    "external Chrome exited before readiness"
+                );
+                assert!(
+                    Instant::now() < ready_deadline,
+                    "external Chrome discovery was not ready: {error}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
     p.initialize("2025-11-25");
     let result = call(
         &mut p,
