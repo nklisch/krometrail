@@ -1,11 +1,11 @@
 ---
 id: epic-a-grade-reliability-minimum-rust-gate
 kind: feature
-stage: review
+stage: done
 tags: [infra, testing]
 parent: epic-a-grade-reliability
 depends_on: []
-release_binding: null
+release_binding: 1.6.3
 research_refs: []
 research_origin: null
 created: 2026-09-05
@@ -21,9 +21,9 @@ Actual Rust 1.85 rejects current let chains with E0658. Installing a default 1.8
 - **Priority:** P1 — wave 2 of [epic-a-grade-reliability](epic-a-grade-reliability.md). Priority is proposed remediation order, not a release commitment.
 - **Evidence status:** Reproduced with explicit Rust 1.85 compiler selection; CI toolchain-selection flaw code-traced.
 - **Origin:** Personal read-only repository review at `eb5b4656`, followed by the user's request to backlog the full path to a solid A (2026-09-05). References are point-in-time; revalidate before implementation.
-- **Readiness:** Bounded release-prerequisite implementation authorized and prepared; independent review and final integrated gates remain pending. This item is nonterminal.
+- **Readiness:** Implemented, independently reviewed, and qualified for release 1.6.3. Publication itself is tracked by the release transaction.
 
-## Evidence
+## Original evidence (before the fix)
 
 - Cargo.toml:5,24 — declared rust-version 1.85
 - rust-toolchain.toml — stable directory toolchain
@@ -34,7 +34,7 @@ Actual Rust 1.85 rejects current let chains with E0658. Installing a default 1.8
 
 - [x] Choose and document the actual minimum: Rust 1.88, selected after explicit Linux locked workspace/all-targets check and tests (receipt below), not inferred from syntax alone.
 - [x] CI logs the effective rustc and cargo identities and explicitly selects the intended compiler for every minimum-version gate.
-- [ ] The declared-minimum locked workspace/all-targets check, tests, and applicable lint/format policy pass on the intended compiler. Minimum check/tests passed at `90085cba`; final integrated stable lint/format gates remain pending.
+- [x] The final 1.6.3 candidate passed explicit Rust 1.88.0 locked workspace/all-targets check/tests on Linux and the separate stable formatting/Clippy gates.
 - [x] A regression fixture or workflow contract test catches reintroduction of ambiguous toolchain selection; installation success alone is not a passing compatibility check.
 
 ## Implementation direction and boundaries
@@ -64,3 +64,9 @@ Parent qualification receipt (supplied to this implementation, not rerun here): 
 Bounded local verification: `bun test tests/minimum-rust-workflow.test.ts` — 10 pass, 0 fail (Bun 1.3.14); `bash -n tests/distribution-static.sh` and `git diff --check` passed. No build directories were created or shared target caches touched. README and development instructions now state the selected minimum and Linux qualification boundary; historical research and sample evidence retain their original identities.
 
 Pending parent work: independent review, final integrated stable gates and full distribution fixtures, documentation regeneration/build (`docs/public/llms-full.txt` was deliberately not edited), and final release reconciliation. No version bump, tag, push, or publication is part of this commit; product and temporal-vision versions remain unchanged.
+
+## Final release qualification
+
+The parent relaxed the workflow fixture's unrelated checkout/cache/presentation snapshots while retaining compiler-selection, identity and failure-propagation checks; 11 fixture cases pass. Raising the declaration enabled Clippy's Rust-1.88-compatible suggestions, so the candidate also includes machine-applicable let-chain and nonzero-divisibility rewrites. Independent review accepted their evaluation order, lock/drop scopes, error paths, and compiler support. The reviewed raw Rust/fixture diff SHA-256 is `f4136328d517b2cd7cc8b7b406116714b36de20de90a8f7279017a3232b89a22`.
+
+The final candidate passed stable formatting, wire schemas, locked workspace/all-targets check/tests and warning-free Clippy; full distribution/installer/plugin fixtures; documentation regeneration/build; explicit Rust 1.88.0 locked workspace/all-targets check/tests; and temporal-vision 0.2.0 package verification with upload aborted by `--dry-run`. Receipts: `/tmp/krometrail-1.6.3-final-release-gates.log`, `/tmp/krometrail-1.6.3-distribution-msrv.log`, and `/tmp/krometrail-1.6.3-msrv-package-final.log`. The first two logs contain initial failures that were resolved by the subsequent receipts: sibling marketplace alignment and allowing the dry-run's registry metadata lookup. The compiler-specific target was removed on exit. Shared build cache survives. Optional qualification-support compilation and live-browser coverage are not claimed.

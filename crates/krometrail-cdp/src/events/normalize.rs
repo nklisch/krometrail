@@ -426,15 +426,15 @@ impl EventNormalizer {
             self.next_request_id()
         };
         let mut normalized = Vec::with_capacity(2);
-        if let Some(redirect) = params.get("redirectResponse") {
-            if let Some(previous) = state.requests.get(&key) {
-                normalized.push(NormalizedEvent {
-                    source_time: source_time.clone(),
-                    payload: BrowserEventPayload::NetworkResponseReceived(response_payload(
-                        previous, redirect,
-                    )?),
-                });
-            }
+        if let Some(redirect) = params.get("redirectResponse")
+            && let Some(previous) = state.requests.get(&key)
+        {
+            normalized.push(NormalizedEvent {
+                source_time: source_time.clone(),
+                payload: BrowserEventPayload::NetworkResponseReceived(response_payload(
+                    previous, redirect,
+                )?),
+            });
         }
         let context = RequestContext {
             id,

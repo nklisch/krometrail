@@ -265,13 +265,12 @@ impl RetentionStatus {
         if (oldest_retained.is_some()) != (newest_retained.is_some()) {
             return Err(invalid("retained bounds must both be present or absent"));
         }
-        if let (Some(oldest), Some(newest)) = (oldest_retained, newest_retained) {
-            if oldest.session_id == newest.session_id
-                && oldest.target_id == newest.target_id
-                && oldest.session_time > newest.session_time
-            {
-                return Err(invalid("retained bounds are not ordered"));
-            }
+        if let (Some(oldest), Some(newest)) = (oldest_retained, newest_retained)
+            && oldest.session_id == newest.session_id
+            && oldest.target_id == newest.target_id
+            && oldest.session_time > newest.session_time
+        {
+            return Err(invalid("retained bounds are not ordered"));
         }
         let paused = budget_state == RecordingBudgetState::PausedBudget;
         if eviction_blocked != paused || recording_blocked != paused {

@@ -128,7 +128,8 @@ impl Config {
             "PERF_PAIR_REPETITIONS must be between 1 and 20"
         );
         assert!(
-            width % usize::from(scale.factor()) == 0 && height % usize::from(scale.factor()) == 0,
+            width.is_multiple_of(usize::from(scale.factor()))
+                && height.is_multiple_of(usize::from(scale.factor())),
             "benchmark dimensions must be divisible by the selected scale"
         );
         Self {

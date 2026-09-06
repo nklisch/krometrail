@@ -530,19 +530,19 @@ async fn attach_side_channel_facts(
         .await;
     }
 
-    if let (Some(cursor_before), Some(pages)) = (baselines.page_cursor_before, page_delta) {
-        if let Some(record) = interaction_record_mut(result) {
-            record.postcondition.attach_new_pages(
-                krometrail_core::NewPagePostcondition::from_observed(cursor_before, pages),
-            );
-        }
+    if let (Some(cursor_before), Some(pages)) = (baselines.page_cursor_before, page_delta)
+        && let Some(record) = interaction_record_mut(result)
+    {
+        record.postcondition.attach_new_pages(
+            krometrail_core::NewPagePostcondition::from_observed(cursor_before, pages),
+        );
     }
-    if let (Some(cursor_before), Some(facts)) = (baselines.download_cursor_before, download_delta) {
-        if let Some(record) = interaction_record_mut(result) {
-            record.postcondition.attach_downloads(
-                krometrail_core::DownloadPostcondition::from_observed(cursor_before, facts),
-            );
-        }
+    if let (Some(cursor_before), Some(facts)) = (baselines.download_cursor_before, download_delta)
+        && let Some(record) = interaction_record_mut(result)
+    {
+        record.postcondition.attach_downloads(
+            krometrail_core::DownloadPostcondition::from_observed(cursor_before, facts),
+        );
     }
 }
 
@@ -1047,12 +1047,12 @@ async fn execute_non_local_operation(
                     materialization,
                 );
             }
-            if let Some(capture) = shared.capture.as_ref() {
-                if let Some(transition) = geometry_transition {
-                    capture
-                        .coordinator
-                        .commit_geometry_transition(transition, capture_geometry);
-                }
+            if let Some(capture) = shared.capture.as_ref()
+                && let Some(transition) = geometry_transition
+            {
+                capture
+                    .coordinator
+                    .commit_geometry_transition(transition, capture_geometry);
             }
             page_control.invalidate_target_snapshot(target_id);
             let observation = page_control

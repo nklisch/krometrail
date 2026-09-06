@@ -226,7 +226,7 @@ impl VideoOutputGeometry {
                 "video canvas padding must be an explicit zero or one pixel on each trailing edge",
             ));
         }
-        if self.canvas.width() % 2 != 0 || self.canvas.height() % 2 != 0 {
+        if !self.canvas.width().is_multiple_of(2) || !self.canvas.height().is_multiple_of(2) {
             return Err(invalid(
                 "video canvas dimensions must be even for the yuv420p profile",
             ));

@@ -24,30 +24,34 @@ const manifestText = readFileSync(new URL("../Cargo.toml", import.meta.url), "ut
 const parseWorkflow = (): Workflow => Bun.YAML.parse(workflowText) as Workflow;
 const parseManifest = (): Manifest => Bun.TOML.parse(manifestText) as Manifest;
 
-// This is deliberately a contract for one small job, not a shell interpreter.
-// Exact executable steps reject extra/unqualified gates, selection overrides,
-// and commented-out commands without pretending to understand arbitrary shell.
+// Check the compiler-sensitive commands, not unrelated job presentation or
+// checkout/cache actions. This fixture is not a general shell interpreter.
 function validate(workflow: Workflow, manifest: Manifest): void {
 	const minimum = manifest.package["rust-version"];
 	expect(minimum).toMatch(/^\d+\.\d+$/);
 	expect(manifest.workspace.package["rust-version"]).toBe(minimum);
 	const job = workflow.jobs["rust-msrv"];
-	expect(workflow.env).toBeUndefined();
-	expect(job.env).toEqual({ MSRV_TOOLCHAIN: `${minimum}.0` });
-	expect(job["runs-on"]).toBe("ubuntu-latest");
-	expect(Object.keys(job).sort()).toEqual(["env", "name", "runs-on", "steps"]);
+	expect(job.env?.MSRV_TOOLCHAIN).toBe(`${minimum}.0`);
+	const compilerSteps = job.steps.filter((step) => /\b(?:cargo|rustc|rustup)\b/.test(step.run ?? ""));
+	for (const scope of [workflow, job, ...compilerSteps]) {
+		const env = scope.env as Record<string, unknown> | undefined;
+		// RUSTC/RUSTDOC can replace the compiler Cargo executes despite rustup.
+		expect(env?.RUSTC).toBeUndefined();
+		expect(env?.RUSTDOC).toBeUndefined();
+	}
+	expect(job["continue-on-error"]).not.toBe(true);
 	const commands = [
-		undefined,
 		'rustup toolchain install "$MSRV_TOOLCHAIN" --profile minimal',
 		'rustup run "$MSRV_TOOLCHAIN" rustc --version\nrustup run "$MSRV_TOOLCHAIN" cargo --version',
 		'rustup run "$MSRV_TOOLCHAIN" cargo check --workspace --all-targets --locked',
 		'rustup run "$MSRV_TOOLCHAIN" cargo test --workspace --all-targets --locked',
 	];
-	expect(job.steps.map((step) => step.run?.trim())).toEqual(commands);
-	for (const [index, step] of job.steps.entries()) {
-		expect(Object.keys(step).sort()).toEqual(index === 0 ? ["name", "uses"] : ["name", "run"]);
+	expect(compilerSteps.map((step) => step.run?.trim())).toEqual(commands);
+	for (const step of compilerSteps) {
+		expect(step["continue-on-error"]).not.toBe(true);
+		const env = step.env as Record<string, unknown> | undefined;
+		expect(env?.MSRV_TOOLCHAIN).toBeUndefined();
 	}
-	expect(job.steps[0].uses).toBe("actions/checkout@v4");
 	const stable = workflow.jobs.rust;
 	expect(stable.steps.some((step) => step.uses === "dtolnay/rust-toolchain@stable")).toBe(true);
 	for (const command of ["cargo fmt --all --check", "cargo clippy --workspace --all-targets --locked -- -D warnings"]) {
@@ -57,6 +61,15 @@ function validate(workflow: Workflow, manifest: Manifest): void {
 
 test("minimum compiler metadata and executable CI steps agree", () => {
 	validate(parseWorkflow(), parseManifest());
+});
+
+test("unrelated environment, labels and cache actions do not change compiler selection", () => {
+	const workflow = parseWorkflow();
+	workflow.env = { CARGO_TERM_COLOR: "always" };
+	workflow.jobs["rust-msrv"].name = "Minimum supported compiler";
+	workflow.jobs["rust-msrv"].steps[0].uses = "actions/checkout@v5";
+	workflow.jobs["rust-msrv"].steps.splice(1, 0, { uses: "Swatinem/rust-cache@v2" });
+	validate(workflow, parseManifest());
 });
 
 const mutations: [string, (workflow: Workflow, manifest: Manifest) => void][] = [

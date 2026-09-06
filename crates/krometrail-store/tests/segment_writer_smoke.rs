@@ -40,7 +40,7 @@ fn frame(
             Some(SourceTime::from_nanos(i128::from(session_nanos))),
             ObservedTime::from_nanos(session_nanos + 100),
             SessionTime::from_nanos(session_nanos),
-            if ordinal % 2 == 0 {
+            if ordinal.is_multiple_of(2) {
                 ImageFormat::Png
             } else {
                 ImageFormat::Jpeg

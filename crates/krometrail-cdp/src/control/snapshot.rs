@@ -2095,10 +2095,10 @@ fn decode_viewport_scoped_dom_snapshot(
             let mut composed = String::new();
             let mut composed_bytes = 0;
             for id in labelledby.split_ascii_whitespace() {
-                if let Some(label_index) = id_to_index.get(id) {
-                    if let Some(text) = rendered.get(label_index) {
-                        append_semantic_text(&mut composed, &mut composed_bytes, text);
-                    }
+                if let Some(label_index) = id_to_index.get(id)
+                    && let Some(text) = rendered.get(label_index)
+                {
+                    append_semantic_text(&mut composed, &mut composed_bytes, text);
                 }
             }
             push_label(&mut metadata, node.backend_node_id, &composed);

@@ -122,10 +122,10 @@ impl OrdinalRegistry {
             target_id: target.target_id,
         };
         let mut states = self.states.lock().expect("ordinal registry lock poisoned");
-        if let Some(state) = states.get(&key) {
-            if state.attachment_generation <= target.attachment_generation {
-                states.remove(&key);
-            }
+        if let Some(state) = states.get(&key)
+            && state.attachment_generation <= target.attachment_generation
+        {
+            states.remove(&key);
         }
     }
 
@@ -1189,11 +1189,10 @@ async fn worker_loop(runtime: Arc<StreamRuntime>, mut receiver: mpsc::Receiver<R
                     raw.session_time,
                     Some(1),
                     Some("encoded frame rejected"),
-                ) {
-                    if runtime.dependencies.sink.append_gap(gap).await.is_err() {
-                        runtime.fail_at(CaptureFailureStage::GapPersistence);
-                        break;
-                    }
+                ) && runtime.dependencies.sink.append_gap(gap).await.is_err()
+                {
+                    runtime.fail_at(CaptureFailureStage::GapPersistence);
+                    break;
                 }
                 runtime.fail_at(CaptureFailureStage::FrameDecode);
                 break;
@@ -1331,10 +1330,10 @@ pub(super) async fn stop_target(
             .streams
             .lock()
             .expect("capture registry lock poisoned");
-        if let Some(existing) = streams.get(&key) {
-            if Arc::ptr_eq(existing, &runtime) {
-                streams.remove(&key);
-            }
+        if let Some(existing) = streams.get(&key)
+            && Arc::ptr_eq(existing, &runtime)
+        {
+            streams.remove(&key);
         }
     }
     // Terminal close/failure releases ordinal state; suspend, detach, and reconnect preserve it.
@@ -1624,13 +1623,13 @@ impl GapLedger {
 
     pub(super) fn push(&mut self, gap: CaptureGap) -> CaptureGap {
         let is_saturation = *gap.reason() == CaptureGapReason::IngestionQueueSaturated;
-        if is_saturation && self.saturation_open {
-            if let Some(previous) = self.pending.back_mut() {
-                if let Some(merged) = merge_gaps(previous, &gap) {
-                    *previous = merged.clone();
-                    return merged;
-                }
-            }
+        if is_saturation
+            && self.saturation_open
+            && let Some(previous) = self.pending.back_mut()
+            && let Some(merged) = merge_gaps(previous, &gap)
+        {
+            *previous = merged.clone();
+            return merged;
         }
         if self.pending.len() >= self.capacity {
             if self.capacity == 1 {

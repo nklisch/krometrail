@@ -436,10 +436,10 @@ impl CrossPlatformSmokeEvidence {
         } else if !all_present {
             return Err("percentiles must be present when samples is non-zero".into());
         }
-        if let (Some(p50), Some(p95), Some(p99)) = (summary.p50, summary.p95, summary.p99) {
-            if p50 > p95 || p95 > p99 {
-                return Err("percentiles must satisfy p50 <= p95 <= p99".into());
-            }
+        if let (Some(p50), Some(p95), Some(p99)) = (summary.p50, summary.p95, summary.p99)
+            && (p50 > p95 || p95 > p99)
+        {
+            return Err("percentiles must satisfy p50 <= p95 <= p99".into());
         }
         Ok(())
     }
@@ -550,19 +550,19 @@ pub fn validate_against_schema(value: &Value, schema: &Value) -> Result<(), Stri
 }
 
 fn validate_node(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
-    if let Some(types) = schema.get("type") {
-        if !matches_type(value, types) {
-            return Err(format!(
-                "{path}: expected type {types}, got {}",
-                value_type(value)
-            ));
-        }
+    if let Some(types) = schema.get("type")
+        && !matches_type(value, types)
+    {
+        return Err(format!(
+            "{path}: expected type {types}, got {}",
+            value_type(value)
+        ));
     }
 
-    if let Some(constant) = schema.get("const") {
-        if value != constant {
-            return Err(format!("{path}: expected const {constant}"));
-        }
+    if let Some(constant) = schema.get("const")
+        && value != constant
+    {
+        return Err(format!("{path}: expected const {constant}"));
     }
 
     if let Some(enumeration) = schema.get("enum") {

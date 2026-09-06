@@ -800,13 +800,13 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
         self.validate_analysis_sampling_disclosure()?;
         validate_markers(&self.markers, self.range).map_err(as_manifest_error)?;
         validate_gaps(&self.gaps, self.range).map_err(as_manifest_error)?;
-        if let (Some(region), Some(mask)) = (self.region, self.mask.as_ref()) {
-            if !region.rect().fits_within(mask.dimensions()) {
-                return Err(VisionError::new(
-                    ErrorCode::InvalidManifest,
-                    "manifest region does not fit its source mask dimensions",
-                ));
-            }
+        if let (Some(region), Some(mask)) = (self.region, self.mask.as_ref())
+            && !region.rect().fits_within(mask.dimensions())
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "manifest region does not fit its source mask dimensions",
+            ));
         }
         Ok(())
     }
@@ -1072,13 +1072,12 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
                 .selected_frames()
                 .iter()
                 .find(|selected| selected.frame_index() == moment.frame_index())
+                && selected.timestamp() != moment.timestamp()
             {
-                if selected.timestamp() != moment.timestamp() {
-                    return Err(VisionError::new(
-                        ErrorCode::InvalidManifest,
-                        "storyboard visual moment timestamp disagrees with its selected frame",
-                    ));
-                }
+                return Err(VisionError::new(
+                    ErrorCode::InvalidManifest,
+                    "storyboard visual moment timestamp disagrees with its selected frame",
+                ));
             }
             Ok(())
         };

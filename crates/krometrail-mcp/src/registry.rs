@@ -1805,11 +1805,11 @@ mod tests {
                         "source_frame_id".into(),
                         json!("00000000-0000-0000-0000-000000000003"),
                     );
-                    if let Some(shape) = region.get_mut("shape").and_then(Value::as_object_mut) {
-                        if let Some(mask) = shape.get_mut("mask").and_then(Value::as_object_mut) {
-                            mask.insert("bits".into(), json!([128]));
-                            mask.insert("dimensions".into(), json!({"width": 1, "height": 1}));
-                        }
+                    if let Some(shape) = region.get_mut("shape").and_then(Value::as_object_mut)
+                        && let Some(mask) = shape.get_mut("mask").and_then(Value::as_object_mut)
+                    {
+                        mask.insert("bits".into(), json!([128]));
+                        mask.insert("dimensions".into(), json!({"width": 1, "height": 1}));
                     }
                     if let Some(session_id) = region.get_mut("session_id") {
                         *session_id = json!("00000000-0000-0000-0000-000000000001");
@@ -1895,14 +1895,13 @@ mod tests {
         fn replace_frequency_mode_enum(value: &mut Value) -> bool {
             match value {
                 Value::Object(object) => {
-                    if let Some(values) = object.get_mut("enum").and_then(Value::as_array_mut) {
-                        if let Some(value) = values
+                    if let Some(values) = object.get_mut("enum").and_then(Value::as_array_mut)
+                        && let Some(value) = values
                             .iter_mut()
                             .find(|value| value.as_str() == Some("count"))
-                        {
-                            *value = Value::String("Count".into());
-                            return true;
-                        }
+                    {
+                        *value = Value::String("Count".into());
+                        return true;
                     }
                     object.values_mut().any(replace_frequency_mode_enum)
                 }

@@ -93,21 +93,20 @@ impl BatchRequest {
             };
             if let (PageSelection::Target(batch_target), PageSelection::Target(step_target)) =
                 (target, step_target)
+                && batch_target != step_target
             {
-                if batch_target != step_target {
-                    return Err(invalid("batch step targets another page"));
-                }
+                return Err(invalid("batch step targets another page"));
             }
             for reference_target in reference_targets(step) {
-                if let PageSelection::Target(batch_target) = target {
-                    if reference_target != batch_target {
-                        return Err(invalid("batch step reference targets another page"));
-                    }
+                if let PageSelection::Target(batch_target) = target
+                    && reference_target != batch_target
+                {
+                    return Err(invalid("batch step reference targets another page"));
                 }
-                if let PageSelection::Target(step_target) = step_target {
-                    if reference_target != step_target {
-                        return Err(invalid("batch step reference contradicts its page target"));
-                    }
+                if let PageSelection::Target(step_target) = step_target
+                    && reference_target != step_target
+                {
+                    return Err(invalid("batch step reference contradicts its page target"));
                 }
             }
         }
@@ -188,10 +187,10 @@ impl BatchStepResult {
         skip_reason: Option<BatchSkipReason>,
         screenshot: Option<ObservationPart<EncodedScreenshot>>,
     ) -> Result<Self> {
-        if let (Some(started), Some(completed)) = (started_at, completed_at) {
-            if started > completed {
-                return Err(invalid("batch step times must be monotonically ordered"));
-            }
+        if let (Some(started), Some(completed)) = (started_at, completed_at)
+            && started > completed
+        {
+            return Err(invalid("batch step times must be monotonically ordered"));
         }
         if interaction
             .as_ref()

@@ -143,14 +143,13 @@ impl CdpFaultProxy {
     /// fallback for panic paths where async cleanup cannot be awaited.
     pub async fn shutdown(&mut self) {
         self.stop.take().map(|stop| stop.send(()));
-        if let Some(mut task) = self.task.take() {
-            if tokio::time::timeout(PROXY_SHUTDOWN_TIMEOUT, &mut task)
+        if let Some(mut task) = self.task.take()
+            && tokio::time::timeout(PROXY_SHUTDOWN_TIMEOUT, &mut task)
                 .await
                 .is_err()
-            {
-                task.abort();
-                let _ = task.await;
-            }
+        {
+            task.abort();
+            let _ = task.await;
         }
     }
 }

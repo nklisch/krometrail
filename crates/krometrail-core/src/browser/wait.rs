@@ -496,7 +496,7 @@ fn validate_millisecond_duration(value: Duration, label: &str) -> Result<()> {
     if value.is_zero() {
         return Err(invalid(format!("{label} must be non-zero")));
     }
-    if value.subsec_nanos() % 1_000_000 != 0 {
+    if !value.subsec_nanos().is_multiple_of(1_000_000) {
         return Err(invalid(format!("{label} must use whole milliseconds")));
     }
     duration_millis(value).map(|_| ())

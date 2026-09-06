@@ -131,30 +131,30 @@ pub(super) async fn perform_shutdown(
     // Capture closes acceptance and drains before transport resources are detached. The same
     // absolute deadline is passed to every phase; the source samples only expose the budget at
     // each boundary and never create a phase-local deadline.
-    if plan.flush_capture {
-        if let Some(capture) = plan.capture.as_ref() {
-            if !plan
-                .deadline
-                .remaining(ShutdownPhase::CaptureStopDrainFlush)
-                .is_zero()
-            {
-                let outcome = capture
-                    .coordinator
-                    .shutdown(capture.session_id, deadline)
-                    .await;
-                capture_failure = outcome.capture_failure;
-                if capture_failure.is_some() {
-                    failed = true;
-                    failed_phase.get_or_insert(ShutdownFailurePhase::CaptureStopDrainFlush);
-                }
-                failed |= !outcome.complete;
-                if !outcome.complete {
-                    failed_phase.get_or_insert(ShutdownFailurePhase::CaptureStopDrainFlush);
-                }
-            } else {
+    if plan.flush_capture
+        && let Some(capture) = plan.capture.as_ref()
+    {
+        if !plan
+            .deadline
+            .remaining(ShutdownPhase::CaptureStopDrainFlush)
+            .is_zero()
+        {
+            let outcome = capture
+                .coordinator
+                .shutdown(capture.session_id, deadline)
+                .await;
+            capture_failure = outcome.capture_failure;
+            if capture_failure.is_some() {
                 failed = true;
                 failed_phase.get_or_insert(ShutdownFailurePhase::CaptureStopDrainFlush);
             }
+            failed |= !outcome.complete;
+            if !outcome.complete {
+                failed_phase.get_or_insert(ShutdownFailurePhase::CaptureStopDrainFlush);
+            }
+        } else {
+            failed = true;
+            failed_phase.get_or_insert(ShutdownFailurePhase::CaptureStopDrainFlush);
         }
     }
 
@@ -263,10 +263,8 @@ pub(super) async fn perform_shutdown(
             }
         }
     }
-    if !process_remains {
-        if let Some(profile) = profile {
-            profile.lock().expect("profile lock").take();
-        }
+    if !process_remains && let Some(profile) = profile {
+        profile.lock().expect("profile lock").take();
     }
     *connection = None;
     let exhausted = plan.deadline.remaining(ShutdownPhase::Complete).is_zero();
@@ -365,15 +363,15 @@ pub(super) async fn finish_state_and_persist(
         if record.lifecycle() == SessionLifecycle::Ended {
             return;
         }
-        if record.lifecycle() != SessionLifecycle::Stopping {
-            if let Err(error) = record.transition(SessionLifecycle::Stopping, None) {
-                tracing::warn!(
-                    event = "recording.session.ended_transition_failed",
-                    error_code = error.code.as_str(),
-                    "could not transition recording session to stopping"
-                );
-                return;
-            }
+        if record.lifecycle() != SessionLifecycle::Stopping
+            && let Err(error) = record.transition(SessionLifecycle::Stopping, None)
+        {
+            tracing::warn!(
+                event = "recording.session.ended_transition_failed",
+                error_code = error.code.as_str(),
+                "could not transition recording session to stopping"
+            );
+            return;
         }
         let ended_at = assembly.wall_clock.now().max(record.started_at());
         if let Err(error) = record.transition(SessionLifecycle::Ended, Some(ended_at)) {

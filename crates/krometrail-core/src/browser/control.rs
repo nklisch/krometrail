@@ -419,12 +419,12 @@ impl PageOperationResult {
         outcome: PageOperationOutcome,
         observation: ObservationPart<LiveObservation>,
     ) -> Result<Self> {
-        if let PageOperationOutcome::Succeeded(change) = &outcome {
-            if change.mutated_target(interaction.target_id) != interaction.target_id {
-                return Err(invalid(
-                    "page change target does not match interaction target",
-                ));
-            }
+        if let PageOperationOutcome::Succeeded(change) = &outcome
+            && change.mutated_target(interaction.target_id) != interaction.target_id
+        {
+            return Err(invalid(
+                "page change target does not match interaction target",
+            ));
         }
         Ok(Self {
             interaction,

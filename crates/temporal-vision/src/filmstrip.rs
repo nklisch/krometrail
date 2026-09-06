@@ -1473,7 +1473,7 @@ fn scaled_tile_dimensions(source: PixelDimensions, scale: IntegerScale) -> Resul
                 .ok_or_else(invalid_scale_error)?,
         ),
         "down" => {
-            if source.width() % factor != 0 || source.height() % factor != 0 {
+            if !source.width().is_multiple_of(factor) || !source.height().is_multiple_of(factor) {
                 return Err(VisionError::new(
                     ErrorCode::InvalidScale,
                     "filmstrip downscale factor must exactly divide declared region dimensions",

@@ -492,22 +492,21 @@ impl PageSnapshot {
                     "actionable snapshot nodes must have exactly one reference",
                 ));
             }
-            if let Some(reference) = node.reference {
-                if reference.target_id != context.target_id
+            if let Some(reference) = node.reference
+                && (reference.target_id != context.target_id
                     || reference.generation != generation
-                    || reference.node_id != node.id
-                {
-                    return Err(invalid("snapshot reference scope does not match its node"));
-                }
+                    || reference.node_id != node.id)
+            {
+                return Err(invalid("snapshot reference scope does not match its node"));
             }
             for property in &node.properties {
                 if property.name.trim().is_empty() {
                     return Err(invalid("accessible property name must not be empty"));
                 }
-                if let AccessibleValue::Number(value) = property.value {
-                    if !value.is_finite() {
-                        return Err(invalid("accessible numeric properties must be finite"));
-                    }
+                if let AccessibleValue::Number(value) = property.value
+                    && !value.is_finite()
+                {
+                    return Err(invalid("accessible numeric properties must be finite"));
                 }
             }
         }

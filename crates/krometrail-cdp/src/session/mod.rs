@@ -954,14 +954,14 @@ impl Drop for ProductionSession {
             .command_tx
             .try_send(SupervisorCommand::Input(SupervisorInput::Cancelled))
             .is_ok();
-        if let Some(task) = self.task.lock().expect("session task lock").take() {
-            if !cancel_queued {
-                // A saturated/closed command channel cannot deliver cancellation. Abort only in
-                // that case so the task-owned process/profile guards perform last-resort cleanup.
-                task.abort();
-            }
-            // Otherwise detach and let the bounded async shutdown finish.
+        if let Some(task) = self.task.lock().expect("session task lock").take()
+            && !cancel_queued
+        {
+            // A saturated/closed command channel cannot deliver cancellation. Abort only in
+            // that case so the task-owned process/profile guards perform last-resort cleanup.
+            task.abort();
         }
+        // Otherwise detach and let the bounded async shutdown finish.
     }
 }
 

@@ -127,7 +127,7 @@ impl InteractionWindow {
                     "interaction window {side} duration exceeds 120 seconds"
                 )));
             }
-            if value.subsec_nanos() % 1_000_000 != 0 {
+            if !value.subsec_nanos().is_multiple_of(1_000_000) {
                 return Err(invalid(format!(
                     "interaction window {side} duration must use whole milliseconds"
                 )));
@@ -1308,17 +1308,17 @@ where
         session_id: SessionId,
         target_id: TargetId,
     ) -> Result<()> {
-        if let Some(session) = self.catalog.session(session_id).await? {
-            if session.id() != session_id {
-                return Err(invalid(
-                    "session catalog identity does not match its lookup",
-                ));
-            }
+        if let Some(session) = self.catalog.session(session_id).await?
+            && session.id() != session_id
+        {
+            return Err(invalid(
+                "session catalog identity does not match its lookup",
+            ));
         }
-        if let Some(target) = self.catalog.target(session_id, target_id).await? {
-            if target.id() != target_id {
-                return Err(invalid("target catalog identity does not match its lookup"));
-            }
+        if let Some(target) = self.catalog.target(session_id, target_id).await?
+            && target.id() != target_id
+        {
+            return Err(invalid("target catalog identity does not match its lookup"));
         }
         Ok(())
     }

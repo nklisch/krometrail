@@ -545,7 +545,7 @@ fn common_downscale_factors(width: u32, height: u32) -> Vec<u8> {
         right = remainder;
     }
     (2..=u8::MAX)
-        .filter(|factor| left % u32::from(*factor) == 0)
+        .filter(|factor| left.is_multiple_of(u32::from(*factor)))
         .collect()
 }
 

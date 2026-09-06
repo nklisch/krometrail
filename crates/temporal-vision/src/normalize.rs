@@ -342,7 +342,7 @@ fn scaled_dimensions(crop: PixelRect, scale: IntegerScale) -> Result<PixelDimens
             })?,
         ),
         ScaleDirection::Down => {
-            if crop.width() % factor != 0 || crop.height() % factor != 0 {
+            if !crop.width().is_multiple_of(factor) || !crop.height().is_multiple_of(factor) {
                 return Err(VisionError::new(
                     ErrorCode::InvalidScale,
                     "downscale factor must exactly divide both cropped dimensions",

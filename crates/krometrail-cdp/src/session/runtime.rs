@@ -1080,8 +1080,8 @@ async fn pump_events(
     loop {
         match events.next().await {
             Ok(Some(event)) => {
-                if let Some(input) = parse_event(kind, event) {
-                    if sender
+                if let Some(input) = parse_event(kind, event)
+                    && sender
                         .send(SupervisorCommand::Input(
                             SupervisorInput::ForConnectionGeneration {
                                 generation,
@@ -1090,9 +1090,8 @@ async fn pump_events(
                         ))
                         .await
                         .is_err()
-                    {
-                        return;
-                    }
+                {
+                    return;
                 }
             }
             Ok(None) | Err(_) => {

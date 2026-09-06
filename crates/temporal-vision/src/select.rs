@@ -338,15 +338,14 @@ impl<F: Eq> StoryboardSelection<F> {
             }
         }
         self.visual_summary.validate_local()?;
-        if let Some(moment) = self.visual_summary.peak_baseline_change() {
-            if moment.comparison().earlier_frame_index() != self.before_index
-                || moment.frame_index() != self.during_index
-            {
-                return Err(VisionError::new(
-                    ErrorCode::InvalidManifest,
-                    "storyboard peak baseline moment must agree with orientation roles",
-                ));
-            }
+        if let Some(moment) = self.visual_summary.peak_baseline_change()
+            && (moment.comparison().earlier_frame_index() != self.before_index
+                || moment.frame_index() != self.during_index)
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "storyboard peak baseline moment must agree with orientation roles",
+            ));
         }
         Ok(())
     }

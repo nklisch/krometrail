@@ -188,15 +188,14 @@ pub(crate) fn validate_stored_artifact(
     {
         return Err(corrupt_error());
     }
-    if let Some(expected) = expected_sources {
-        if expected.len() != sources.len()
+    if let Some(expected) = expected_sources
+        && (expected.len() != sources.len()
             || expected.iter().zip(sources).any(|(expected, stored)| {
                 expected.frame_id != stored.frame_id
                     || expected.encoded_sha256 != stored.encoded_hash
-            })
-        {
-            return Err(corrupt_error());
-        }
+            }))
+    {
+        return Err(corrupt_error());
     }
     match row.kind {
         RetainedArtifactKind::Image(kind) => {

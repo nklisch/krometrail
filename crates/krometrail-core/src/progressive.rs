@@ -970,12 +970,11 @@ impl ProgressiveRegion {
             reference,
             ..
         } = self
+            && (*session_id != range.session_id || reference.target_id != range.target_id)
         {
-            if *session_id != range.session_id || reference.target_id != range.target_id {
-                return Err(invalid(
-                    "current reference must match the resolved session and target",
-                ));
-            }
+            return Err(invalid(
+                "current reference must match the resolved session and target",
+            ));
         }
         Ok(())
     }

@@ -366,16 +366,14 @@ impl TemporalDebugBundleService {
         if let ResolvedAnchorReference::Interaction { interaction_id } =
             &range.resolved_anchor.reference
             && !interactions.contains_key(interaction_id)
-        {
-            if let Some(anchor) = controlled(
+            && let Some(anchor) = controlled(
                 self.timeline.interaction_anchor(*interaction_id),
                 deadline,
                 cancellation,
             )
             .await??
-            {
-                interactions.insert(*interaction_id, anchor);
-            }
+        {
+            interactions.insert(*interaction_id, anchor);
         }
         Ok(MarkerLoad {
             timeline,

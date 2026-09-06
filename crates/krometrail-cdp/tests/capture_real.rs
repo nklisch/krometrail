@@ -1168,25 +1168,26 @@ async fn wait_for_visibility_cycle(
         let mut hidden_gap_targets = HashSet::new();
         let mut visible_again = false;
         loop {
-            if let Some(target_id) = hidden_target {
-                if hidden_gap_targets.contains(&target_id) && visible_again {
-                    let visible_target_is_capturing = session
-                        .status()
-                        .await
-                        .expect("browser status")
-                        .capture
-                        .iter()
-                        .any(|status| {
-                            status.target_id() == target_id
-                                && status.state() == CaptureStreamState::Capturing
-                        });
-                    if visible_target_is_capturing {
-                        return VisibilityEvidence {
-                            hidden_event: true,
-                            hidden_gap: true,
-                            visible_again: true,
-                        };
-                    }
+            if let Some(target_id) = hidden_target
+                && hidden_gap_targets.contains(&target_id)
+                && visible_again
+            {
+                let visible_target_is_capturing = session
+                    .status()
+                    .await
+                    .expect("browser status")
+                    .capture
+                    .iter()
+                    .any(|status| {
+                        status.target_id() == target_id
+                            && status.state() == CaptureStreamState::Capturing
+                    });
+                if visible_target_is_capturing {
+                    return VisibilityEvidence {
+                        hidden_event: true,
+                        hidden_gap: true,
+                        visible_again: true,
+                    };
                 }
             }
             match events.next().await {
@@ -1267,13 +1268,13 @@ async fn wait_for_reconnect(
                         && status.attachment_generation() > old_generation
                         && status.state() == CaptureStreamState::Capturing
                 });
-            if let Some(status) = restored {
-                if browser_disconnected {
-                    return Some(ReconnectEvidence {
-                        generation: status.attachment_generation(),
-                        browser_disconnected,
-                    });
-                }
+            if let Some(status) = restored
+                && browser_disconnected
+            {
+                return Some(ReconnectEvidence {
+                    generation: status.attachment_generation(),
+                    browser_disconnected,
+                });
             }
             match events.next().await {
                 Ok(Some(BrowserSessionEvent::CaptureGapDeclared { gap }))
