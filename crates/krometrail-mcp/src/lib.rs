@@ -16,3 +16,5 @@ mod test_fixture;
 pub use config::{DiagnosticContext, McpConfig, McpDependencies};
 pub use server::{McpService, build_service};
 pub use session::BrowserSessionOwner;
+
+mod stdio;

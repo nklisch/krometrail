@@ -614,7 +614,9 @@ hosts that do not follow pagination; they retain aggregate schema overhead.
 `request_lifecycle.rs` owns admitted execution independently of SDK response waiters. Shutdown
 cancels and drains that work plus the closing browser owner against one application deadline;
 composition-root executor teardown is bounded separately so blocked stdio workers cannot hold
-process exit indefinitely.
+process exit indefinitely. `stdio.rs` forwards bytes unchanged while tracking read errors and unflushed
+output independently of SDK quit reasons. Its pending-write/flush deadline also covers opening
+responses, without limiting the time spent executing an action.
 
 Tool handlers:
 

@@ -83,7 +83,16 @@ fn modern_discovery_pages_cache_policy_and_bounded_errors() {
     p.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":metadata("2099-01-01")}}));
     assert_eq!(p.recv()["error"]["code"], -32022);
     assert!(!p.tools().is_empty());
+    let custom = p.request("unknown_secret-sentinel", json!({}));
+    let correlation = custom["error"]["data"]["diagnostics"]["correlation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     p.finish(true);
+    let log =
+        std::fs::read_to_string(p.root.path().join("data/diagnostics/krometrail.log")).unwrap();
+    assert!(log.contains(&correlation));
+    assert!(log.contains("unknown_method"));
     // Default diagnostics must not retain raw caller route strings.
     fn inspect(path: &std::path::Path) {
         for entry in std::fs::read_dir(path).unwrap() {
@@ -204,4 +213,64 @@ fn eof_alone_bounds_an_established_unread_response_pipe() {
     }
     let stderr = p.finish(false);
     assert!(stderr.contains("response transport did not finish shutdown"));
+}
+
+#[test]
+fn cold_opening_write_is_bounded_and_interrupted_delivery_is_not_safe_to_replay() {
+    for signal in [false, true] {
+        let mut p = McpProcess::start_with_cold_output_paused();
+        p.send(json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":metadata("2026-07-28")}}));
+        assert_eq!(p.recv()["output_started"], true);
+        if signal {
+            #[cfg(unix)]
+            assert_eq!(unsafe { libc::kill(p.pid() as i32, libc::SIGTERM) }, 0);
+        }
+        let stderr = p.finish(false);
+        assert!(
+            stderr.contains("unread responses were interrupted"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("retry=after_recovery"), "{stderr}");
+        assert!(stderr.contains("inspect"), "{stderr}");
+        assert!(!stderr.contains("retry=safe"));
+    }
+}
+
+#[test]
+fn response_write_failure_is_not_a_clean_eof() {
+    let mut p = McpProcess::start_with_closed_output();
+    p.request("server/discover", json!({}));
+    p.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_managed_profiles","arguments":{},"_meta":metadata("2026-07-28")}}));
+    // Establish that the application executed, independently of its failed response.
+    let log = p.root.path().join("data/diagnostics/krometrail.log");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains("list_managed_profiles")
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "application did not record execution"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let stderr = p.finish(false);
+    assert!(
+        stderr.contains("unread responses were interrupted"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("retry=safe"));
+}
+
+#[cfg(unix)]
+#[test]
+fn stdin_read_failure_is_distinct_from_eof() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut p = McpProcess::start_with_input(std::fs::File::open(directory.path()).unwrap());
+    let stderr = p.finish(false);
+    assert!(stderr.contains("stdin read failed"), "{stderr}");
+    assert!(!stderr.contains("retry=safe"));
 }

@@ -54,7 +54,11 @@ Cancellation is cooperative, not rollback or permission to replay an action. App
 remains owned even when its MCP response waiter is dropped. Shutdown stops admission and drains
 request/browser cleanup against one 30-second application deadline. Deadline exhaustion reports
 incomplete cleanup. A client that stops reading stdout cannot indefinitely prevent process exit;
-unread response bytes may be interrupted during shutdown. The SDK processes the first modern request
+unread response bytes may be interrupted during shutdown. A response write or flush with no observable
+I/O progress for three seconds fails the transport, including the first response before another stdin
+read. This deadline does not run while an action computes its response. Read failures and interrupted
+or unflushed output are not clean EOF. Delivery failures and incomplete cleanup require inspecting
+prior action outcomes before retrying; they do not certify replay safety. The SDK processes the first modern request
 before its concurrent receive loop, so cancellation sent behind a long first action can be delayed.
 
 ## Browser Lifecycle

@@ -19,14 +19,29 @@ pub struct McpProcess {
     next: u64,
     pub modern: bool,
 }
+enum OutputMode {
+    Read,
+    PauseAfterResponse,
+    PauseAfterByte,
+    CloseAfterResponse,
+}
 impl McpProcess {
     pub fn start() -> Self {
-        Self::start_mode(false)
+        Self::start_mode(OutputMode::Read, None)
     }
     pub fn start_with_output_paused() -> Self {
-        Self::start_mode(true)
+        Self::start_mode(OutputMode::PauseAfterResponse, None)
     }
-    fn start_mode(paused: bool) -> Self {
+    pub fn start_with_cold_output_paused() -> Self {
+        Self::start_mode(OutputMode::PauseAfterByte, None)
+    }
+    pub fn start_with_closed_output() -> Self {
+        Self::start_mode(OutputMode::CloseAfterResponse, None)
+    }
+    pub fn start_with_input(input: std::fs::File) -> Self {
+        Self::start_mode(OutputMode::Read, Some(input.into()))
+    }
+    fn start_mode(mode: OutputMode, input: Option<Stdio>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let command: Vec<String> = std::env::var("KROMETRAIL_TEST_MCP_COMMAND")
             .ok()
@@ -38,7 +53,7 @@ impl McpProcess {
             .env("KROMETRAIL_FFMPEG_PATH", root.path().join("missing-ffmpeg"))
             .env("HOME", root.path())
             .env("TMPDIR", root.path())
-            .stdin(Stdio::piped())
+            .stdin(input.unwrap_or_else(Stdio::piped))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -48,6 +63,10 @@ impl McpProcess {
         let stderr = child.stderr.take().unwrap();
         let (send, messages) = mpsc::channel();
         let (gate_send, gate_recv) = mpsc::channel();
+        let paused = matches!(
+            mode,
+            OutputMode::PauseAfterResponse | OutputMode::PauseAfterByte
+        );
         let output_gate = if paused {
             Some(gate_send)
         } else {
@@ -56,15 +75,27 @@ impl McpProcess {
         };
         let output = std::thread::spawn(move || {
             let mut stdout = BufReader::new(stdout);
+            match mode {
+                OutputMode::PauseAfterByte => {
+                    let mut first = [0];
+                    stdout.read_exact(&mut first).unwrap();
+                    send.send(json!({"output_started":true})).unwrap();
+                }
+                OutputMode::PauseAfterResponse | OutputMode::CloseAfterResponse => {
+                    let mut first = String::new();
+                    stdout.read_line(&mut first).unwrap();
+                    if matches!(mode, OutputMode::CloseAfterResponse) {
+                        drop(stdout);
+                        send.send(serde_json::from_str(&first).unwrap()).unwrap();
+                        return;
+                    }
+                    send.send(serde_json::from_str(&first).unwrap()).unwrap();
+                }
+                OutputMode::Read => {}
+            }
             if paused {
-                // Observe a small discovery response before pausing. This proves the
-                // signal handler is installed even on a heavily loaded test runner.
-                let mut first = String::new();
-                stdout.read_line(&mut first).unwrap();
-                send.send(serde_json::from_str(&first).unwrap()).unwrap();
                 let _ = gate_recv.recv();
-                // Forced shutdown of an unread pipe may interrupt a JSON line. This
-                // mode tests process lifetime, not delivery of an unread response.
+                // Interrupted output may contain a partial JSON line: drain raw bytes.
                 let _ = std::io::copy(&mut stdout, &mut std::io::sink());
                 return;
             }

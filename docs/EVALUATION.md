@@ -405,7 +405,10 @@ Every state-changing standalone action must return a valid live observation or a
 Default tests exercise the actual executable with modern discovery and both supported legacy
 initialization versions. Raw-wire assertions cover required result/cache fields, complete catalogue
 modern pagination and complete single-response legacy inventory, malformed metadata, unsupported versions, unknown methods, concurrent request IDs,
-EOF and output backpressure. Official-SDK clients separately qualify typed decoding and per-Peer
+EOF and output backpressure, including cold opening writes, failed stdout delivery and invalid stdin.
+Virtual-time tests exercise cleanup beyond the SDK drain and application-deadline exhaustion. An
+official-SDK resource test keeps caching enabled, reads successful evidence, evicts it from the
+backing port, and requires the next read to reach that port and fail rather than replay cached bytes. Official-SDK clients separately qualify typed decoding and per-Peer
 catalogue caching. Schema tests compile the public contracts with a JSON Schema validator.
 
 Opt-in Linux/macOS qualification uses real Chrome and a disposable local fixture to verify image

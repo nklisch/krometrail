@@ -158,7 +158,9 @@ impl ServerHandler for KrometrailMcpServer {
             "Unknown MCP method.",
             None,
         );
-        attach_error_diagnostics(&mut error, &Uuid::new_v4().to_string(), &self.diagnostics);
+        let correlation_id = Uuid::new_v4().to_string();
+        attach_error_diagnostics(&mut error, &correlation_id, &self.diagnostics);
+        tracing::info!(event = "mcp.request.completed", route = "unknown_method", correlation_id = %correlation_id, outcome = "failed", "mcp.request.completed");
         Err(error)
     }
 
@@ -383,20 +385,25 @@ impl McpService {
             wait_for_shutdown_signal().await;
             signal_stop.cancel();
         });
-        let reader = EofReader {
+        let io = crate::stdio::State::new(stop.clone());
+        let reader = crate::stdio::Reader {
             inner: tokio::io::stdin(),
-            stop: stop.clone(),
+            state: io.clone(),
         };
+        let writer = crate::stdio::Writer::new(tokio::io::stdout(), io.clone());
         let result = self
-            .serve_transport(
-                (reader, tokio::io::stdout()),
-                stop,
-                std::time::Duration::from_secs(30),
-            )
+            .serve_transport((reader, writer), stop, std::time::Duration::from_secs(30))
             .await;
         signal.abort();
         let _ = signal.await;
-        result
+        match (result, io.failure()) {
+            (Err(error), Some(message)) => {
+                Err(delivery_error(format!("{message}; {}", error.message)))
+            }
+            (Err(error), None) => Err(error),
+            (Ok(()), Some(message)) => Err(delivery_error(message)),
+            (Ok(()), None) => Ok(()),
+        }
     }
 
     async fn serve_transport<T, A>(
@@ -452,7 +459,7 @@ impl McpService {
             Ok(cleanup) => result.and(cleanup),
             Err(_) => {
                 requests.abort_remaining();
-                Err(service_error(
+                Err(delivery_error(
                     "MCP shutdown deadline exhausted; application cleanup is incomplete",
                 ))
             }
@@ -465,9 +472,8 @@ impl McpService {
     }
 }
 
-/// Forward bytes unchanged and report only actual EOF/read failure.
 fn interrupted_transport() -> KrometrailError {
-    service_error(
+    delivery_error(
         "MCP response transport did not finish shutdown; unread responses were interrupted",
     )
 }
@@ -491,30 +497,6 @@ async fn await_sdk_phase<T>(
     }
 }
 
-struct EofReader<R> {
-    inner: R,
-    stop: tokio_util::sync::CancellationToken,
-}
-impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for EofReader<R> {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let before = buf.filled().len();
-        let capacity = buf.remaining();
-        let result = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
-        match &result {
-            std::task::Poll::Ready(Err(_)) => self.stop.cancel(),
-            std::task::Poll::Ready(Ok(())) if capacity > 0 && buf.filled().len() == before => {
-                self.stop.cancel()
-            }
-            _ => {}
-        }
-        result
-    }
-}
-
 async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
@@ -533,15 +515,23 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
+fn delivery_error(message: impl Into<String>) -> KrometrailError {
+    KrometrailError::new(ErrorCode::Internal, NonEmptyText::new(message).unwrap())
+        .with_retry(RetryAdvice::AfterRecovery)
+        .with_recovery(NonEmptyText::new("inspect whether prior actions completed before repeating them; reconnect only after checking browser and cleanup state").unwrap())
+}
+
 fn service_error(message: &'static str) -> KrometrailError {
     KrometrailError::new(
         ErrorCode::Internal,
         NonEmptyText::new(message).expect("static service error is valid"),
     )
-    .with_retry(RetryAdvice::Safe)
+    .with_retry(RetryAdvice::AfterRecovery)
     .with_recovery(
-        NonEmptyText::new("restart the MCP client connection and try again")
-            .expect("static service recovery is valid"),
+        NonEmptyText::new(
+            "inspect prior action outcomes and cleanup state before reconnecting or retrying",
+        )
+        .expect("static service recovery is valid"),
     )
 }
 
@@ -958,6 +948,7 @@ mod tests {
     }
 
     struct CleanupVideo {
+        cleanup_delay: std::time::Duration,
         publication_started: Notify,
         publication_cleanup_complete: Notify,
         cleaned: AtomicBool,
@@ -975,7 +966,7 @@ mod tests {
                     .expect("MCP video request carries cancellation into publication");
                 self.publication_started.notify_one();
                 cancellation.cancelled().await;
-                tokio::task::yield_now().await;
+                tokio::time::sleep(self.cleanup_delay).await;
                 self.cleaned.store(true, Ordering::SeqCst);
                 self.publication_cleanup_complete.notify_one();
                 Err(KrometrailError::new(
@@ -1781,6 +1772,7 @@ mod tests {
     #[tokio::test]
     async fn mcp_cancellation_does_not_drop_video_publication_cleanup() {
         let video = Arc::new(CleanupVideo {
+            cleanup_delay: std::time::Duration::ZERO,
             publication_started: Notify::new(),
             publication_cleanup_complete: Notify::new(),
             cleaned: AtomicBool::new(false),
@@ -4239,49 +4231,62 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn service_shutdown_owns_cancelled_video_cleanup_beyond_response_waiter() {
-        let video = Arc::new(CleanupVideo {
-            publication_started: Notify::new(),
-            publication_cleanup_complete: Notify::new(),
-            cleaned: AtomicBool::new(false),
-        });
-        let mut deps = dependencies(Arc::new(UnusedConnector));
-        deps.temporal_video = Some(video.clone());
-        let service = build_service(deps, qualified_video_config()).unwrap();
-        let (client, server) = tokio::io::duplex(256 * 1024);
-        let stop = tokio_util::sync::CancellationToken::new();
-        let server_stop = stop.clone();
-        let task = tokio::spawn(async move {
-            service
-                .serve_transport(server, server_stop, std::time::Duration::from_secs(3))
-                .await
-        });
-        let (read, mut write) = tokio::io::split(client);
-        let mut read = BufReader::new(read);
-        let meta = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}});
-        send_json(
-            &mut write,
-            json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":meta}}),
-        )
-        .await;
-        let _ = read_json(&mut read).await;
-        send_json(&mut write,json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"_meta":meta,"name":"generate_temporal_video","arguments":serde_json::to_value(crate::test_fixture::video_fixture().request).unwrap()}})).await;
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            video.publication_started.notified(),
-        )
-        .await
-        .unwrap();
-        stop.cancel();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(5), task)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_ok()
-        );
-        assert!(video.cleaned.load(Ordering::SeqCst));
+        for (delay, budget, completes) in [(4, 8, true), (8, 4, false)] {
+            let video = Arc::new(CleanupVideo {
+                cleanup_delay: std::time::Duration::from_secs(delay),
+                publication_started: Notify::new(),
+                publication_cleanup_complete: Notify::new(),
+                cleaned: AtomicBool::new(false),
+            });
+            let mut deps = dependencies(Arc::new(UnusedConnector));
+            deps.temporal_video = Some(video.clone());
+            let service = build_service(deps, qualified_video_config()).unwrap();
+            let (client, server) = tokio::io::duplex(256 * 1024);
+            let stop = tokio_util::sync::CancellationToken::new();
+            let server_stop = stop.clone();
+            let task = tokio::spawn(async move {
+                service
+                    .serve_transport(server, server_stop, std::time::Duration::from_secs(budget))
+                    .await
+            });
+            let (read, mut write) = tokio::io::split(client);
+            let mut read = BufReader::new(read);
+            let meta = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}});
+            send_json(
+                &mut write,
+                json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":meta}}),
+            )
+            .await;
+            let _ = read_json(&mut read).await;
+            send_json(&mut write,json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"_meta":meta,"name":"generate_temporal_video","arguments":serde_json::to_value(crate::test_fixture::video_fixture().request).unwrap()}})).await;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                video.publication_started.notified(),
+            )
+            .await
+            .unwrap();
+            stop.cancel();
+            let began = tokio::time::Instant::now();
+            let result = task.await.unwrap();
+            if completes {
+                assert!(result.is_ok(), "{result:?}");
+                assert!(video.cleaned.load(Ordering::SeqCst));
+                assert!(began.elapsed() >= std::time::Duration::from_secs(delay));
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error
+                        .message
+                        .as_str()
+                        .contains("application cleanup is incomplete")
+                );
+                assert_eq!(error.retry, RetryAdvice::AfterRecovery);
+                assert!(!video.cleaned.load(Ordering::SeqCst));
+                assert!(began.elapsed() <= std::time::Duration::from_secs(budget));
+            }
+        }
     }
     #[tokio::test]
     async fn lifecycle_validation_precedes_dispatch_and_status_projection_is_shared() {
@@ -4334,5 +4339,94 @@ mod tests {
                 .get("compatibility")
                 .is_some()
         );
+    }
+    #[tokio::test]
+    async fn official_sdk_revalidates_successful_resource_after_backing_eviction() {
+        use base64::Engine as _;
+        use rmcp::{ClientLifecycleMode, ClientServiceExt as _};
+        struct BackingArtifact {
+            read: Mutex<Option<ArtifactRead>>,
+            calls: AtomicUsize,
+        }
+        impl ProgressiveEvidence for BackingArtifact {
+            fn execute(
+                &self,
+                request: ProgressiveEvidenceRequest,
+                _: ProgressiveEvidenceContext,
+            ) -> PortFuture<'_, Result<ProgressiveEvidenceResult>> {
+                assert!(matches!(
+                    request,
+                    ProgressiveEvidenceRequest::RetrieveArtifact(_)
+                ));
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let result = self
+                    .read
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .map(|read| ProgressiveEvidenceResult::RetrieveArtifact(Box::new(read)))
+                    .ok_or_else(|| {
+                        KrometrailError::new(
+                            ErrorCode::NotFound,
+                            NonEmptyText::new("backing evidence was evicted").unwrap(),
+                        )
+                    });
+                Box::pin(std::future::ready(result))
+            }
+        }
+        let (fixture, uri, bytes) = successful_bundle_fixture();
+        let backing = Arc::new(BackingArtifact {
+            read: Mutex::new(Some(fixture.artifact_read.clone())),
+            calls: AtomicUsize::new(0),
+        });
+        let mut deps = dependencies(Arc::new(UnusedConnector));
+        deps.progressive_evidence = backing.clone();
+        let service = build_service(deps, McpConfig::default()).unwrap();
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let task = tokio::spawn(async move {
+            service
+                .server
+                .serve(server_io)
+                .await
+                .unwrap()
+                .waiting()
+                .await
+                .unwrap()
+        });
+        let client = ()
+            .serve_with_lifecycle(
+                client_io,
+                ClientLifecycleMode::Discover {
+                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                },
+            )
+            .await
+            .unwrap();
+        // Default SDK response cache stays enabled throughout.
+        let first = client
+            .read_resource(ReadResourceRequestParams::new(uri.clone()))
+            .await
+            .unwrap();
+        assert_eq!(first.ttl_ms, Some(0));
+        assert_eq!(first.cache_scope, Some(rmcp::model::CacheScope::Private));
+        let serialized = serde_json::to_value(&first).unwrap();
+        assert_eq!(
+            serialized["contents"][0]["blob"],
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        );
+        *backing.read.lock().unwrap() = None;
+        assert!(
+            client
+                .read_resource(ReadResourceRequestParams::new(uri))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            backing.calls.load(Ordering::SeqCst),
+            2,
+            "second read must reach current backing authority, not cached content"
+        );
+        client.cancel().await.unwrap();
+        task.await.unwrap();
     }
 }

@@ -1,7 +1,7 @@
 ---
 id: mcp-discovery-probe-closes-legacy-stdio
 kind: feature
-stage: implementing
+stage: review
 parent: null
 depends_on: []
 release_binding: null
@@ -16,7 +16,7 @@ tags: [agent-ux, testing, infra]
 
 ## Ownership and readiness
 
-**Design complete; ready for parent implementation.** The user authorized end-to-end delivery and release, with this separate Astra xhigh design, parent-owned implementation, then **one comprehensive independent Astra review before release/publishing**. No extra designer/reviewer fanout is required. Stage remains `drafting` until implementation begins; no acceptance criterion below is claimed complete merely because its design is settled.
+**Implementation and comprehensive review complete; parent review fixes are locally verified, with exact-revision requalification pending before release.** The user authorized end-to-end delivery and release, with this separate Astra xhigh design, parent-owned implementation, then **one comprehensive independent Astra review before release/publishing**. No extra designer/reviewer fanout is required. Acceptance remains evidence-backed; the design alone is not qualification.
 
 This one feature owns the direct official-SDK upgrade, modern and legacy wire qualification, bounded catalogue delivery/cache policy, and the small additional MCP corrections enumerated below. Keep the original report as point-in-time evidence. Its original capture-only authorization statements do not override the user's subsequent implementation/release authorization. Do not migrate the existing workflow: `.work/CONVENTIONS.md` does not declare Workbench ownership.
 
@@ -331,3 +331,11 @@ Linter qualification correction: use exact Clippy 1.98.0 in CI, release helper a
 
 - Hosted candidate Rust quality and minimum-Rust jobs passed. Distribution job failed solely because its separate runner lacked the exact1.98.0 release-helper linter (the rust job's installation is not shared). Added explicit installation to that job and a contract assertion.
 - Real package-owned launcher qualified against staged local release binary1.7.0 with SHA256969277f638b7d8da1b29ce45133595377c13ba550b6d933ce2ec606a032e6c6b; no standalone installation changed. Modern catalogue:51tools,7pages,max168295bytes. Each legacy catalogue:51tools,1page,844710bytes. Actual browser evidence, cancellation and managed/attached ownership tests passed through the launcher. This tests a pre-staged candidate, not published-asset download or native plugin installation/reload.
+
+### Comprehensive independent review and remediation
+
+Astra xhigh reviewer b1c81211-ab91-422 independently reviewed all48changedfiles throughc6801e0f. Three blockers: opening tools/list with unreadstdout could missEOF and hang>35sec; SDKquit reasons could conceal actualstdin/stdoutfailures orpartialwrites; interrupted-delivery guidance wrongly claimed retry=safe. Nonblocking unknown-methodcorrelationIDs lackedlogevents. Evidence gaps: cleanup exceedingSDKdrain/appdeadline and successfulSDKread followedbybackingeviction. Noadditional catalogue/schema/annotation/releaseprojectionblockers found.
+
+Parent correction: byte-preserving stdio supervisor tracks readerrors and unflushed/failedwrites independently ofSDKcompletion; pendingoutput write/flush deadline3sec operates only duringIO, includingopeningresponse, neverwhilean action computes. IOerrors combinewithapplicationcleanupfailures, remainnonclean, and carryafter-recovery inspection-before-replayguidance. Unknownmethod logging usesstaticroute andreturnedcorrelationID. AddedcoldEOF/SIGTERM,closedstdout-after-action,EISDIR,correlationlog regressions; virtualtimecleanup4sec>SDKdrain succeedswithin8sec while8seccleanupfails4secappdeadline; defaultSDKcache successfulread/backingporteviction/readfailure countedtwice. This port-level cache test composeswithalreadyqualifiedrealstore/realimageevidence ratherthanclaimingarealstoreeviction insideSDKtest. NativeClaude remainsuser-waived.
+
+Review disposition: allthreeblocking reproductions now havepassing actual-process regressions; unknown-methodlogging and bothcoveragegaps addressed. Aggregatepost-fix Clippy andworkspace tests passed locally. The original reviewer was not resumable in this harness; nosecondcomprehensivereviewerwaslaunched. Parentverifiedthefixeswiththereviewer-providedreproductions andnewunit/integrationtests; donotdescribe thisasasecondreviewapproval. Finalexact-revisionLinux/macOS+CI requalification remainsrequired beforetag.
