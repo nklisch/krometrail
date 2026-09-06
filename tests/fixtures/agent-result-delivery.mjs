@@ -1,5 +1,5 @@
-// Diagnostic, not a passing delivery acceptance test: reproduces the installed
-// Pi adapter's loss of structured-only facts when MCP content is nonempty.
+// Installed adapter resolver regression: structured facts must survive alongside
+// native MCP content. This is not full host/server/browser qualification.
 // Usage: node agent-result-delivery.mjs /absolute/path/to/@nklisch/pi-mcp-adapter
 // No model, browser, network, user config, or persistent state is opened.
 // Samples are deliberately synthetic MCP envelopes, NOT captured Rust outputs.
@@ -46,9 +46,10 @@ for (const [tool, sentinel, isError = false, status = isError ? "failed" : "succ
   assert.deepEqual(decoded.structuredContent.result, sentinel);
   assert.deepEqual(guarded.mcpResult, decoded);
   assert.equal(guarded.outputGuard, undefined);
-  assert.deepEqual(guarded.content, [{ type: "text", text: `${isError ? "Error: " : ""}${tool} ${status}` }]);
+  const visibleText = guarded.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  assert(visibleText.includes(`${isError ? "Error: " : ""}${tool} ${status}`), "summary/error status must survive");
   for (const value of Object.values(sentinel)) {
-    assert(!JSON.stringify(guarded.content).includes(value), "diagnostic no longer reproduces; review adapter delivery");
+    assert(visibleText.includes(value), `${tool}: structured fact missing from model-facing content`);
   }
   console.log(JSON.stringify({ adapterVersion: version, syntheticWire: JSON.parse(wire), decoded, modelFacingContent: guarded.content }));
 }
@@ -62,8 +63,10 @@ const mixed = resolveMcpResultContent({
   ],
   structuredContent: structured,
 });
-assert.deepEqual(mixed, [
-  { type: "image", data: "AA==", mimeType: "image/png" },
-  { type: "text", text: "[Resource Link: fixture]\nURI: krometrail://fixture/artifact" },
-]);
-console.log("Confirmed diagnostic: 6 structured-fact losses; empty-content fallback and image/resource-link preservation checked. Not an acceptance pass.");
+// AA== is a byte-preservation sentinel, not a screenshot or image-decoding test.
+assert.deepEqual(mixed[0], { type: "image", data: "AA==", mimeType: "image/png" });
+assert(mixed.some((block) => block.type === "text" && block.text === "[Resource Link: fixture]\nURI: krometrail://fixture/artifact"));
+assert(mixed.some((block) => block.type === "text" && block.text.includes("fixture-essential-fact")));
+const serialized = JSON.stringify(structured);
+assert.deepEqual(resolveMcpResultContent({ content: [{ type: "text", text: serialized }], structuredContent: structured }), [{ type: "text", text: serialized }]);
+console.log("Installed resolver regression passed: 6 structured-fact cases, empty-content fallback, native image/resource-link preservation, and whole-JSON deduplication. Synthetic evidence only; not full host/browser qualification.");
