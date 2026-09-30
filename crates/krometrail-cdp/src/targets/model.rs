@@ -118,6 +118,8 @@ pub struct ViewportEffectContext {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CaptureBinding {
     Inactive,
+    /// Initialized control remains available; retry capture after an observed visibility.
+    Unavailable,
     Active(CaptureEffectContext),
     Suspended(CaptureEffectContext),
     Terminal,
@@ -324,6 +326,9 @@ pub enum SupervisorInput {
         target_key: String,
         visibility: TargetVisibility,
         observed_at: SessionTime,
+    },
+    DomainSetupFailed {
+        target_key: String,
     },
     InitialVisibilityProbeFailed {
         target_key: String,

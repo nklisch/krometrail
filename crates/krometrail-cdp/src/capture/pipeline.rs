@@ -71,7 +71,9 @@ impl OrdinalRegistry {
         };
         let mut states = self.states.lock().expect("ordinal registry lock poisoned");
         match states.get_mut(&key) {
-            Some(state) if target.attachment_generation <= state.attachment_generation => false,
+            // Admission has excluded a live stream or concurrent start for this generation.
+            // Retrying an unsuccessful start keeps both the attachment fence and ordinals.
+            Some(state) if target.attachment_generation < state.attachment_generation => false,
             Some(state) => {
                 state.attachment_generation = target.attachment_generation;
                 true

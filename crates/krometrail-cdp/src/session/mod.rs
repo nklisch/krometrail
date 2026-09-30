@@ -434,7 +434,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                 None,
             )
             .await?;
-            // Initial reconciliation is complete only after all attach effects and visibility probes.
+            // Initial reconciliation completes after domain setup and bounded visibility attempts.
             // Ready is reduced like every later lifecycle transition, so capture can only start from
             // the committed Ready state and the exact attached/visible target generation.
             let ready = reduce(state, SupervisorInput::InitialReconciliationCompleted)?;
@@ -1519,6 +1519,66 @@ mod tests {
                 "Runtime.evaluate",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn reconnect_visibility_failure_or_timeout_preserves_initialized_identity() {
+        for (transport, budget) in [
+            (
+                ControlledTransport::failed("Runtime.evaluate"),
+                Duration::from_secs(1),
+            ),
+            (
+                ControlledTransport::stalled("Runtime.evaluate"),
+                Duration::from_secs(1),
+            ),
+            (
+                ControlledTransport::stalled("Runtime.evaluate"),
+                Duration::from_millis(20),
+            ),
+        ] {
+            let transport = Arc::new(transport) as Arc<dyn CdpTransport>;
+            let authority = Arc::new(
+                SessionDomainAuthority::new(
+                    SessionId::from_uuid(Uuid::from_u128(42)),
+                    SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+                    Arc::new(AdapterMonotonicClock {
+                        origin: Instant::now(),
+                    }),
+                    Arc::new(AdapterIdSource),
+                    None,
+                    BrowserEventConfig::disabled(),
+                )
+                .unwrap(),
+            );
+            let (mut state, mut effects) = reconnect_reduction_fixture();
+            let id = state.targets_by_key["restored"].target.target.id();
+            let attempt = AttemptControl {
+                cancellation: AttemptCancellation::new(),
+                deadline: tokio::time::Instant::now() + budget,
+            };
+            restore_event_domains_and_visibility(
+                &attempt,
+                &authority,
+                &transport,
+                crate::BrowserEventSupport::default(),
+                &mut state,
+                &mut effects,
+            )
+            .await
+            .unwrap();
+            let target = state.resolve_selection(PageSelection::Target(id)).unwrap();
+            assert_eq!(target.target.visibility, TargetVisibility::Unknown);
+            assert!(target.transport_session.is_some());
+            assert_eq!(
+                target.capture_binding,
+                crate::targets::CaptureBinding::Unavailable
+            );
+            assert!(effects.iter().all(|effect| !matches!(
+                effect,
+                SupervisorEffect::StartCapture { .. } | SupervisorEffect::ResumeCapture { .. }
+            )));
+        }
     }
 
     #[tokio::test]

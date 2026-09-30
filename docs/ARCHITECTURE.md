@@ -241,6 +241,15 @@ For each target it owns:
 
 Target creation and closure do not affect unrelated target streams. A target-level failure is reported without terminating the browser session unless the browser connection itself is lost. Target state is reduced by one serialized state machine; asynchronous transport and process tasks only submit inputs or execute emitted effects. Outbound session events use bounded subscriber channels with revision-gap recovery through `targets()`; cdpkit's private upstream queue is not represented as a measurable product metric.
 
+An attached target that completed mandatory domain setup stays listed, selectable, and
+controllable when visibility cannot be observed or capture cannot start. Unobserved
+visibility remains `unknown`; only observed visible targets start capture. Initial and
+reconnect visibility probes are bounded. Listing pages, selecting a page, or using an
+unknown-visibility page makes one bounded re-probe; explicit activation also commits
+observed visibility. A later visible observation retries unavailable capture without
+changing target identity or attachment generation. Real attachment and mandatory
+domain-setup failures still fail the target.
+
 Each target may retain one acknowledged viewport override. Applying or clearing it is transactional:
 the adapter changes device metrics, touch emulation, and mobile page scale, then observes one bounded runtime
 projection plus CDP visual metrics. Desktop acknowledgement and capture use `window.innerWidth`/`innerHeight` as

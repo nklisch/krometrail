@@ -1648,3 +1648,191 @@ fn lifecycle_fixture_is_standalone_and_has_stable_markers() {
         1,
     )));
 }
+
+#[tokio::test]
+async fn failing_visibility_preserves_created_page_and_select_reprobes_without_changing_identity() {
+    let transport = ScriptedCdp::chrome();
+    transport.hold_events_open();
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":2}}));
+    transport.push_failure("Runtime.evaluate", TransportError::CommandFailed);
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        Arc::new(ScriptedFactory(transport.clone())),
+    )
+    .with_interaction_evidence(support::evidence_sink());
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/unknown").unwrap(),
+        ))
+        .await
+        .unwrap();
+    let original = session.status().await.unwrap().selected_target_id.unwrap();
+    assert_eq!(
+        session.status().await.unwrap().pages[0].target.visibility,
+        krometrail_core::TargetVisibility::Unknown
+    );
+    transport.push_response("Target.createTarget", json!({"targetId":"target-b"}));
+    transport.push_response(
+        "Target.getTargetInfo",
+        json!({"targetInfo":{
+            "targetId":"target-b","type":"page","url":"http://fixture/created","title":"created"
+        }}),
+    );
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+    transport.push_failure("Runtime.evaluate", TransportError::CommandFailed);
+    let result = session
+        .execute(
+            BrowserOperationRequest::CreatePage(
+                CreatePageRequest::new(Some("http://fixture/created")).unwrap(),
+            ),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::CreatePage(created) = result else {
+        panic!("create")
+    };
+    let PageOperationOutcome::Succeeded(krometrail_core::PageChange::Created { target_id }) =
+        created.outcome
+    else {
+        panic!("initialized page must be returned")
+    };
+    assert_eq!(session.status().await.unwrap().pages.len(), 2);
+    assert_eq!(
+        session.status().await.unwrap().selected_target_id,
+        Some(target_id)
+    );
+    // Selecting the original unknown target uses exactly one visibility re-probe.
+    let before = transport
+        .commands()
+        .iter()
+        .filter(|(method, _)| method == "Runtime.evaluate")
+        .count();
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":"visible"}}));
+    script_live(
+        &transport,
+        "http://fixture/",
+        "fixture",
+        "loader-a",
+        0,
+        &["http://fixture/"],
+    );
+    let selected = session
+        .execute(
+            BrowserOperationRequest::SelectPage(SelectPageRequest {
+                target_id: original,
+            }),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    let BrowserOperationResult::SelectPage(selected) = selected else {
+        panic!("select")
+    };
+    assert!(matches!(
+        selected.outcome,
+        PageOperationOutcome::Succeeded(_)
+    ));
+    assert_eq!(
+        session.status().await.unwrap().selected_target_id,
+        Some(original)
+    );
+    let probes = transport
+        .command_calls()
+        .iter()
+        .filter(|call| {
+            call.method == "Runtime.evaluate"
+                && call.params["expression"] == "document.visibilityState"
+        })
+        .count();
+    assert_eq!(probes, 3);
+    assert!(
+        transport
+            .commands()
+            .iter()
+            .filter(|(method, _)| method == "Runtime.evaluate")
+            .count()
+            > before
+    );
+    assert_eq!(
+        session
+            .status()
+            .await
+            .unwrap()
+            .pages
+            .iter()
+            .find(|page| page.target.target.id() == original)
+            .unwrap()
+            .target
+            .visibility,
+        krometrail_core::TargetVisibility::Visible
+    );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn create_page_initializes_and_selects_while_its_visibility_probe_is_held() {
+    let transport = ScriptedCdp::chrome();
+    let session = scripted_session(&transport).await;
+    transport.push_response("Target.createTarget", json!({"targetId":"target-b"}));
+    transport.push_response(
+        "Target.getTargetInfo",
+        json!({"targetInfo":{
+            "targetId":"target-b","type":"page","url":"http://fixture/created","title":"created"
+        }}),
+    );
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+    let evaluations = transport
+        .commands()
+        .iter()
+        .filter(|(method, _)| method == "Runtime.evaluate")
+        .count();
+    transport.hold_method_after("Runtime.evaluate", evaluations);
+    let operation_session = session.clone();
+    let operation = tokio::spawn(async move {
+        operation_session
+            .execute(
+                BrowserOperationRequest::CreatePage(
+                    CreatePageRequest::new(Some("http://fixture/created")).unwrap(),
+                ),
+                BrowserOperationContext::default(),
+            )
+            .await
+    });
+    // The held optional visibility query expires; post-action observation begins on the
+    // initialized selected page without waiting for that query to answer.
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        transport.wait_for_command_count("Runtime.evaluate", evaluations + 2),
+    )
+    .await
+    .unwrap();
+    let status = session.status().await.unwrap();
+    assert_eq!(status.pages.len(), 2);
+    let created = status
+        .pages
+        .iter()
+        .find(|page| page.target.target.browser_target_key() == "target-b")
+        .unwrap();
+    let id = created.target.target.id();
+    assert_eq!(
+        created.target.visibility,
+        krometrail_core::TargetVisibility::Unknown
+    );
+    assert_eq!(status.selected_target_id, Some(id));
+    transport.release_method("Runtime.evaluate");
+    let result = tokio::time::timeout(Duration::from_secs(1), operation)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let BrowserOperationResult::CreatePage(created) = result else {
+        panic!("create")
+    };
+    assert!(
+        matches!(created.outcome, PageOperationOutcome::Succeeded(krometrail_core::PageChange::Created { target_id }) if target_id == id)
+    );
+    session.stop().await.unwrap();
+}

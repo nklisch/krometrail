@@ -1322,3 +1322,231 @@ impl TransportEvents for ScriptedReconnectEvents {
         })
     }
 }
+
+async fn attachment_session(
+    transport: Arc<support::scripted_cdp::ScriptedCdp>,
+) -> Arc<dyn krometrail_core::BrowserSessionPort> {
+    ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        Arc::new(support::scripted_cdp::ScriptedCdpFactory::new([transport])),
+    )
+    .with_capture(
+        Arc::new(CaptureTestClock),
+        Arc::new(CaptureTestIds::default()),
+        Arc::new(CaptureTestSink),
+        Arc::new(support::retention::AlwaysAvailableRetention),
+        CaptureConfig::default(),
+    )
+    .with_interaction_evidence(support::evidence_sink())
+    .connect(BrowserConnectRequest::Attach(
+        AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake").unwrap(),
+    ))
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn slow_visibility_does_not_hide_initialized_pages_and_listing_recovers_capture() {
+    use krometrail_core::{
+        BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult, ListPagesRequest,
+        TargetVisibility,
+    };
+    let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    transport.hold_events_open();
+    // The first evaluate belongs to compatibility. Hold only the actual visibility probe.
+    transport.hold_method_after("Runtime.evaluate", 1);
+    let session = tokio::time::timeout(
+        Duration::from_secs(1),
+        attachment_session(transport.clone()),
+    )
+    .await
+    .unwrap();
+    let status = session.status().await.unwrap();
+    assert_eq!(status.pages.len(), 1);
+    assert_eq!(status.pages[0].target.visibility, TargetVisibility::Unknown);
+    let id = status.selected_target_id.unwrap();
+    assert!(start_params(&transport).is_empty());
+    let listed = tokio::time::timeout(
+        Duration::from_secs(1),
+        session.execute(
+            BrowserOperationRequest::ListPages(ListPagesRequest {}),
+            BrowserOperationContext::default(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let BrowserOperationResult::ListPages(pages) = listed else {
+        panic!("list")
+    };
+    assert_eq!(pages[0].target.target.id(), id);
+    assert_eq!(pages[0].target.visibility, TargetVisibility::Unknown);
+    assert!(start_params(&transport).is_empty());
+    transport.release_method("Runtime.evaluate");
+    session
+        .execute(
+            BrowserOperationRequest::ListPages(ListPagesRequest {}),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(session.status().await.unwrap().selected_target_id, Some(id));
+    assert_eq!(start_params(&transport).len(), 1);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn capture_start_failure_preserves_control_and_activation_retries_it() {
+    use krometrail_core::{ActivatePageRequest, BrowserOperationContext, BrowserOperationRequest};
+    for method in ["Page.getLayoutMetrics", "Page.startScreencast"] {
+        let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+        transport.hold_events_open();
+        transport.push_response(
+            "Target.attachToTarget",
+            json!({"sessionId":"probe-session"}),
+        );
+        transport.push_failure(method, TransportError::CommandFailed);
+        let session = attachment_session(transport.clone()).await;
+        let status = session.status().await.unwrap();
+        assert_eq!(status.pages.len(), 1, "{method}");
+        let id = status.selected_target_id.unwrap();
+        assert!(
+            transport
+                .command_calls()
+                .iter()
+                .all(|call| call.method != "Target.detachFromTarget"
+                    || call.params["sessionId"] == "probe-session")
+        );
+        // Activation commits a new visibility observation even when post-action evidence is unavailable.
+        session
+            .execute(
+                BrowserOperationRequest::ActivatePage(ActivatePageRequest::default()),
+                BrowserOperationContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(session.status().await.unwrap().selected_target_id, Some(id));
+        assert_eq!(
+            start_params(&transport).len(),
+            if method == "Page.startScreencast" {
+                2
+            } else {
+                1
+            }
+        );
+        session.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn real_attach_and_mandatory_domain_failures_still_remove_pages() {
+    for method in [
+        "Target.attachToTarget",
+        "Page.enable",
+        "Runtime.enable",
+        "Accessibility.enable",
+    ] {
+        let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+        transport.hold_events_open();
+        // Compatibility uses the same command before target initialization.
+        if method != "Runtime.enable" {
+            transport.push_response(
+                method,
+                if method == "Target.attachToTarget" {
+                    json!({"sessionId":"probe-session"})
+                } else {
+                    json!({})
+                },
+            );
+        }
+        transport.push_failure(method, TransportError::CommandFailed);
+        let session = attachment_session(transport.clone()).await;
+        assert!(session.status().await.unwrap().pages.is_empty(), "{method}");
+        assert!(start_params(&transport).is_empty());
+        session.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn reconnect_keeps_identity_when_visibility_fails_and_page_use_recovers() {
+    use krometrail_core::{
+        BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
+        ReadOnlyEvaluationRequest, TargetVisibility,
+    };
+    let initial = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    initial.hold_events_open();
+    let replacement = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    replacement.hold_events_open();
+    replacement.push_response("Runtime.evaluate", json!({"result":{"value":2}}));
+    replacement.push_failure("Runtime.evaluate", TransportError::CommandFailed);
+    let connector = ProductionBrowserConnector::new(
+        Arc::new(krometrail_cdp::SystemChromeLauncher::new(
+            krometrail_cdp::LauncherConfig::default(),
+        )),
+        Arc::new(support::scripted_cdp::ScriptedCdpFactory::new([
+            initial.clone(),
+            replacement.clone(),
+        ])),
+    )
+    .with_config(SupervisorConfig {
+        reconnect: ReconnectPolicy {
+            delays: vec![Duration::ZERO].into_boxed_slice(),
+            attempt_timeout: Duration::from_secs(1),
+        },
+        ..SupervisorConfig::default()
+    });
+    let session = connector
+        .connect(BrowserConnectRequest::Attach(
+            AttachBrowser::new("ws://127.0.0.1:9222/devtools/browser/fake").unwrap(),
+        ))
+        .await
+        .unwrap();
+    let original = session.status().await.unwrap();
+    let id = original.selected_target_id.unwrap();
+    let mut events = session.subscribe().await.unwrap();
+    initial.disconnect();
+    initial.close_event_stream("Target.targetCreated", None);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if matches!(
+                events.next().await.unwrap(),
+                Some(BrowserSessionEvent::SessionStateChanged {
+                    state: BrowserSessionState::Ready
+                })
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    let restored = session.status().await.unwrap();
+    assert_eq!(restored.selected_target_id, Some(id));
+    assert_eq!(
+        restored.pages[0].target.visibility,
+        TargetVisibility::Unknown
+    );
+    assert_eq!(
+        restored.pages[0].target.attachment_generation,
+        original.pages[0].target.attachment_generation + 1
+    );
+    replacement.push_response("Runtime.evaluate", json!({"result":{"value":"visible"}}));
+    replacement.push_response("Runtime.evaluate", json!({"result":{"value":42}}));
+    let result = session
+        .execute(
+            BrowserOperationRequest::EvaluatePage(
+                ReadOnlyEvaluationRequest::new(id, "6 * 7", false).unwrap(),
+            ),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, BrowserOperationResult::EvaluatePage(_)));
+    assert_eq!(
+        session.status().await.unwrap().pages[0].target.visibility,
+        TargetVisibility::Visible
+    );
+    session.stop().await.unwrap();
+}

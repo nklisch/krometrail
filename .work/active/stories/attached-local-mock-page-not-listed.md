@@ -9,7 +9,7 @@ release_binding: null
 research_refs: []
 research_origin: null
 created: 2026-09-09
-updated: 2026-09-29
+updated: 2026-09-30
 ---
 
 # Attached browser reports no pages despite a visible local mock
@@ -228,3 +228,83 @@ Evidence is local at `~/.cache/dng-workstations/attached-page-evidence/`:
 Attach correlation ac21fda6-1c77-4d8c-8593-c4944331041a; create correlation
 149d4465-015d-4ca3-9846-ebb2a5bed6fd. Candidate MCP was 1.7.0. Exact desktop
 destruction succeeded; no external browser or installed binary was used.
+
+### Implemented behavior
+
+- Split mandatory `DomainSetupFailed` from optional visibility-probe failure.
+  Attach/setup failures remain terminal and release their exact flat sessions.
+- Initialized targets with unknown visibility are ready, listed, selectable,
+  and addressable. Unknown is never synthesized as hidden or visible. Capture
+  failures retain the attachment and selection with `CaptureBinding::Unavailable`.
+- Visibility probes have a 250 ms ceiling. List/select/page use re-probes unknown
+  targets once; a listing shares one ceiling across its unknown targets.
+  Reconnect applies the same policy, including a visibility timeout at the
+  attempt deadline after mandatory setup completed. Cancellation still aborts.
+- A later visibility observation (including unchanged visible state committed
+  by activation) retries unavailable capture. Retry admits the same attachment
+  generation only after stream admission excludes an active/concurrent start;
+  older generations remain fenced and capture ordinals are preserved.
+- `create_page` returns its initialized page despite unavailable visibility or
+  capture. Stage-only initialization diagnostics contain no page content.
+  Architecture documentation now states this supported contract.
+
+### Verification results
+
+All builds used `~/.cache/dng-workstations/krometrail-target`; installed binaries,
+other browser sessions, and user configuration were untouched.
+
+- Reducer and scripted-CDP tests: PASS. Covers unknown readiness/selection,
+  no premature capture, held visibility during attach/list/create, failing
+  visibility during creation, list/select/page-use recovery, geometry and
+  screencast start failure, activation retry, mandatory-domain/real attach
+  failure, and reconnect identity/generation with failed or timed-out visibility.
+- `cargo fmt --all -- --check`: PASS.
+- `bash scripts/check-wire-enum-schemas.sh`: PASS.
+- `cargo check --workspace --all-targets --locked`: PASS.
+- `cargo test --workspace --all-targets --locked`: PASS; repository opt-in real
+  browser/manual benchmark tests retain their existing opt-in/ignored status.
+- `rustup run 1.98.0 cargo-clippy clippy --workspace --all-targets --locked --
+  -D warnings -A clippy::chunks_exact_to_as_chunks`: PASS.
+- `cargo run -- --version`, `--help`, and `doctor`: PASS (1.7.0;
+  discovery-only doctor found one installation).
+- `bun install --frozen-lockfile` and `bun run docs:build`: PASS.
+- Owned NCU desktop qualification: PASS on three fresh Chrome
+  151.0.7922.137 desktops, first attach page_count 1, first list one page,
+  fill succeeded and HTTP fixture independently confirmed the exact text,
+  create with the fixture initial URL succeeded, subsequent list two pages.
+  All three exact desktops were destroyed. `final-host.log` is the receipt.
+  Three earlier candidate runs also passed (creation used default about:blank).
+- Fresh Nobara VM: PASS through the read-only workstation harness at
+  `dfeb1898e749a1f1cab64ab6d6999a2387dbea0d`, candidate copied to
+  `/home/tester/journey/krometrail-candidate` via its existing `Guest.copy` seam.
+  Original journey found one page on first attach and independently confirmed
+  fill; extended guest-only fixture added create_page/about:blank and a two-page
+  listing assertion. Both journeys passed cold boot/no graphical login, advancing
+  NCU capture, input, SSH frontend reconnect, exact desktop destruction, and
+  exact VM/volume cleanup. Original VM `dng-ncu-a2d9c377ed`; extended VM
+  `dng-ncu-821e743b31`. No workstation repository files were edited.
+  Evidence: `vm.log`, `vm-extended.log`, and harness directories
+  `~/.cache/dng-workstations/ncu-desktops/journey-658a00907e/` and
+  `journey-0c28d92374/` (including reports and synthetic frames).
+
+### Remaining evidence and scope
+
+Direct CDP in another exact owned desktop established Chrome's default
+`navigator.maxTouchPoints = 10` alongside valid dimensions and scale, with and
+without `throwOnSideEffect` (`geometry.log`). The existing no-override decoder
+rejects this default capability as “browser did not clear touch emulation”.
+This explains the geometry failure; capture/control isolation is fixed here,
+while viewport/default-touch semantics are recorded separately in
+`.work/backlog/default-touch-capture-geometry.md`. Continuous Krometrail recording
+on this default-touch host is therefore not qualified by the control journey.
+
+The related page-selection-recovery epic overlaps diagnostics and selection
+recovery but remains outside this story. No release/version change, issue closure,
+push, or tag was performed. Story remains implementing for the owner's Opus +
+GPT-6 Astra checkpoint. Physical GPU monitorless behavior, macOS, Windows, and
+release-time qualification remain unverified by this lane.
+
+Final binary recheck after diagnostic cleanup: PASS on another fresh owned desktop
+(`final-recheck.log`), first attach/list/fill/fixture-URL create/list/detach, with
+independent fixture text confirmation and exact desktop destruction. Candidate
+SHA-256: `6a0b8d1d4517252f527035692229becca3396cc3bf9331ecc7a5776316c53db2`.

@@ -70,10 +70,10 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 !matches!(
                     target.target.lifecycle,
                     TargetLifecycle::Closed | TargetLifecycle::Failed
-                ) && target.target.visibility == TargetVisibility::Unknown
+                ) && target.transport_session.is_none()
             }) {
                 return Err(invalid_state(
-                    "initial reconciliation cannot become ready with unresolved target visibility",
+                    "initial reconciliation requires attached targets",
                 ));
             }
             reconcile_selection(&mut state, &mut effects);
@@ -146,8 +146,16 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             observed_at,
             &mut effects,
         )?,
+        SupervisorInput::DomainSetupFailed { target_key } => {
+            domain_setup_failed(&mut state, &target_key, &mut effects)?;
+        }
         SupervisorInput::InitialVisibilityProbeFailed { target_key } => {
-            initial_visibility_probe_failed(&mut state, &target_key, &mut effects)?;
+            if let Some(target) = state.targets_by_key.get_mut(&target_key)
+                && target.transport_session.is_some()
+                && target.target.visibility == TargetVisibility::Unknown
+            {
+                target.capture_binding = CaptureBinding::Unavailable;
+            }
         }
         SupervisorInput::CaptureVisibilityChanged {
             target_id,
@@ -555,7 +563,7 @@ fn detach_failed(
     Ok(())
 }
 
-fn initial_visibility_probe_failed(
+fn domain_setup_failed(
     state: &mut SupervisorState,
     key: &str,
     effects: &mut Vec<SupervisorEffect>,
@@ -712,6 +720,10 @@ fn visibility_changed(
         return Ok(());
     }
     target.last_visibility_observed_at = Some(observed_at);
+    // A later observation is the retry boundary, even when visibility is unchanged.
+    if target.capture_binding == CaptureBinding::Unavailable {
+        target.capture_binding = CaptureBinding::Inactive;
+    }
     if target.target.visibility == visibility {
         return Ok(());
     }
@@ -973,6 +985,13 @@ fn reconcile_capture_bindings(
                     CaptureBinding::Suspended(previous)
                 }
             }
+            CaptureBinding::Unavailable => {
+                if terminal || state.session_state == BrowserSessionState::Stopping {
+                    CaptureBinding::Terminal
+                } else {
+                    CaptureBinding::Unavailable
+                }
+            }
             CaptureBinding::Terminal => CaptureBinding::Terminal,
         };
         if let Some(target) = state.targets_by_key.get_mut(&key) {
@@ -1016,28 +1035,8 @@ fn capture_start_failed(
     ) {
         return Ok(());
     }
-    if let Some(session) = target.transport_session.take() {
-        state.target_key_by_session.remove(&session);
-        // A failed start can happen after flat-session attachment (for example when the
-        // coordinator's active-stream cap rejects this target). The reducer owns the mapping,
-        // but the adapter still has to release the exact session before it is forgotten.
-        effects.push(SupervisorEffect::Detach { session });
-    }
-    target.target.lifecycle = target
-        .target
-        .lifecycle
-        .transition(TargetLifecycle::Failed)?;
-    target.capture_binding = CaptureBinding::Terminal;
-    let target_id = target.target.target.id();
-    publish(
-        state,
-        BrowserSessionEvent::TargetFailed {
-            target_id,
-            error: target_error(),
-        },
-        effects,
-    );
-    reconcile_selection(state, effects);
+    target.capture_binding = CaptureBinding::Unavailable;
+    effects.push(target_changed_event(target));
     Ok(())
 }
 
@@ -1694,7 +1693,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_ready_rejects_unresolved_visibility() {
+    fn initial_ready_rejects_unattached_targets() {
         let state = reduce(
             SupervisorState::new(compatibility()),
             SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
@@ -1706,7 +1705,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_initial_visibility_probe_detaches_and_fails_only_that_target() {
+    fn unknown_visibility_is_ready_selectable_and_never_starts_capture() {
         let state = reduce(
             SupervisorState::new(compatibility()),
             SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
@@ -1725,6 +1724,66 @@ mod tests {
         let failed = reduce(
             state,
             SupervisorInput::InitialVisibilityProbeFailed {
+                target_key: "a".into(),
+            },
+        )
+        .unwrap();
+        assert!(failed.effects.is_empty());
+        assert_eq!(
+            failed.state.targets_by_key["a"].target.visibility,
+            TargetVisibility::Unknown
+        );
+        let ready = reduce(
+            failed.state,
+            SupervisorInput::InitialReconciliationCompleted,
+        )
+        .unwrap();
+        assert_eq!(ready.state.session_state, BrowserSessionState::Ready);
+        assert_eq!(ready.state.selected_target_key.as_deref(), Some("a"));
+        assert_eq!(ready.state.targets().len(), 1);
+        assert!(
+            ready
+                .effects
+                .iter()
+                .all(|effect| !matches!(effect, SupervisorEffect::StartCapture { .. }))
+        );
+        let visible = reduce(
+            ready.state,
+            SupervisorInput::VisibilityChanged {
+                target_key: "a".into(),
+                visibility: TargetVisibility::Visible,
+                observed_at: SessionTime::from_nanos(1),
+            },
+        )
+        .unwrap();
+        assert!(
+            visible
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, SupervisorEffect::StartCapture { .. }))
+        );
+    }
+
+    #[test]
+    fn failed_domain_setup_detaches_and_fails_only_that_target() {
+        let state = reduce(
+            SupervisorState::new(compatibility()),
+            SupervisorInput::InitialTargets(vec![info("a", "https://a")]),
+        )
+        .unwrap()
+        .state;
+        let state = reduce(
+            state,
+            SupervisorInput::Attached {
+                target_key: "a".into(),
+                session: crate::transport::TransportSessionId::new("session-a").unwrap(),
+            },
+        )
+        .unwrap()
+        .state;
+        let failed = reduce(
+            state,
+            SupervisorInput::DomainSetupFailed {
                 target_key: "a".into(),
             },
         )

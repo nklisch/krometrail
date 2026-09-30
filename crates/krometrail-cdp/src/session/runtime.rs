@@ -45,7 +45,7 @@ pub(crate) enum VisibilityProbeError {
 }
 
 /// Decode only the two result envelopes emitted by the supported cdpkit paths. Do not default
-/// unknown values to visible: an unresolved initial probe must not allow a target into Ready.
+/// unknown values to visible: unresolved visibility must not permit capture.
 pub(crate) fn parse_visibility_result(
     value: &Value,
 ) -> std::result::Result<TargetVisibility, VisibilityProbeError> {
@@ -285,6 +285,11 @@ async fn apply_effects_with_deadline(
                         session,
                     })
                     .unwrap_or(SupervisorInput::TargetAttachFailed { target_key });
+                tracing::info!(
+                    stage = "attach",
+                    succeeded = matches!(input, SupervisorInput::Attached { .. }),
+                    "browser.target.initialization_stage"
+                );
                 let compatibility = state.compatibility.clone();
                 let previous = std::mem::replace(state, SupervisorState::new(compatibility));
                 let reduction = reduce(previous, input)?;
@@ -402,10 +407,8 @@ async fn apply_effects_with_deadline(
                 let Some(binding) = binding else {
                     let compatibility = state.compatibility.clone();
                     let previous = std::mem::replace(state, SupervisorState::new(compatibility));
-                    let reduction = reduce(
-                        previous,
-                        SupervisorInput::InitialVisibilityProbeFailed { target_key },
-                    )?;
+                    let reduction =
+                        reduce(previous, SupervisorInput::DomainSetupFailed { target_key })?;
                     *state = reduction.state;
                     queue.extend(reduction.effects);
                     continue;
@@ -421,6 +424,11 @@ async fn apply_effects_with_deadline(
                 )
                 .await
                 .is_some_and(|result| result.is_ok());
+                tracing::info!(
+                    stage = "domain_setup",
+                    succeeded = restored,
+                    "browser.target.initialization_stage"
+                );
                 if restored {
                     queue.push_front(SupervisorEffect::ProbeInitialVisibility {
                         target_key,
@@ -433,10 +441,8 @@ async fn apply_effects_with_deadline(
                     );
                     let compatibility = state.compatibility.clone();
                     let previous = std::mem::replace(state, SupervisorState::new(compatibility));
-                    let reduction = reduce(
-                        previous,
-                        SupervisorInput::InitialVisibilityProbeFailed { target_key },
-                    )?;
+                    let reduction =
+                        reduce(previous, SupervisorInput::DomainSetupFailed { target_key })?;
                     *state = reduction.state;
                     queue.extend(reduction.effects);
                 }
@@ -446,7 +452,7 @@ async fn apply_effects_with_deadline(
                 session,
             } => {
                 let input = match bounded_transport_command(
-                    effect_deadline,
+                    Some(visibility_probe_deadline(effect_deadline)),
                     transport.send_raw(
                         &CommandScope::Session(session),
                         "Runtime.evaluate",
@@ -468,6 +474,11 @@ async fn apply_effects_with_deadline(
                         }),
                     Err(_) => SupervisorInput::InitialVisibilityProbeFailed { target_key },
                 };
+                tracing::info!(
+                    stage = "visibility",
+                    succeeded = matches!(input, SupervisorInput::VisibilityChanged { .. }),
+                    "browser.target.initialization_stage"
+                );
                 let compatibility = state.compatibility.clone();
                 let previous = std::mem::replace(state, SupervisorState::new(compatibility));
                 let reduction = reduce(previous, input)?;
@@ -495,13 +506,27 @@ async fn apply_effects_with_deadline(
                         .values()
                         .find(|target| target.target.target.id() == context.target_id)
                         .and_then(|target| target.viewport_override);
-                    let geometry = crate::control::viewport::observe_effective_viewport(
-                        transport.as_ref(),
-                        &bound,
-                        declared_override,
+                    let geometry = bounded_future(
+                        effect_deadline,
+                        crate::control::viewport::observe_effective_viewport(
+                            transport.as_ref(),
+                            &bound,
+                            declared_override,
+                        ),
                     )
                     .await
+                    .unwrap_or_else(|| {
+                        Err(stable_error(
+                            ErrorCode::PageObservationFailed,
+                            "capture geometry deadline elapsed",
+                        ))
+                    })
                     .and_then(crate::control::viewport::capture_geometry);
+                    tracing::info!(
+                        stage = "geometry",
+                        succeeded = geometry.is_ok(),
+                        "browser.target.initialization_stage"
+                    );
                     let Ok(geometry) = geometry else {
                         let target_key = state
                             .targets_by_key
@@ -530,12 +555,17 @@ async fn apply_effects_with_deadline(
                         transport_session: context.transport_session,
                         geometry,
                     };
-                    if capture
+                    let capture_started = capture
                         .coordinator
                         .start_target(target, Arc::clone(&transport))
                         .await
-                        .is_err()
-                    {
+                        .is_ok();
+                    tracing::info!(
+                        stage = "screencast",
+                        succeeded = capture_started,
+                        "browser.target.initialization_stage"
+                    );
+                    if !capture_started {
                         let target_key = state
                             .targets_by_key
                             .iter()
@@ -1182,4 +1212,12 @@ pub(super) fn parse_target_info(value: &Value) -> Option<TransportTargetInfo> {
                 .map(str::to_owned),
         )
     })
+}
+
+/// Visibility is optional evidence; it must not hold initialized control indefinitely.
+pub(super) fn visibility_probe_deadline(
+    deadline: Option<tokio::time::Instant>,
+) -> tokio::time::Instant {
+    let probe = tokio::time::Instant::now() + Duration::from_millis(250);
+    deadline.map_or(probe, |deadline| deadline.min(probe))
 }

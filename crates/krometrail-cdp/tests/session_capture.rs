@@ -120,7 +120,7 @@ fn capture_effects_are_reducer_owned_and_exactly_scoped() {
 }
 
 #[test]
-fn stream_cap_start_failure_detaches_only_the_surplus_flat_session() {
+fn stream_cap_start_failure_preserves_control_and_retries_after_visibility() {
     let state = reduce(
         SupervisorState::new(compatibility()),
         SupervisorInput::InitialTargets(vec![target("page-a"), target("page-b")]),
@@ -170,7 +170,7 @@ fn stream_cap_start_failure_detaches_only_the_surplus_flat_session() {
         .state;
 
     // The coordinator rejects page-b after the active-stream cap is reached. The reducer must
-    // release that exact flat session without disturbing the still-live page-a stream.
+    // preserve control on that exact flat session and the still-live page-a stream.
     let failed = reduce(
         state,
         SupervisorInput::CaptureStartFailed {
@@ -178,13 +178,14 @@ fn stream_cap_start_failure_detaches_only_the_surplus_flat_session() {
         },
     )
     .unwrap();
-    assert!(failed.effects.iter().any(|effect| matches!(
-        effect,
-        SupervisorEffect::Detach { session }
-            if session.as_str() == "transport-b"
-    )));
     assert!(
         !failed
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, SupervisorEffect::Detach { .. }))
+    );
+    assert!(
+        failed
             .state
             .target_key_by_session
             .contains_key(&TransportSessionId::new("transport-b").unwrap())
@@ -202,8 +203,22 @@ fn stream_cap_start_failure_detaches_only_the_surplus_flat_session() {
     ));
     assert_eq!(
         failed.state.targets_by_key["page-b"].target.lifecycle,
-        TargetLifecycle::Failed
+        TargetLifecycle::Attached
     );
+    assert_eq!(
+        failed.state.targets_by_key["page-b"].capture_binding,
+        krometrail_cdp::CaptureBinding::Unavailable
+    );
+    let recovered = reduce(
+        failed.state,
+        SupervisorInput::VisibilityChanged {
+            target_key: "page-b".into(),
+            visibility: TargetVisibility::Visible,
+            observed_at: SessionTime::from_nanos(1),
+        },
+    )
+    .unwrap();
+    assert!(recovered.effects.iter().any(|effect| matches!(effect, SupervisorEffect::StartCapture { context } if context.transport_session.as_str() == "transport-b")));
 }
 
 #[test]
@@ -235,14 +250,18 @@ fn visibility_and_target_failure_are_local_reducer_inputs() {
         },
     )
     .unwrap();
-    assert!(failed.effects.iter().any(|effect| matches!(
+    assert!(!failed.effects.iter().any(|effect| matches!(
         effect,
         SupervisorEffect::Publish(BrowserSessionEvent::TargetFailed { .. })
     )));
+    assert_eq!(
+        failed.state.targets_by_key["page-a"].capture_binding,
+        krometrail_cdp::CaptureBinding::Unavailable
+    );
 }
 
 #[test]
-fn initial_visibility_failure_is_target_local_and_ready_rejects_unknown_visibility() {
+fn domain_setup_failure_is_target_local_and_ready_requires_attachment() {
     let unknown = reduce(
         SupervisorState::new(compatibility()),
         SupervisorInput::InitialTargets(vec![target("page-a")]),
@@ -282,7 +301,7 @@ fn initial_visibility_failure_is_target_local_and_ready_rejects_unknown_visibili
     .state;
     let failed = reduce(
         state,
-        SupervisorInput::InitialVisibilityProbeFailed {
+        SupervisorInput::DomainSetupFailed {
             target_key: "page-a".into(),
         },
     )

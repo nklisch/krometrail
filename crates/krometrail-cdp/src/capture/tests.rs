@@ -2392,16 +2392,23 @@ fn ordinal_allocation_is_strict_and_fenced_across_attachment_generations() {
         pipeline::OrdinalAllocation::Allocated(krometrail_core::CaptureOrdinal::new(2).unwrap())
     );
 
+    // Retrying capture admission on the same attachment must retain ordinal continuity.
+    assert!(registry.begin_generation(&first_target));
+    assert_eq!(
+        registry.allocate(&first_target),
+        pipeline::OrdinalAllocation::Allocated(krometrail_core::CaptureOrdinal::new(3).unwrap())
+    );
     let mut restored_target = first_target.clone();
     restored_target.attachment_generation = 2;
     assert!(registry.begin_generation(&restored_target));
+    assert!(!registry.begin_generation(&first_target));
     assert_eq!(
         registry.allocate(&first_target),
         pipeline::OrdinalAllocation::StaleGeneration
     );
     assert_eq!(
         registry.allocate(&restored_target),
-        pipeline::OrdinalAllocation::Allocated(krometrail_core::CaptureOrdinal::new(3).unwrap())
+        pipeline::OrdinalAllocation::Allocated(krometrail_core::CaptureOrdinal::new(4).unwrap())
     );
 }
 

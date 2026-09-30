@@ -1,6 +1,8 @@
 use super::*;
 use crate::session::evidence::persist_result_evidence;
-use krometrail_core::{BROWSER_OPERATION_REGISTRY, OperationMutability, RetryAdvice};
+use krometrail_core::{
+    BROWSER_OPERATION_REGISTRY, OperationMutability, RetryAdvice, TargetLifecycle,
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct OperationExecutionContext {
@@ -29,6 +31,7 @@ pub(crate) async fn execute_operation(
             "browser operation was cancelled before dispatch",
         ));
     }
+    reprobe_unknown_visibility(state, &request, Arc::clone(&transport), shared, context).await?;
     let kind = request.kind();
     let state_changing = BROWSER_OPERATION_REGISTRY
         .iter()
@@ -1501,6 +1504,73 @@ fn missing_evidence_sink(
         NonEmptyText::new("restore the recording store before dispatching browser changes")
             .expect("static evidence recovery is non-empty"),
     )
+}
+
+async fn reprobe_unknown_visibility(
+    state: &mut SupervisorState,
+    request: &BrowserOperationRequest,
+    transport: Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+    context: OperationExecutionContext,
+) -> Result<()> {
+    let mut keys = if matches!(request, BrowserOperationRequest::ListPages(_)) {
+        state.targets_by_key.keys().cloned().collect::<Vec<_>>()
+    } else {
+        let selection = match request {
+            BrowserOperationRequest::SelectPage(request) => {
+                Some(PageSelection::Target(request.target_id))
+            }
+            _ => match request.scope() {
+                krometrail_core::BrowserOperationScope::Page(selection) => Some(selection),
+                krometrail_core::BrowserOperationScope::Browser => None,
+            },
+        };
+        selection
+            .and_then(|selection| crate::control::bind_target(state, selection).ok())
+            .map(|bound| bound.browser_target_key)
+            .into_iter()
+            .collect()
+    };
+    keys.sort();
+    let effects = keys
+        .into_iter()
+        .filter_map(|target_key| {
+            let target = state.targets_by_key.get(&target_key)?;
+            if target.target.visibility != TargetVisibility::Unknown
+                || matches!(
+                    target.target.lifecycle,
+                    TargetLifecycle::Failed | TargetLifecycle::Closed | TargetLifecycle::Suspended
+                )
+            {
+                return None;
+            }
+            Some(SupervisorEffect::ProbeInitialVisibility {
+                target_key,
+                session: target.transport_session.clone()?,
+            })
+        })
+        .collect::<Vec<_>>();
+    if effects.is_empty() {
+        return Ok(());
+    }
+    let support = *shared
+        .browser_event_support
+        .lock()
+        .expect("browser event support lock");
+    // One window for the listing, rather than multiplying the bound by page count.
+    runtime::apply_effects_until(
+        state,
+        effects,
+        transport,
+        Arc::clone(&shared.subscribers),
+        shared.capture.clone(),
+        Arc::clone(&shared.browser_events),
+        support,
+        runtime::visibility_probe_deadline(context.deadline),
+    )
+    .await?;
+    *shared.state.lock().expect("session state lock") = state.clone();
+    Ok(())
 }
 
 #[cfg(test)]

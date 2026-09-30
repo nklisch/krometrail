@@ -292,30 +292,32 @@ pub(super) async fn restore_event_domains_and_visibility(
             .race(authority.restore_target(binding, transport.as_ref(), support))
             .await?
             .map_err(|_| AttemptFailure::Failed)?;
-        let visibility_value = attempt
-            .command(
-                transport,
-                &CommandScope::Session(session),
-                "Runtime.evaluate",
-                serde_json::json!({
-                    "expression": "document.visibilityState",
-                    "returnByValue": true
-                }),
-            )
-            .await?;
-        let visibility =
-            parse_visibility_result(&visibility_value).map_err(|_| AttemptFailure::Failed)?;
-        let reduction = reduce(
-            state.clone(),
-            SupervisorInput::VisibilityChanged {
+        let visibility_value = attempt.race(tokio::time::timeout_at(
+            super::runtime::visibility_probe_deadline(Some(attempt.deadline)),
+            transport.send_raw(
+                &CommandScope::Session(session), "Runtime.evaluate",
+                serde_json::json!({"expression": "document.visibilityState", "returnByValue": true}),
+            ),
+        )).await;
+        let visibility_value = match visibility_value {
+            Ok(value) => value.ok().and_then(|value| value.ok()),
+            Err(AttemptFailure::TimedOut) => None,
+            Err(error) => return Err(error),
+        };
+        let visibility = visibility_value.and_then(|value| parse_visibility_result(&value).ok());
+        let input = match visibility {
+            Some(visibility) => SupervisorInput::VisibilityChanged {
                 target_key: target_key.clone(),
                 visibility,
                 observed_at: authority
                     .session_time()
                     .unwrap_or(krometrail_core::SessionTime::ZERO),
             },
-        )
-        .map_err(|_| AttemptFailure::Failed)?;
+            None => SupervisorInput::InitialVisibilityProbeFailed {
+                target_key: target_key.clone(),
+            },
+        };
+        let reduction = reduce(state.clone(), input).map_err(|_| AttemptFailure::Failed)?;
         *state = reduction.state;
         effects.extend(reduction.effects);
     }
