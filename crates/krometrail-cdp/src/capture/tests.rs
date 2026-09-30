@@ -3180,3 +3180,118 @@ async fn concurrent_starts_cannot_exceed_the_active_stream_cap() {
         "every start beyond the cap must be refused rather than silently admitted"
     );
 }
+
+struct HeldStartTransport {
+    live_subscriptions: Arc<std::sync::atomic::AtomicUsize>,
+    started: Notify,
+}
+
+struct CountedIdleEvents(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for CountedIdleEvents {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl TransportEvents for CountedIdleEvents {
+    fn next(&mut self) -> TransportFuture<'_, Result<Option<NamedEvent>, TransportError>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+impl CdpTransport for HeldStartTransport {
+    fn send_raw(
+        &self,
+        _scope: &CommandScope,
+        method: &str,
+        _params: serde_json::Value,
+    ) -> TransportFuture<'_, Result<serde_json::Value, TransportError>> {
+        let held = method == "Page.startScreencast";
+        Box::pin(async move {
+            if held {
+                self.started.notify_one();
+                std::future::pending().await
+            } else {
+                Ok(serde_json::json!({}))
+            }
+        })
+    }
+
+    fn subscribe_named(
+        &self,
+        _scope: &CommandScope,
+        _method: &str,
+    ) -> TransportFuture<'_, Result<Box<dyn TransportEvents>, TransportError>> {
+        self.live_subscriptions.fetch_add(1, Ordering::AcqRel);
+        let events = CountedIdleEvents(Arc::clone(&self.live_subscriptions));
+        Box::pin(async move { Ok(Box::new(events) as Box<dyn TransportEvents>) })
+    }
+
+    fn close_reason(&self) -> Option<TransportClose> {
+        None
+    }
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn dropped_start_future_releases_admission_readers_and_worker() {
+    for abort in [false, true] {
+        let transport = Arc::new(HeldStartTransport {
+            live_subscriptions: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            started: Notify::new(),
+        });
+        let sink = Arc::new(TestSink::new(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(Vec::new())),
+        ));
+        let coordinator = Arc::new(coordinator(
+            CaptureConfig::default(),
+            Arc::new(TestClock::new()),
+            Arc::new(TestIds::new()),
+            sink.clone(),
+            Arc::new(TestObserver::default()),
+        ));
+        let task_coordinator = Arc::clone(&coordinator);
+        let task_transport = transport.clone() as Arc<dyn CdpTransport>;
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_millis(50),
+                task_coordinator.start_target(target(), task_transport),
+            )
+            .await
+        });
+        transport.started.notified().await;
+        assert!(transport.live_subscriptions.load(Ordering::Acquire) > 0);
+        if abort {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        } else {
+            assert!(task.await.unwrap().is_err());
+        }
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while transport.live_subscriptions.load(Ordering::Acquire) != 0
+                || Arc::strong_count(&sink) != 2
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled readers and worker must release their owned resources");
+        assert!(coordinator.pending_starts.lock().unwrap().is_empty());
+        assert!(coordinator.statuses().is_empty());
+        // The same generation can be admitted again after cancellation.
+        let retry = coordinator
+            .start_target(target(), Arc::new(SlowSubscribeTransport))
+            .await;
+        assert!(retry.is_ok());
+        coordinator
+            .shutdown(
+                target().session_id,
+                tokio::time::Instant::now() + Duration::from_secs(1),
+            )
+            .await;
+    }
+}

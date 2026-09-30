@@ -29,3 +29,10 @@ Evidence: `~/.cache/dng-workstations/attached-page-evidence/geometry.log`,
 Investigate how observation of browser defaults should differ from validation of
 explicit override clearing while preserving the default-touch capability.
 No priority or implementation design has been accepted.
+
+The same no-override touch check also runs after `set_viewport` clear and during
+viewport rollback (`session/operations.rs`, clear observation and
+`rollback_viewport_or_fail_target`). On a default-touch host, a rollback
+observation may reject the restored browser defaults and cause
+`rollback_viewport_or_fail_target` to terminally fail the page. This is a
+code-reading hypothesis; that rollback journey has not been run.

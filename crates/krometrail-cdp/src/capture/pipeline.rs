@@ -893,14 +893,11 @@ pub(super) async fn start_target(
     runtime.set_tasks(frame_task, visibility_task, geometry_tasks, worker_task);
 
     let start_params = start_screencast_params(&runtime.config, runtime.every_nth_frame);
-    if let Err(error) = transport.send_raw(&scope, START_METHOD, start_params).await {
-        runtime.close_acceptance();
-        runtime.abort_readers();
-        if let Some(worker) = runtime.take_worker() {
-            worker.abort();
-        }
-        return Err(error.into());
-    }
+    // A dropped start future must close every task it spawned, including timeout/cancellation.
+    let mut startup = StartupTasks(Some(Arc::clone(&runtime)));
+    transport
+        .send_raw(&scope, START_METHOD, start_params)
+        .await?;
     runtime.transition(Transition::StartedVisible);
     {
         let mut streams = coordinator
@@ -911,8 +908,23 @@ pub(super) async fn start_target(
         // stream is counted by one side or the other at every instant.
         admission.commit();
         streams.insert(key, runtime);
+        startup.0 = None;
     }
     Ok(())
+}
+
+struct StartupTasks(Option<Arc<StreamRuntime>>);
+
+impl Drop for StartupTasks {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.close_acceptance();
+            runtime.abort_readers();
+            if let Some(worker) = runtime.take_worker() {
+                worker.abort();
+            }
+        }
+    }
 }
 
 /// Holds one slot against the active-stream cap from admission until the stream is registered.
@@ -1384,13 +1396,21 @@ pub(super) async fn suspend_target(
 }
 
 pub(super) fn statuses(coordinator: &CaptureCoordinator) -> Vec<TargetCaptureStatus> {
-    let statuses: Vec<_> = coordinator
+    let mut statuses: Vec<_> = coordinator
         .streams
         .lock()
         .expect("capture registry lock poisoned")
         .values()
         .map(|runtime| runtime.status())
         .collect();
+    statuses.extend(
+        coordinator
+            .startup_failures
+            .lock()
+            .expect("startup failure lock")
+            .values()
+            .cloned(),
+    );
     // During generation replacement both the previous attachment and its replacement can briefly
     // coexist in the registry. Expose only the highest attachment generation per target.
     let mut best: std::collections::HashMap<krometrail_core::TargetId, TargetCaptureStatus> =

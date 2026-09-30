@@ -599,8 +599,8 @@ fn capture_failed_warning(status: &krometrail_core::TargetCaptureStatus) -> Krom
     let mut warning = KrometrailError::from_browser_failure(
         krometrail_core::ErrorCode::CaptureFailed,
         krometrail_core::NonEmptyText::new(format!(
-            "current-state control may have succeeded, but retained temporal frames are unavailable after {}",
-            failure.stage().as_str()
+            "current-state control may have succeeded, but retained temporal frames are unavailable after {}: {}",
+            failure.stage().as_str(), failure.cause().message.as_str()
         ))
         .expect("capture failure warning is non-empty"),
     )
@@ -4291,6 +4291,60 @@ mod tests {
 
     fn failed_capture() -> TargetCaptureStatus {
         failed_capture_for(target_id())
+    }
+
+    #[test]
+    fn startup_capture_failure_degrades_a_later_current_state_response() {
+        for (stage, message) in [
+            (
+                CaptureFailureStage::InitialGeometry,
+                "browser did not clear touch emulation",
+            ),
+            (
+                CaptureFailureStage::ScreencastStart,
+                "capture screencast startup deadline elapsed",
+            ),
+        ] {
+            let status = TargetCaptureStatus::new(
+                target_id(),
+                1,
+                CaptureStreamState::Failed,
+                CaptureStatistics::default(),
+                4,
+                0,
+                None,
+                CaptureTimingSummary::empty(),
+                CaptureTimingSummary::empty(),
+                EveryNthFrame::default(),
+                Some(
+                    CaptureFailure::new(
+                        stage,
+                        KrometrailError::new(
+                            ErrorCode::CaptureFailed,
+                            NonEmptyText::new(message).unwrap(),
+                        ),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .unwrap();
+            let mapped = map_operation_result_with_capture(
+                "take_screenshot",
+                BrowserOperationResult::TakeScreenshot(Box::new(screenshot(ImageFormat::Png))),
+                &[status],
+                ResponseRequest::default(),
+            )
+            .unwrap();
+            assert_eq!(mapped.response.status, ToolResponseStatus::Degraded);
+            assert!(!mapped.is_error);
+            assert!(mapped.response.error.is_none());
+            assert_eq!(mapped.response.warnings.len(), 1);
+            let warning = &mapped.response.warnings[0];
+            assert_eq!(warning.code, ErrorCode::CaptureFailed);
+            assert_eq!(warning.context.target_id, Some(target_id()));
+            assert!(warning.message.as_str().contains(stage.as_str()));
+            assert!(warning.message.as_str().contains(message));
+        }
     }
 
     #[test]

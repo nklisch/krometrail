@@ -308,3 +308,86 @@ Final binary recheck after diagnostic cleanup: PASS on another fresh owned deskt
 (`final-recheck.log`), first attach/list/fill/fixture-URL create/list/detach, with
 independent fixture text confirmation and exact desktop destruction. Candidate
 SHA-256: `6a0b8d1d4517252f527035692229becca3396cc3bf9331ecc7a5776316c53db2`.
+
+### Checkpoint corrections (2026-09-30)
+
+Applied the owner's accepted Opus and GPT-6.1 Sol findings in one correction
+round. The original diagnosis remains unchanged: attachment, mandatory domains,
+and visibility succeeded, then no-override geometry rejected the browser's ten
+native touch points. Review also established that the prior isolation change
+hid that capture failure from public health and still ran optional capture in
+the supervisor's caller/probe queue.
+
+- Startup failures now retain target-scoped `Failed` capture status with
+  `initial_geometry` or `screencast_start` and a sanitized cause. The coordinator
+  publishes it through the existing observer/status path, logs WARN with target
+  id, stage, and sanitized error, and MCP's shared capture-health mapping
+  degrades later responses and includes the cause in its warning.
+- Capture startup runs as coordinator-owned work with one independent three-second
+  budget covering geometry and screencast start. Listing, page use, and creation
+  of an initialized page do not drain it. Suspension, target teardown, and
+  shutdown cancel and join startup tasks; a dropped pipeline start aborts its
+  readers and worker and releases stream admission. Failure completion is fenced
+  by the exact connection, attachment, and flat-session capture context.
+- The 250 ms visibility ceiling applies while a caller waits. Background first
+  probes retain the transport command bound (three seconds in production).
+  Reconnect completes mandatory domain restoration and staged viewport replay
+  for every target before optional observations spend one aggregate bounded
+  window. Expiry preserves unknown visibility without abandoning the restored
+  connection. Only inactive capture becomes unavailable on probe failure;
+  suspended capture retains its previous context for subsequent close/stop.
+- Added the incident geometry reply (ten touch points without an override) and
+  updated the parked default-touch story with the clear/rollback code-reading
+  hypothesis. Viewport semantics and rollback behavior are unchanged.
+
+Correction verification:
+
+- Scripted transport/reducer and MCP tests: PASS. Startup geometry/screencast
+  diagnostics, later MCP response degradation, held screencast startup during
+  list/evaluate/create, geometry surviving a visibility re-probe's short window,
+  independent startup timeout, abort/timeout resource cleanup and same-generation
+  retry, background popup visibility after 350 ms, 24-target mandatory restoration
+  before one stalled aggregate probe window, and close after failed reconnect
+  observation with active capture in the original Ready fixture are covered.
+- `cargo fmt --all -- --check`: PASS.
+- `bash scripts/check-wire-enum-schemas.sh`: PASS.
+- `cargo check --workspace --all-targets --locked`: PASS.
+- `cargo test --workspace --all-targets --locked`: PASS, 1,409 passed and 17
+  ignored across 79 test binaries. Existing opt-in browser/manual benchmarks
+  retain their opt-in status.
+- `rustup run 1.98.0 cargo-clippy clippy --workspace --all-targets --locked --
+  -D warnings -A clippy::chunks_exact_to_as_chunks`: PASS.
+- Candidate build and `cargo run --locked -- --version`, `--help`, `doctor`:
+  PASS (1.7.0, one discovered browser installation).
+- `bun run docs:build`: PASS; generated public documentation was not edited
+  directly. All Rust work used the same assigned cache target directory.
+- NCU 0.4.1 first attach: PASS in exact owned desktop
+  `desktop-1790760534522-3953145`, private automated Chrome profile, debug address
+  127.0.0.1 and port 0. First attach returned one page; first list returned one
+  page with `degraded` and target-scoped `capture_failed` warning; browser_status
+  exposed `Failed`/`initial_geometry` and “browser did not clear touch emulation”.
+  Fill returned degraded success, and the HTTP fixture independently confirmed
+  `first attach verified`. Fixture-URL create returned degraded success and the
+  next list contained two pages. Both startup WARN records include target id,
+  `initial_geometry`, and the sanitized cause. Detach and exact desktop destruction
+  succeeded. Evidence: `~/.cache/dng-workstations/attached-page-evidence/` files
+  `correction-final-host.log`, `correction-final-host-0.png`, and
+  `data-correction-final-0/diagnostics/krometrail.log` (2026-09-30T09:29:04Z).
+  First list correlation `3b318abd-58e8-45ce-921e-17223d1d34c4`; fill correlation
+  `3e64ae1d-a5ff-4166-a413-a3f064bda4ec`. The initial verification runner needed
+  its read-only helper path refreshed after the workstation lane moved, then
+  its list-envelope assertion corrected; neither was a product failure. Its
+  earlier exact desktop was also destroyed.
+
+Candidate SHA-256:
+`7648e78b1fa94cda75e9f86c903ca695a0e8800424746f91b991e500da7c2b7f`.
+Rust gate logs are `~/.cache/dng-workstations/krometrail-correction-{check,test,clippy,build}.log`;
+documentation log is `krometrail-correction-docs.log` in the same directory.
+
+No open implementation question or blocker. The workstation VM journey was not
+repeated, as authorized for these accepted corrections; its earlier original
+and extended journey receipts remain above. Continuous recording on this native
+touch host, the parked viewport rollback hypothesis, physical GPU monitorless
+behavior, macOS, Windows, and release-time qualification remain unverified.
+The default-touch story is the only non-blocking follow-up. Story stays active
+for owner review/release; no version, tag, push, release, or issue closure.

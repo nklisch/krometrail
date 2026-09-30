@@ -313,7 +313,7 @@ pub enum SupervisorInput {
         target_key: String,
     },
     CaptureStartFailed {
-        target_key: String,
+        context: CaptureEffectContext,
     },
     Detached {
         session: TransportSessionId,

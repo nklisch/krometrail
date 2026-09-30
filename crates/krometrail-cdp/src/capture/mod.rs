@@ -12,7 +12,9 @@ use std::{
 };
 
 use krometrail_core::{
-    DeviceScaleFactor, EveryNthFrame, ImageFormat, PixelDimensions, SessionId, SessionOrigin,
+    CaptureFailure, CaptureFailureStage, CaptureStatistics, CaptureStreamState,
+    CaptureTimingSummary, DeviceScaleFactor, ErrorCode, ErrorContext, EveryNthFrame, ImageFormat,
+    KrometrailError, PixelDimensions, RetryAdvice, SessionId, SessionOrigin, TargetCaptureStatus,
     TargetId,
 };
 
@@ -169,6 +171,8 @@ impl CaptureGeometryTransition {
 
 pub(crate) trait CaptureObserver: Send + Sync {
     fn status_changed(&self, status: krometrail_core::TargetCaptureStatus);
+    fn startup_failed(&self, _context: crate::targets::CaptureEffectContext) {}
+
     fn gap_declared(&self, gap: krometrail_core::CaptureGap);
 
     fn frame_event_stream_closed(&self, _connection_generation: u64) {}
@@ -207,6 +211,8 @@ pub(crate) struct CaptureCoordinator {
     /// makes admission a single atomic step.
     pending_starts: Mutex<std::collections::HashSet<StreamKey>>,
     ordinals: Arc<pipeline::OrdinalRegistry>,
+    startup_tasks: Mutex<std::collections::HashMap<StreamKey, tokio::task::JoinHandle<()>>>,
+    startup_failures: Mutex<std::collections::HashMap<TargetId, TargetCaptureStatus>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -249,7 +255,97 @@ impl CaptureCoordinator {
             streams: Mutex::new(std::collections::HashMap::new()),
             pending_starts: Mutex::new(std::collections::HashSet::new()),
             ordinals: Arc::new(pipeline::OrdinalRegistry::default()),
+            startup_tasks: Mutex::new(std::collections::HashMap::new()),
+            startup_failures: Mutex::new(std::collections::HashMap::new()),
         })
+    }
+
+    /// Optional startup is owned by capture, independently of any waiting control operation.
+    pub(crate) fn spawn_startup(
+        &self,
+        context: &crate::targets::CaptureEffectContext,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let key = StreamKey {
+            target_id: context.target_id,
+            attachment_generation: context.attachment_generation,
+        };
+        self.startup_failures
+            .lock()
+            .expect("startup failure lock")
+            .remove(&context.target_id);
+        let mut tasks = self.startup_tasks.lock().expect("startup task lock");
+        tasks.retain(|_, task| !task.is_finished());
+        if let Some(previous) = tasks.insert(key, tokio::spawn(future)) {
+            previous.abort();
+        }
+    }
+
+    pub(crate) fn startup_failed(
+        &self,
+        context: crate::targets::CaptureEffectContext,
+        stage: CaptureFailureStage,
+        message: krometrail_core::NonEmptyText,
+    ) {
+        let cause = KrometrailError::new(ErrorCode::CaptureFailed, message)
+            .with_context(ErrorContext {
+                target_id: Some(context.target_id),
+                ..ErrorContext::default()
+            })
+            .with_retry(RetryAdvice::AfterRecovery);
+        tracing::warn!(
+            event = "capture.startup.failed",
+            target_id = %context.target_id,
+            failure_stage = stage.as_str(),
+            error = cause.message.as_str(),
+            "capture.startup.failed"
+        );
+        let status = TargetCaptureStatus::new(
+            context.target_id,
+            context.attachment_generation,
+            CaptureStreamState::Failed,
+            CaptureStatistics::default(),
+            self.config.queue_capacity.get(),
+            0,
+            None,
+            CaptureTimingSummary::empty(),
+            CaptureTimingSummary::empty(),
+            self.every_nth_frame,
+            Some(CaptureFailure::new(stage, cause).expect("startup capture failure is valid")),
+        )
+        .expect("startup capture status is valid");
+        self.startup_failures
+            .lock()
+            .expect("startup failure lock")
+            .insert(context.target_id, status.clone());
+        self.observer.status_changed(status);
+        self.observer.startup_failed(context);
+    }
+
+    pub(crate) fn retire_startup_failure(&self, target_id: TargetId, generation: Option<u64>) {
+        self.startup_failures
+            .lock()
+            .expect("startup failure lock")
+            .retain(|id, status| {
+                *id != target_id
+                    || generation
+                        .is_some_and(|generation| status.attachment_generation() != generation)
+            });
+    }
+
+    async fn cancel_startup(&self, target: &CaptureTarget) {
+        let task = self
+            .startup_tasks
+            .lock()
+            .expect("startup task lock")
+            .remove(&StreamKey {
+                target_id: target.target_id,
+                attachment_generation: target.attachment_generation,
+            });
+        if let Some(task) = task {
+            task.abort();
+            let _ = task.await;
+        }
     }
 
     pub(crate) async fn start_target(
@@ -281,6 +377,8 @@ impl CaptureCoordinator {
         reason: CaptureStopReason,
         deadline: tokio::time::Instant,
     ) -> CaptureStopOutcome {
+        self.cancel_startup(target).await;
+        self.retire_startup_failure(target.target_id, Some(target.attachment_generation));
         pipeline::stop_target(self, target, reason, deadline).await
     }
 
@@ -289,6 +387,7 @@ impl CaptureCoordinator {
         target: &CaptureTarget,
         at: krometrail_core::SessionTime,
     ) {
+        self.cancel_startup(target).await;
         pipeline::suspend_target(self, target, at).await;
     }
 
@@ -331,6 +430,16 @@ impl CaptureCoordinator {
         session_id: SessionId,
         deadline: tokio::time::Instant,
     ) -> CaptureShutdownOutcome {
-        pipeline::shutdown(self, session_id, deadline).await
+        let tasks = std::mem::take(&mut *self.startup_tasks.lock().expect("startup task lock"));
+        for task in tasks.into_values() {
+            task.abort();
+            let _ = task.await;
+        }
+        let outcome = pipeline::shutdown(self, session_id, deadline).await;
+        self.startup_failures
+            .lock()
+            .expect("startup failure lock")
+            .clear();
+        outcome
     }
 }

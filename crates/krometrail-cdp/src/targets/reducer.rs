@@ -122,8 +122,15 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
                 reconcile_selection(&mut state, &mut effects);
             }
         }
-        SupervisorInput::CaptureStartFailed { target_key } => {
-            capture_start_failed(&mut state, &target_key, &mut effects)?;
+        SupervisorInput::CaptureStartFailed { context } => {
+            if state.connection_generation == context.connection_generation
+                && let Some(key) = state.targets_by_key.iter().find_map(|(key, target)| {
+                    (target.capture_binding == CaptureBinding::Active(context.clone()))
+                        .then(|| key.clone())
+                })
+            {
+                capture_start_failed(&mut state, &key, &mut effects)?;
+            }
         }
         SupervisorInput::Detached { session, reason: _ } => {
             remove_pending_session(&mut state, &session);
@@ -153,6 +160,7 @@ pub fn reduce(mut state: SupervisorState, input: SupervisorInput) -> Result<Redu
             if let Some(target) = state.targets_by_key.get_mut(&target_key)
                 && target.transport_session.is_some()
                 && target.target.visibility == TargetVisibility::Unknown
+                && target.capture_binding == CaptureBinding::Inactive
             {
                 target.capture_binding = CaptureBinding::Unavailable;
             }

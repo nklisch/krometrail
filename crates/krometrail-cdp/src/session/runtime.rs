@@ -189,6 +189,7 @@ pub(super) async fn apply_effects(
     browser_events: Arc<SessionDomainAuthority>,
     browser_event_support: crate::compatibility::BrowserEventSupport,
     shutdown_deadline: Option<ShutdownDeadline>,
+    caller_waiting: bool,
 ) -> Result<()> {
     apply_effects_with_deadline(
         state,
@@ -200,6 +201,7 @@ pub(super) async fn apply_effects(
         browser_event_support,
         shutdown_deadline,
         None,
+        caller_waiting,
     )
     .await
 }
@@ -229,6 +231,7 @@ pub(super) async fn apply_effects_until(
         browser_event_support,
         None,
         Some(deadline),
+        true,
     )
     .await
 }
@@ -244,6 +247,7 @@ async fn apply_effects_with_deadline(
     browser_event_support: crate::compatibility::BrowserEventSupport,
     shutdown_deadline: Option<ShutdownDeadline>,
     effect_deadline: Option<tokio::time::Instant>,
+    caller_waiting: bool,
 ) -> Result<()> {
     let mut queue = VecDeque::from(effects);
     while let Some(effect) = queue.pop_front() {
@@ -260,6 +264,9 @@ async fn apply_effects_with_deadline(
                     // Close acceptance immediately, but leave the per-target writer registered
                     // so aggregate shutdown remains the only blocking flush boundary.
                     browser_events.retire_target(target_id, None);
+                    if let Some(capture) = capture.as_ref() {
+                        capture.coordinator.retire_startup_failure(target_id, None);
+                    }
                 }
             }
             SupervisorEffect::Attach { target_key } => {
@@ -452,7 +459,7 @@ async fn apply_effects_with_deadline(
                 session,
             } => {
                 let input = match bounded_transport_command(
-                    Some(visibility_probe_deadline(effect_deadline)),
+                    if caller_waiting { Some(visibility_probe_deadline(effect_deadline)) } else { effect_deadline },
                     transport.send_raw(
                         &CommandScope::Session(session),
                         "Runtime.evaluate",
@@ -506,83 +513,77 @@ async fn apply_effects_with_deadline(
                         .values()
                         .find(|target| target.target.target.id() == context.target_id)
                         .and_then(|target| target.viewport_override);
-                    let geometry = bounded_future(
-                        effect_deadline,
-                        crate::control::viewport::observe_effective_viewport(
-                            transport.as_ref(),
-                            &bound,
-                            declared_override,
-                        ),
-                    )
-                    .await
-                    .unwrap_or_else(|| {
-                        Err(stable_error(
-                            ErrorCode::PageObservationFailed,
-                            "capture geometry deadline elapsed",
-                        ))
-                    })
-                    .and_then(crate::control::viewport::capture_geometry);
-                    tracing::info!(
-                        stage = "geometry",
-                        succeeded = geometry.is_ok(),
-                        "browser.target.initialization_stage"
-                    );
-                    let Ok(geometry) = geometry else {
-                        let target_key = state
-                            .targets_by_key
-                            .iter()
-                            .find(|(_, target)| target.target.target.id() == context.target_id)
-                            .map(|(key, _)| key.clone());
-                        if let Some(target_key) = target_key {
-                            let compatibility = state.compatibility.clone();
-                            let previous =
-                                std::mem::replace(state, SupervisorState::new(compatibility));
-                            let reduction = reduce(
-                                previous,
-                                SupervisorInput::CaptureStartFailed { target_key },
-                            )?;
-                            *state = reduction.state;
-                            queue.extend(reduction.effects);
-                        }
-                        continue;
-                    };
-                    let target = CaptureTarget {
-                        session_id: capture.session_id,
-                        session_origin: capture.session_origin,
-                        target_id: context.target_id,
-                        connection_generation: context.connection_generation,
-                        attachment_generation: context.attachment_generation,
-                        transport_session: context.transport_session,
-                        geometry,
-                    };
-                    let capture_started = capture
-                        .coordinator
-                        .start_target(target, Arc::clone(&transport))
+                    let task_capture = Arc::clone(capture);
+                    let task_transport = Arc::clone(&transport);
+                    let task_context = context.clone();
+                    capture.coordinator.spawn_startup(&context, async move {
+                        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                        let geometry = tokio::time::timeout_at(
+                            deadline,
+                            crate::control::viewport::observe_effective_viewport(
+                                task_transport.as_ref(),
+                                &bound,
+                                declared_override,
+                            ),
+                        )
                         .await
-                        .is_ok();
-                    tracing::info!(
-                        stage = "screencast",
-                        succeeded = capture_started,
-                        "browser.target.initialization_stage"
-                    );
-                    if !capture_started {
-                        let target_key = state
-                            .targets_by_key
-                            .iter()
-                            .find(|(_, target)| target.target.target.id() == context.target_id)
-                            .map(|(target_key, _)| target_key.clone());
-                        if let Some(target_key) = target_key {
-                            let compatibility = state.compatibility.clone();
-                            let previous =
-                                std::mem::replace(state, SupervisorState::new(compatibility));
-                            let reduction = reduce(
-                                previous,
-                                SupervisorInput::CaptureStartFailed { target_key },
-                            )?;
-                            *state = reduction.state;
-                            queue.extend(reduction.effects);
-                        }
-                    }
+                        .unwrap_or_else(|_| {
+                            Err(stable_error(
+                                ErrorCode::PageObservationFailed,
+                                "capture geometry deadline elapsed",
+                            ))
+                        })
+                        .and_then(crate::control::viewport::capture_geometry);
+                        tracing::info!(
+                            stage = "geometry",
+                            succeeded = geometry.is_ok(),
+                            "browser.target.initialization_stage"
+                        );
+                        let geometry = match geometry {
+                            Ok(geometry) => geometry,
+                            Err(error) => {
+                                // Viewport observation only emits sanitized domain/transport messages.
+                                task_capture.coordinator.startup_failed(
+                                    task_context,
+                                    krometrail_core::CaptureFailureStage::InitialGeometry,
+                                    error.message,
+                                );
+                                return;
+                            }
+                        };
+                        let target = CaptureTarget {
+                            session_id: task_capture.session_id,
+                            session_origin: task_capture.session_origin,
+                            target_id: task_context.target_id,
+                            connection_generation: task_context.connection_generation,
+                            attachment_generation: task_context.attachment_generation,
+                            transport_session: task_context.transport_session.clone(),
+                            geometry,
+                        };
+                        let result = tokio::time::timeout_at(
+                            deadline,
+                            task_capture
+                                .coordinator
+                                .start_target(target, task_transport),
+                        )
+                        .await;
+                        tracing::info!(
+                            stage = "screencast",
+                            succeeded = matches!(result, Ok(Ok(()))),
+                            "browser.target.initialization_stage"
+                        );
+                        let message = match result {
+                            Ok(Ok(())) => return,
+                            Ok(Err(error)) => error.to_string(),
+                            Err(_) => "capture screencast startup deadline elapsed".to_owned(),
+                        };
+                        task_capture.coordinator.startup_failed(
+                            task_context,
+                            krometrail_core::CaptureFailureStage::ScreencastStart,
+                            NonEmptyText::new(message)
+                                .expect("sanitized startup message is non-empty"),
+                        );
+                    });
                 }
             }
             SupervisorEffect::SuspendCapture { context } => {
@@ -804,6 +805,7 @@ pub(super) async fn run_supervisor(
                                 Arc::clone(&shared.browser_events),
                                 connection.browser_event_support,
                                 shutdown_deadline.clone(),
+                                false,
                             )
                             .await;
                         }
@@ -942,6 +944,7 @@ pub(super) async fn run_supervisor(
                                 Arc::clone(&shared.browser_events),
                                 connection.browser_event_support,
                                 Some(shutdown_deadline.clone()),
+                                false,
                             )
                             .await;
                         }

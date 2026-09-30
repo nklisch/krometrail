@@ -74,8 +74,8 @@ use reconnect::reconnect_loop_transactional;
 #[cfg(test)]
 use reconnect::{
     AttemptCancellation, AttemptControl, AttemptFailure, PartialSessionTracker,
-    recordable_reconnect_targets, restore_event_domains_and_visibility, restore_one_target,
-    restore_targets, stage_reconnection_effects,
+    recordable_reconnect_targets, restore_one_target, restore_targets,
+    restore_targets_for_reconnection, stage_reconnection_effects,
 };
 #[allow(unused_imports)]
 pub(crate) use runtime::VisibilityProbeError;
@@ -432,6 +432,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                 Arc::clone(&browser_events),
                 connection.browser_event_support,
                 None,
+                true,
             )
             .await?;
             // Initial reconciliation completes after domain setup and bounded visibility attempts.
@@ -448,6 +449,7 @@ impl BrowserConnector for ProductionBrowserConnector {
                 Arc::clone(&browser_events),
                 connection.browser_event_support,
                 None,
+                true,
             )
             .await?;
             let downloads = if ownership == BrowserOwnership::Managed {
@@ -573,6 +575,16 @@ struct SessionCaptureObserver {
 }
 
 impl CaptureObserver for SessionCaptureObserver {
+    fn startup_failed(&self, context: crate::targets::CaptureEffectContext) {
+        let command = SupervisorCommand::Input(SupervisorInput::CaptureStartFailed { context });
+        if let Err(mpsc::error::TrySendError::Full(command)) = self.command_tx.try_send(command) {
+            let command_tx = self.command_tx.clone();
+            tokio::spawn(async move {
+                let _ = command_tx.send(command).await;
+            });
+        }
+    }
+
     fn status_changed(&self, status: TargetCaptureStatus) {
         self.browser_events.observe_capture_status(status.clone());
         self.subscribers
@@ -1414,43 +1426,56 @@ mod tests {
     }
 
     fn reconnect_reduction_fixture() -> (SupervisorState, Vec<SupervisorEffect>) {
-        let state = reduce(
+        reconnect_reduction_fixture_with_pages(1)
+    }
+
+    fn reconnect_reduction_fixture_with_pages(
+        count: usize,
+    ) -> (SupervisorState, Vec<SupervisorEffect>) {
+        let infos = (0..count)
+            .map(|index| {
+                page_info(&if index == 0 {
+                    "restored".to_owned()
+                } else {
+                    format!("restored-{index:02}")
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut state = reduce(
             SupervisorState::new(test_compatibility()),
-            SupervisorInput::InitialTargets(vec![page_info("restored")]),
+            SupervisorInput::InitialTargets(infos.clone()),
         )
         .unwrap()
         .state;
-        let state = reduce(
-            state,
-            SupervisorInput::Attached {
-                target_key: "restored".into(),
-                session: TransportSessionId::new("old-session").unwrap(),
-            },
-        )
-        .unwrap()
-        .state;
-        let state = reduce(
-            state,
-            SupervisorInput::VisibilityChanged {
-                target_key: "restored".into(),
-                visibility: TargetVisibility::Visible,
-                observed_at: krometrail_core::SessionTime::ZERO,
-            },
-        )
-        .unwrap()
-        .state;
-        let state = reduce(
-            state,
-            SupervisorInput::ViewportOverrideApplied {
-                target_key: "restored".into(),
-                viewport: Some(
-                    krometrail_core::ViewportMetrics::new(390, 844, 3.0, true, true).unwrap(),
-                ),
-            },
-        )
-        .unwrap()
-        .state;
-        let state = reduce(
+        for info in &infos {
+            for input in [
+                SupervisorInput::Attached {
+                    target_key: info.target_key.clone(),
+                    session: TransportSessionId::new(format!("old-{}", info.target_key)).unwrap(),
+                },
+                SupervisorInput::VisibilityChanged {
+                    target_key: info.target_key.clone(),
+                    visibility: TargetVisibility::Visible,
+                    observed_at: krometrail_core::SessionTime::ZERO,
+                },
+                SupervisorInput::ViewportOverrideApplied {
+                    target_key: info.target_key.clone(),
+                    viewport: Some(
+                        krometrail_core::ViewportMetrics::new(390, 844, 3.0, true, true).unwrap(),
+                    ),
+                },
+            ] {
+                state = reduce(state, input).unwrap().state;
+            }
+        }
+        state = reduce(state, SupervisorInput::InitialReconciliationCompleted)
+            .unwrap()
+            .state;
+        assert!(state.targets_by_key.values().all(|target| matches!(
+            target.capture_binding,
+            crate::targets::CaptureBinding::Active(_)
+        )));
+        state = reduce(
             state,
             SupervisorInput::ConnectionLost(TransportClose {
                 reason: NonEmptyText::new("fixture disconnect").unwrap(),
@@ -1463,11 +1488,16 @@ mod tests {
             SupervisorInput::Reconnected(ReconnectedSnapshot {
                 connection_generation: 1,
                 compatibility: test_compatibility(),
-                targets: vec![ReconnectedTarget {
-                    info: page_info("restored"),
-                    session: Some(TransportSessionId::new("new-session").unwrap()),
-                    visibility: TargetVisibility::Unknown,
-                }],
+                targets: infos
+                    .into_iter()
+                    .map(|info| ReconnectedTarget {
+                        session: Some(
+                            TransportSessionId::new(format!("new-{}", info.target_key)).unwrap(),
+                        ),
+                        info,
+                        visibility: TargetVisibility::Unknown,
+                    })
+                    .collect(),
             }),
         )
         .unwrap();
@@ -1496,7 +1526,7 @@ mod tests {
             cancellation: AttemptCancellation::new(),
             deadline: tokio::time::Instant::now() + Duration::from_secs(1),
         };
-        restore_event_domains_and_visibility(
+        restore_targets_for_reconnection(
             &attempt,
             &authority,
             &transport_dyn,
@@ -1516,6 +1546,9 @@ mod tests {
                 "Page.enable",
                 "Runtime.enable",
                 "Accessibility.enable",
+                "Emulation.setDeviceMetricsOverride",
+                "Emulation.setTouchEmulationEnabled",
+                "Emulation.setPageScaleFactor",
                 "Runtime.evaluate",
             ]
         );
@@ -1557,7 +1590,7 @@ mod tests {
                 cancellation: AttemptCancellation::new(),
                 deadline: tokio::time::Instant::now() + budget,
             };
-            restore_event_domains_and_visibility(
+            restore_targets_for_reconnection(
                 &attempt,
                 &authority,
                 &transport,
@@ -1570,10 +1603,20 @@ mod tests {
             let target = state.resolve_selection(PageSelection::Target(id)).unwrap();
             assert_eq!(target.target.visibility, TargetVisibility::Unknown);
             assert!(target.transport_session.is_some());
-            assert_eq!(
+            assert!(matches!(
                 target.capture_binding,
-                crate::targets::CaptureBinding::Unavailable
-            );
+                crate::targets::CaptureBinding::Suspended(_)
+            ));
+            let closed = reduce(
+                state.clone(),
+                SupervisorInput::TargetDestroyed {
+                    target_key: "restored".into(),
+                },
+            )
+            .unwrap();
+            assert!(closed.effects.iter().any(|effect| matches!(effect,
+                SupervisorEffect::StopCapture { context } if context.attachment_generation == 1
+            )));
             assert!(effects.iter().all(|effect| !matches!(
                 effect,
                 SupervisorEffect::StartCapture { .. } | SupervisorEffect::ResumeCapture { .. }
@@ -1604,7 +1647,7 @@ mod tests {
         let transport = Arc::new(ControlledTransport::paced());
         let transport_dyn = transport.clone() as Arc<dyn CdpTransport>;
         let (mut state, mut effects) = reconnect_reduction_fixture();
-        restore_event_domains_and_visibility(
+        restore_targets_for_reconnection(
             &attempt,
             &authority,
             &transport_dyn,
@@ -1619,8 +1662,8 @@ mod tests {
             .unwrap();
         assert!(matches!(
             transport.commands().as_slice(),
-            [.., metrics, touch, scale]
-                if metrics == "Emulation.setDeviceMetricsOverride"
+            [.., metrics, touch, scale, probe]
+                if probe == "Runtime.evaluate" && metrics == "Emulation.setDeviceMetricsOverride"
                     && touch == "Emulation.setTouchEmulationEnabled"
                     && scale == "Emulation.setPageScaleFactor"
         ));
@@ -1645,7 +1688,7 @@ mod tests {
             .unwrap(),
         );
         let (mut state, mut effects) = reconnect_reduction_fixture();
-        restore_event_domains_and_visibility(
+        restore_targets_for_reconnection(
             &attempt,
             &failed_authority,
             &transport_dyn,
@@ -1672,6 +1715,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconnect_restores_all_domains_and_viewports_before_one_aggregate_probe_window() {
+        let transport = Arc::new(ControlledTransport::stalled("Runtime.evaluate"));
+        let authority = Arc::new(
+            SessionDomainAuthority::new(
+                SessionId::from_uuid(Uuid::from_u128(44)),
+                SessionOrigin::new(krometrail_core::ObservedTime::from_nanos(0)),
+                Arc::new(AdapterMonotonicClock {
+                    origin: Instant::now(),
+                }),
+                Arc::new(AdapterIdSource),
+                None,
+                BrowserEventConfig::disabled(),
+            )
+            .unwrap(),
+        );
+        let (mut state, mut effects) = reconnect_reduction_fixture_with_pages(24);
+        let attempt = AttemptControl {
+            cancellation: AttemptCancellation::new(),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(2),
+        };
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            restore_targets_for_reconnection(
+                &attempt,
+                &authority,
+                &(transport.clone() as Arc<dyn CdpTransport>),
+                crate::BrowserEventSupport::default(),
+                &mut state,
+                &mut effects,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let commands = transport.commands();
+        let first_probe = commands
+            .iter()
+            .position(|method| method == "Runtime.evaluate")
+            .unwrap();
+        for method in [
+            "Page.enable",
+            "Runtime.enable",
+            "Accessibility.enable",
+            "Emulation.setDeviceMetricsOverride",
+            "Emulation.setTouchEmulationEnabled",
+            "Emulation.setPageScaleFactor",
+        ] {
+            assert_eq!(
+                commands[..first_probe]
+                    .iter()
+                    .filter(|command| command.as_str() == method)
+                    .count(),
+                24,
+                "{method}"
+            );
+        }
+        assert_eq!(commands[first_probe..], ["Runtime.evaluate"]);
+        assert_eq!(state.session_state, BrowserSessionState::Ready);
+        assert!(
+            state
+                .targets_by_key
+                .values()
+                .all(
+                    |target| target.target.visibility == TargetVisibility::Unknown
+                        && target.transport_session.is_some()
+                        && target.viewport_override.is_some()
+                        && matches!(
+                            target.capture_binding,
+                            crate::targets::CaptureBinding::Suspended(_)
+                        )
+                )
+        );
+    }
+
+    #[tokio::test]
     async fn reconnect_domain_restore_is_cut_off_by_attempt_deadline() {
         let transport = Arc::new(ControlledTransport::stalled("Page.enable"));
         let transport_dyn = transport as Arc<dyn CdpTransport>;
@@ -1694,7 +1812,7 @@ mod tests {
             deadline: tokio::time::Instant::now() + Duration::from_millis(20),
         };
         assert_eq!(
-            restore_event_domains_and_visibility(
+            restore_targets_for_reconnection(
                 &attempt,
                 &authority,
                 &transport_dyn,

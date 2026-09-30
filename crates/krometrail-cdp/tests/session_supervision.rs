@@ -1347,6 +1347,26 @@ async fn attachment_session(
     .unwrap()
 }
 
+async fn wait_for_capture_state(
+    session: &Arc<dyn krometrail_core::BrowserSessionPort>,
+    state: krometrail_core::CaptureStreamState,
+) -> krometrail_core::TargetCaptureStatus {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Some(status) = session
+                .capture_statuses()
+                .into_iter()
+                .find(|status| status.state() == state)
+            {
+                return status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn slow_visibility_does_not_hide_initialized_pages_and_listing_recovers_capture() {
     use krometrail_core::{
@@ -1393,6 +1413,7 @@ async fn slow_visibility_does_not_hide_initialized_pages_and_listing_recovers_ca
         .await
         .unwrap();
     assert_eq!(session.status().await.unwrap().selected_target_id, Some(id));
+    wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Capturing).await;
     assert_eq!(start_params(&transport).len(), 1);
     session.stop().await.unwrap();
 }
@@ -1409,9 +1430,35 @@ async fn capture_start_failure_preserves_control_and_activation_retries_it() {
         );
         transport.push_failure(method, TransportError::CommandFailed);
         let session = attachment_session(transport.clone()).await;
+        let failure =
+            wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Failed).await;
         let status = session.status().await.unwrap();
+        assert_eq!(status.capture, vec![failure.clone()]);
         assert_eq!(status.pages.len(), 1, "{method}");
         let id = status.selected_target_id.unwrap();
+        assert_eq!(failure.target_id(), id);
+        let diagnostics = failure.failure().unwrap();
+        assert_eq!(
+            diagnostics.stage(),
+            if method == "Page.getLayoutMetrics" {
+                krometrail_core::CaptureFailureStage::InitialGeometry
+            } else {
+                krometrail_core::CaptureFailureStage::ScreencastStart
+            }
+        );
+        assert_eq!(
+            diagnostics.cause().code,
+            krometrail_core::ErrorCode::CaptureFailed
+        );
+        assert_eq!(diagnostics.cause().context.target_id, Some(id));
+        assert_eq!(
+            diagnostics.cause().message.as_str(),
+            if method == "Page.getLayoutMetrics" {
+                "browser rejected or could not complete the page observation command"
+            } else {
+                "capture transport operation failed"
+            }
+        );
         assert!(
             transport
                 .command_calls()
@@ -1427,6 +1474,7 @@ async fn capture_start_failure_preserves_control_and_activation_retries_it() {
             )
             .await
             .unwrap();
+        wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Capturing).await;
         assert_eq!(session.status().await.unwrap().selected_target_id, Some(id));
         assert_eq!(
             start_params(&transport).len(),
@@ -1548,5 +1596,207 @@ async fn reconnect_keeps_identity_when_visibility_fails_and_page_use_recovers() 
         session.status().await.unwrap().pages[0].target.visibility,
         TargetVisibility::Visible
     );
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn default_ten_touch_points_report_initial_geometry_failure_without_losing_control() {
+    use krometrail_core::{BrowserOperationContext, BrowserOperationRequest, ListPagesRequest};
+    let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    transport.hold_events_open();
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":2}}));
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":"visible"}}));
+    transport.push_response(
+        "Runtime.evaluate",
+        json!({"result":{"value":{
+            "layoutWidth":800, "layoutHeight":600, "scale":1, "touchPoints":10,
+            "viewportMetaPresent":false
+        }}}),
+    );
+    let session = attachment_session(transport.clone()).await;
+    let status =
+        wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Failed).await;
+    let failure = status.failure().unwrap();
+    assert_eq!(
+        failure.stage(),
+        krometrail_core::CaptureFailureStage::InitialGeometry
+    );
+    assert_eq!(
+        failure.cause().message.as_str(),
+        "browser did not clear touch emulation"
+    );
+    assert!(start_params(&transport).is_empty());
+    assert_eq!(
+        session.status().await.unwrap().selected_target_id,
+        Some(status.target_id())
+    );
+    session
+        .execute(
+            BrowserOperationRequest::ListPages(ListPagesRequest {}),
+            BrowserOperationContext::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(session.status().await.unwrap().pages.len(), 1);
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn reprobe_capture_geometry_has_its_own_budget_and_does_not_hold_listing() {
+    use krometrail_core::{BrowserOperationContext, BrowserOperationRequest, ListPagesRequest};
+    let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    transport.hold_events_open();
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":2}}));
+    transport.push_failure("Runtime.evaluate", TransportError::CommandFailed);
+    let session = attachment_session(transport.clone()).await;
+    transport.hold_method("Page.getLayoutMetrics");
+    tokio::time::timeout(
+        Duration::from_millis(200),
+        session.execute(
+            BrowserOperationRequest::ListPages(ListPagesRequest {}),
+            BrowserOperationContext::default(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    transport.wait_for_command("Page.getLayoutMetrics").await;
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(session.capture_statuses().is_empty());
+    transport.release_method("Page.getLayoutMetrics");
+    wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Capturing).await;
+    session.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn held_screencast_start_does_not_hold_listing_page_use_or_create_page() {
+    use krometrail_core::{
+        BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
+        CreatePageRequest, ListPagesRequest, ReadOnlyEvaluationRequest,
+    };
+    let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    transport.hold_events_open();
+    transport.hold_method("Page.startScreencast");
+    let session = tokio::time::timeout(
+        Duration::from_secs(1),
+        attachment_session(transport.clone()),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        transport.wait_for_command("Page.startScreencast"),
+    )
+    .await
+    .unwrap();
+    let id = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.push_response("Runtime.evaluate", json!({"result":{"value":42}}));
+    for request in [
+        BrowserOperationRequest::ListPages(ListPagesRequest {}),
+        BrowserOperationRequest::EvaluatePage(
+            ReadOnlyEvaluationRequest::new(id, "6 * 7", false).unwrap(),
+        ),
+    ] {
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            session.execute(request, BrowserOperationContext::default()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+    transport.push_response("Target.createTarget", json!({"targetId":"target-b"}));
+    transport.push_response(
+        "Target.getTargetInfo",
+        json!({"targetInfo":{
+            "targetId":"target-b", "type":"page", "url":"http://fixture/created", "title":"created"
+        }}),
+    );
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+    let result = tokio::time::timeout(
+        Duration::from_millis(200),
+        session.execute(
+            BrowserOperationRequest::CreatePage(
+                CreatePageRequest::new(Some("http://fixture/created")).unwrap(),
+            ),
+            BrowserOperationContext::default(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(matches!(result, BrowserOperationResult::CreatePage(_)));
+    assert_eq!(session.status().await.unwrap().pages.len(), 2);
+    let stopped = tokio::time::timeout(Duration::from_secs(1), session.stop())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stopped.quality(), krometrail_core::ShutdownQuality::Clean);
+    transport.release_method("Page.startScreencast");
+    assert!(session.capture_statuses().is_empty());
+}
+
+#[tokio::test]
+async fn background_popup_visibility_can_finish_after_the_caller_probe_ceiling() {
+    let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    transport.hold_events_open();
+    let session = attachment_session(transport.clone()).await;
+    wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Capturing).await;
+    let evaluations = transport
+        .commands()
+        .iter()
+        .filter(|(method, _)| method == "Runtime.evaluate")
+        .count();
+    transport.hold_method_after("Runtime.evaluate", evaluations);
+    transport.push_response("Target.attachToTarget", json!({"sessionId":"session-b"}));
+    transport.push_event(
+        "Target.targetCreated",
+        json!({"targetInfo":{
+            "targetId":"target-b", "type":"page", "url":"http://fixture/popup", "title":"popup"
+        }}),
+    );
+    transport
+        .wait_for_command_count("Runtime.evaluate", evaluations + 1)
+        .await;
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    transport.release_method("Runtime.evaluate");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let status = session.status().await.unwrap();
+            if status.pages.len() == 2
+                && status.pages.iter().all(|page| {
+                    page.target.visibility == krometrail_core::TargetVisibility::Visible
+                })
+                && status.capture.len() == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    session.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn held_capture_start_expires_under_its_own_bound_with_diagnostics() {
+    let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    transport.hold_events_open();
+    transport.hold_method("Page.startScreencast");
+    let session = attachment_session(transport.clone()).await;
+    transport.wait_for_command("Page.startScreencast").await;
+    tokio::time::advance(Duration::from_secs(3)).await;
+    let status =
+        wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Failed).await;
+    assert_eq!(
+        status.failure().unwrap().stage(),
+        krometrail_core::CaptureFailureStage::ScreencastStart
+    );
+    assert_eq!(
+        status.failure().unwrap().cause().message.as_str(),
+        "capture screencast startup deadline elapsed"
+    );
+    assert_eq!(session.status().await.unwrap().pages.len(), 1);
     session.stop().await.unwrap();
 }

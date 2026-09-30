@@ -409,6 +409,7 @@ async fn apply_target_reconciliation(
                 Arc::clone(&shared.browser_events),
                 browser_event_support,
                 None,
+                true,
             )
             .await?
         }
@@ -706,6 +707,7 @@ async fn execute_non_local_operation(
                 Arc::clone(&shared.browser_events),
                 browser_event_support,
                 None,
+                true,
             )
             .await;
             *shared.state.lock().expect("session state lock") = state.clone();
@@ -1361,6 +1363,7 @@ async fn commit_supervisor_input(
         Arc::clone(&shared.browser_events),
         browser_event_support,
         None,
+        true,
     )
     .await?;
     *shared.state.lock().expect("session state lock") = state.clone();

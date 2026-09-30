@@ -32,6 +32,7 @@ async fn finish_interrupted_reconnect(
             Arc::clone(&shared.browser_events),
             current.browser_event_support,
             Some(deadline.clone()),
+            false,
         )
         .await;
     }
@@ -265,7 +266,7 @@ pub(super) async fn restore_targets(
     Ok(restored)
 }
 
-pub(super) async fn restore_event_domains_and_visibility(
+pub(super) async fn restore_targets_for_reconnection(
     attempt: &AttemptControl,
     authority: &Arc<SessionDomainAuthority>,
     transport: &Arc<dyn CdpTransport>,
@@ -275,8 +276,8 @@ pub(super) async fn restore_event_domains_and_visibility(
 ) -> std::result::Result<(), AttemptFailure> {
     let mut keys = state.targets_by_key.keys().cloned().collect::<Vec<_>>();
     keys.sort();
-    for target_key in keys {
-        let Some(target) = state.targets_by_key.get(&target_key) else {
+    for target_key in &keys {
+        let Some(target) = state.targets_by_key.get(target_key) else {
             continue;
         };
         let Some(session) = target.transport_session.clone() else {
@@ -292,17 +293,28 @@ pub(super) async fn restore_event_domains_and_visibility(
             .race(authority.restore_target(binding, transport.as_ref(), support))
             .await?
             .map_err(|_| AttemptFailure::Failed)?;
-        let visibility_value = attempt.race(tokio::time::timeout_at(
-            super::runtime::visibility_probe_deadline(Some(attempt.deadline)),
-            transport.send_raw(
-                &CommandScope::Session(session), "Runtime.evaluate",
-                serde_json::json!({"expression": "document.visibilityState", "returnByValue": true}),
-            ),
-        )).await;
-        let visibility_value = match visibility_value {
-            Ok(value) => value.ok().and_then(|value| value.ok()),
-            Err(AttemptFailure::TimedOut) => None,
-            Err(error) => return Err(error),
+    }
+    // Restore all mandatory state before optional observations can spend any attempt budget.
+    *effects = stage_reconnection_effects(attempt, transport, state, effects).await?;
+    let probe_deadline = super::runtime::visibility_probe_deadline(Some(attempt.deadline));
+    for target_key in keys {
+        let Some(target) = state.targets_by_key.get(&target_key) else {
+            continue;
+        };
+        let Some(session) = target.transport_session.clone() else {
+            continue;
+        };
+        let visibility_value = if tokio::time::Instant::now() >= probe_deadline {
+            None
+        } else {
+            tokio::select! {
+                biased;
+                _ = attempt.cancellation.cancelled() => return Err(AttemptFailure::Cancelled),
+                value = tokio::time::timeout_at(probe_deadline, transport.send_raw(
+                    &CommandScope::Session(session), "Runtime.evaluate",
+                    serde_json::json!({"expression": "document.visibilityState", "returnByValue": true}),
+                )) => value.ok().and_then(|value| value.ok()),
+            }
         };
         let visibility = visibility_value.and_then(|value| parse_visibility_result(&value).ok());
         let input = match visibility {
@@ -405,7 +417,7 @@ pub(super) async fn stage_reconnection_effects(
                 }
             }
             // A successful reconstruction has already attached every bounded target, restored
-            // domains, and observed visibility. Any follow-up attach/probe would violate the
+            // domains, and staged viewport replay. Any follow-up attach/probe would violate the
             // transaction boundary and make publication depend on an unbounded effect chain.
             SupervisorEffect::StartCapture { context } => {
                 if !failed_targets.contains(&context.target_id) {
@@ -529,7 +541,7 @@ async fn reconstruct_connection(
     };
     let mut restored_state = reduction.state;
     let mut restored_effects = reduction.effects;
-    if let Err(error) = restore_event_domains_and_visibility(
+    if let Err(error) = restore_targets_for_reconnection(
         &attempt,
         &browser_events,
         &connection.transport,
@@ -544,26 +556,10 @@ async fn reconstruct_connection(
         drop(connection);
         return Err(error);
     }
-    let effects = match stage_reconnection_effects(
-        &attempt,
-        &connection.transport,
-        &mut restored_state,
-        &restored_effects,
-    )
-    .await
-    {
-        Ok(effects) => effects,
-        Err(error) => {
-            browser_events.suspend_connection(restored_state.connection_generation);
-            discard_partial_connection(&mut connection, &sessions).await;
-            drop(connection);
-            return Err(error);
-        }
-    };
     Ok(PreparedReconnection {
         connection,
         state: restored_state,
-        effects,
+        effects: restored_effects,
     })
 }
 
@@ -790,6 +786,7 @@ pub(super) async fn reconnect_loop_transactional(
                         .expect("prepared reconnect connection is installed")
                         .browser_event_support,
                     None,
+                    false,
                 )
                 .await;
                 *shared.state.lock().expect("session state lock") = state.clone();
@@ -818,6 +815,7 @@ pub(super) async fn reconnect_loop_transactional(
                 Arc::clone(&shared.browser_events),
                 current.browser_event_support,
                 Some(deadline.clone()),
+                false,
             )
             .await;
         }

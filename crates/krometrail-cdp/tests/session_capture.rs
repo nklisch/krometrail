@@ -171,13 +171,11 @@ fn stream_cap_start_failure_preserves_control_and_retries_after_visibility() {
 
     // The coordinator rejects page-b after the active-stream cap is reached. The reducer must
     // preserve control on that exact flat session and the still-live page-a stream.
-    let failed = reduce(
-        state,
-        SupervisorInput::CaptureStartFailed {
-            target_key: "page-b".into(),
-        },
-    )
-    .unwrap();
+    let context = match &state.targets_by_key["page-b"].capture_binding {
+        krometrail_cdp::CaptureBinding::Active(context) => context.clone(),
+        binding => panic!("{binding:?}"),
+    };
+    let failed = reduce(state, SupervisorInput::CaptureStartFailed { context }).unwrap();
     assert!(
         !failed
             .effects
@@ -243,13 +241,12 @@ fn visibility_and_target_failure_are_local_reducer_inputs() {
         krometrail_cdp::CaptureBinding::Active(_)
     ));
 
-    let failed = reduce(
-        attached_visible_state(),
-        SupervisorInput::CaptureStartFailed {
-            target_key: "page-a".into(),
-        },
-    )
-    .unwrap();
+    let state = attached_visible_state();
+    let context = match &state.targets_by_key["page-a"].capture_binding {
+        krometrail_cdp::CaptureBinding::Active(context) => context.clone(),
+        binding => panic!("{binding:?}"),
+    };
+    let failed = reduce(state, SupervisorInput::CaptureStartFailed { context }).unwrap();
     assert!(!failed.effects.iter().any(|effect| matches!(
         effect,
         SupervisorEffect::Publish(BrowserSessionEvent::TargetFailed { .. })

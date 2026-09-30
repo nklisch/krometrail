@@ -241,8 +241,10 @@ impl CaptureFailure {
 }
 
 define_stable_enum! {
-    /// Sanitized terminal boundary at which retained visual capture stopped.
+    /// Sanitized boundary at which a retained visual capture attempt failed.
     pub enum CaptureFailureStage {
+        InitialGeometry => "initial_geometry",
+        ScreencastStart => "screencast_start",
         FrameEventStream => "frame_event_stream",
         VisibilityEventStream => "visibility_event_stream",
         FrameEnvelope => "frame_envelope",
