@@ -301,6 +301,9 @@ pub(super) async fn restore_targets_for_reconnection(
         let Some(target) = state.targets_by_key.get(&target_key) else {
             continue;
         };
+        if target.target.lifecycle == krometrail_core::TargetLifecycle::Failed {
+            continue;
+        }
         let Some(session) = target.transport_session.clone() else {
             continue;
         };

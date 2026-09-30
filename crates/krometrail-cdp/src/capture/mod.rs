@@ -333,14 +333,36 @@ impl CaptureCoordinator {
             });
     }
 
-    async fn cancel_startup(&self, target: &CaptureTarget) {
+    pub(crate) fn startup_pending(&self, target_id: TargetId, attachment_generation: u64) -> bool {
+        self.startup_tasks
+            .lock()
+            .expect("startup task lock")
+            .get(&StreamKey {
+                target_id,
+                attachment_generation,
+            })
+            .is_some_and(|task| !task.is_finished())
+    }
+
+    pub(crate) fn startup_has_failed(
+        &self,
+        context: &crate::targets::CaptureEffectContext,
+    ) -> bool {
+        self.startup_failures
+            .lock()
+            .expect("startup failure lock")
+            .get(&context.target_id)
+            .is_some_and(|status| status.attachment_generation() == context.attachment_generation)
+    }
+
+    pub(crate) async fn cancel_startup(&self, target_id: TargetId, attachment_generation: u64) {
         let task = self
             .startup_tasks
             .lock()
             .expect("startup task lock")
             .remove(&StreamKey {
-                target_id: target.target_id,
-                attachment_generation: target.attachment_generation,
+                target_id,
+                attachment_generation,
             });
         if let Some(task) = task {
             task.abort();
@@ -377,7 +399,8 @@ impl CaptureCoordinator {
         reason: CaptureStopReason,
         deadline: tokio::time::Instant,
     ) -> CaptureStopOutcome {
-        self.cancel_startup(target).await;
+        self.cancel_startup(target.target_id, target.attachment_generation)
+            .await;
         self.retire_startup_failure(target.target_id, Some(target.attachment_generation));
         pipeline::stop_target(self, target, reason, deadline).await
     }
@@ -387,7 +410,8 @@ impl CaptureCoordinator {
         target: &CaptureTarget,
         at: krometrail_core::SessionTime,
     ) {
-        self.cancel_startup(target).await;
+        self.cancel_startup(target.target_id, target.attachment_generation)
+            .await;
         pipeline::suspend_target(self, target, at).await;
     }
 

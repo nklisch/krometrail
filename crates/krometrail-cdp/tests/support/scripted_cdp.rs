@@ -57,6 +57,8 @@ struct State {
     responses: HashMap<String, VecDeque<Result<Value, TransportError>>>,
     hold_events_open: bool,
     held_methods: HashSet<String>,
+    held_calls: HashMap<String, usize>,
+    geometry: Option<(u32, u32, f64, u64)>,
     held_after_calls: HashMap<String, usize>,
     command_notify: Arc<Notify>,
     method_notify: Arc<Notify>,
@@ -80,6 +82,8 @@ impl ScriptedCdp {
                 responses: HashMap::new(),
                 hold_events_open: false,
                 held_methods: HashSet::new(),
+                held_calls: HashMap::new(),
+                geometry: None,
                 held_after_calls: HashMap::new(),
                 command_notify: Arc::new(Notify::new()),
                 method_notify: Arc::new(Notify::new()),
@@ -169,8 +173,21 @@ impl ScriptedCdp {
     pub fn release_method(&self, method: &str) {
         let mut state = self.state.lock().unwrap();
         state.held_methods.remove(method);
+        state.held_calls.remove(method);
         state.held_after_calls.remove(method);
         state.method_notify.notify_waiters();
+    }
+
+    pub fn hold_method_call(&self, method: &str, call: usize) {
+        self.state
+            .lock()
+            .unwrap()
+            .held_calls
+            .insert(method.to_owned(), call);
+    }
+
+    pub fn set_geometry(&self, width: u32, height: u32, scale: f64, touch_points: u64) {
+        self.state.lock().unwrap().geometry = Some((width, height, scale, touch_points));
     }
 
     pub fn hold_method_after(&self, method: &str, completed_calls: usize) {
@@ -291,6 +308,24 @@ impl ScriptedCdp {
         {
             return response;
         }
+        if let Some((width, height, scale, touch_points)) = state.geometry {
+            if method == "Page.getLayoutMetrics" {
+                return Ok(json!({"result":{
+                    "cssLayoutViewport":{"clientWidth":width,"clientHeight":height},
+                    "cssVisualViewport":{"clientWidth":width,"clientHeight":height}
+                }}));
+            }
+            if method == "Runtime.evaluate"
+                && params["expression"].as_str().is_some_and(|expression| {
+                    expression.contains("touchPoints:navigator.maxTouchPoints")
+                })
+            {
+                return Ok(json!({"result":{"value":{
+                    "layoutWidth":width,"layoutHeight":height,"scale":scale,
+                    "touchPoints":touch_points,"viewportMetaPresent":true
+                }}}));
+            }
+        }
         Ok(match method {
             "Browser.getVersion" => json!({
                 "protocolVersion": "1.3",
@@ -392,9 +427,18 @@ impl CdpTransport for ScriptedCdp {
         let state = Arc::clone(&self.state);
         let method_notify = Arc::clone(&self.state.lock().unwrap().method_notify);
         let method_name = method.to_owned();
+        let call = state
+            .lock()
+            .unwrap()
+            .commands
+            .iter()
+            .filter(|(called, _)| called == method)
+            .count()
+            + 1;
         let held = {
             let state = state.lock().unwrap();
-            state.held_methods.contains(method)
+            state.held_calls.get(method) == Some(&call)
+                || state.held_methods.contains(method)
                 || state.held_after_calls.get(method).is_some_and(|threshold| {
                     state
                         .commands
@@ -411,7 +455,8 @@ impl CdpTransport for ScriptedCdp {
                     let notified = method_notify.notified();
                     let still_held = {
                         let state = state.lock().unwrap();
-                        state.held_methods.contains(&method_name)
+                        state.held_calls.get(&method_name) == Some(&call)
+                            || state.held_methods.contains(&method_name)
                             || state
                                 .held_after_calls
                                 .get(&method_name)

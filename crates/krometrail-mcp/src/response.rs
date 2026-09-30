@@ -4297,7 +4297,7 @@ mod tests {
     fn startup_capture_failure_degrades_a_later_current_state_response() {
         for (stage, message) in [
             (
-                CaptureFailureStage::InitialGeometry,
+                CaptureFailureStage::Geometry,
                 "browser did not clear touch emulation",
             ),
             (

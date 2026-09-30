@@ -82,7 +82,8 @@ pub(crate) use runtime::VisibilityProbeError;
 pub(crate) use runtime::parse_visibility_result;
 use runtime::{
     ConnectionResources, ProcessDeathSignal, SupervisorRuntime, apply_effects, apply_effects_until,
-    parse_target_info, run_supervisor, setup_connection, setup_connection_with_target_limit,
+    parse_target_info, restart_capture_startup, run_supervisor, setup_connection,
+    setup_connection_with_target_limit,
 };
 #[cfg(test)]
 use runtime::{TargetEventKind, parse_event, refresh_capture_geometry, restore_session_domains};
@@ -1673,7 +1674,7 @@ mod tests {
         )));
 
         let transport = Arc::new(ControlledTransport::failed("Emulation.setPageScaleFactor"));
-        let transport_dyn = transport as Arc<dyn CdpTransport>;
+        let transport_dyn = transport.clone() as Arc<dyn CdpTransport>;
         let failed_authority = Arc::new(
             SessionDomainAuthority::new(
                 SessionId::from_uuid(Uuid::from_u128(43)),
@@ -1701,6 +1702,12 @@ mod tests {
         let staged = stage_reconnection_effects(&attempt, &transport_dyn, &mut state, &effects)
             .await
             .unwrap();
+        assert!(
+            !transport
+                .commands()
+                .iter()
+                .any(|method| method == "Runtime.evaluate")
+        );
         let failed_target = state.targets_by_key["restored"].target.target.id();
         assert_eq!(
             state.targets_by_key["restored"].target.lifecycle,

@@ -1326,6 +1326,13 @@ impl TransportEvents for ScriptedReconnectEvents {
 async fn attachment_session(
     transport: Arc<support::scripted_cdp::ScriptedCdp>,
 ) -> Arc<dyn krometrail_core::BrowserSessionPort> {
+    attachment_session_with_sink(transport, Arc::new(CaptureTestSink)).await
+}
+
+async fn attachment_session_with_sink(
+    transport: Arc<support::scripted_cdp::ScriptedCdp>,
+    sink: Arc<dyn RecordingSink>,
+) -> Arc<dyn krometrail_core::BrowserSessionPort> {
     ProductionBrowserConnector::new(
         Arc::new(krometrail_cdp::SystemChromeLauncher::new(
             krometrail_cdp::LauncherConfig::default(),
@@ -1335,7 +1342,7 @@ async fn attachment_session(
     .with_capture(
         Arc::new(CaptureTestClock),
         Arc::new(CaptureTestIds::default()),
-        Arc::new(CaptureTestSink),
+        sink,
         Arc::new(support::retention::AlwaysAvailableRetention),
         CaptureConfig::default(),
     )
@@ -1441,7 +1448,7 @@ async fn capture_start_failure_preserves_control_and_activation_retries_it() {
         assert_eq!(
             diagnostics.stage(),
             if method == "Page.getLayoutMetrics" {
-                krometrail_core::CaptureFailureStage::InitialGeometry
+                krometrail_core::CaptureFailureStage::Geometry
             } else {
                 krometrail_core::CaptureFailureStage::ScreencastStart
             }
@@ -1600,7 +1607,7 @@ async fn reconnect_keeps_identity_when_visibility_fails_and_page_use_recovers() 
 }
 
 #[tokio::test]
-async fn default_ten_touch_points_report_initial_geometry_failure_without_losing_control() {
+async fn default_ten_touch_points_report_geometry_failure_without_losing_control() {
     use krometrail_core::{BrowserOperationContext, BrowserOperationRequest, ListPagesRequest};
     let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
     transport.hold_events_open();
@@ -1619,7 +1626,7 @@ async fn default_ten_touch_points_report_initial_geometry_failure_without_losing
     let failure = status.failure().unwrap();
     assert_eq!(
         failure.stage(),
-        krometrail_core::CaptureFailureStage::InitialGeometry
+        krometrail_core::CaptureFailureStage::Geometry
     );
     assert_eq!(
         failure.cause().message.as_str(),
@@ -1798,5 +1805,185 @@ async fn held_capture_start_expires_under_its_own_bound_with_diagnostics() {
         "capture screencast startup deadline elapsed"
     );
     assert_eq!(session.status().await.unwrap().pages.len(), 1);
+    session.stop().await.unwrap();
+}
+
+#[derive(Default)]
+struct GeometryFramesSink(std::sync::Mutex<Vec<EncodedFrame>>);
+
+impl RecordingSink for GeometryFramesSink {
+    fn append_frame(
+        &self,
+        frame: EncodedFrame,
+    ) -> PortFuture<'_, krometrail_core::Result<FrameAddress>> {
+        self.0.lock().unwrap().push(frame);
+        Box::pin(std::future::ready(Ok(FrameAddress::new(
+            SegmentId::from_uuid(Uuid::from_u128(1)),
+            ByteOffset::new(1),
+        ))))
+    }
+    fn append_gap(
+        &self,
+        _gap: krometrail_core::CaptureGap,
+    ) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn flush(&self, _session_id: SessionId) -> PortFuture<'_, krometrail_core::Result<()>> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+}
+
+async fn assert_resized_capture_frame(
+    transport: &support::scripted_cdp::ScriptedCdp,
+    sink: &GeometryFramesSink,
+    session: &Arc<dyn krometrail_core::BrowserSessionPort>,
+    original: TargetId,
+) {
+    wait_for_capture_state(session, krometrail_core::CaptureStreamState::Capturing).await;
+    assert_eq!(
+        session.status().await.unwrap().selected_target_id,
+        Some(original)
+    );
+    let jpeg = [0xff, 0xd8, 0xff, 0xc0, 0, 8, 8, 3, 0, 4, 0, 1, 0xff, 0xd9];
+    transport.push_scoped_event(
+        "Page.screencastFrame",
+        Some("session-a"),
+        json!({
+            "sessionId":7, "data":STANDARD.encode(jpeg),
+            "metadata":{"deviceWidth":1024,"deviceHeight":768,"pageScaleFactor":1.0,"timestamp":1.0}
+        }),
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while sink.0.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let frames = sink.0.lock().unwrap();
+    let metadata = frames[0].metadata();
+    assert_eq!(
+        metadata.viewport(),
+        krometrail_core::PixelDimensions::new(1024, 768).unwrap()
+    );
+    assert_eq!(metadata.device_scale_factor().get(), 1.0);
+    assert!(metadata.warnings().is_empty(), "{:?}", metadata.warnings());
+}
+
+#[tokio::test]
+async fn viewport_change_restarts_pending_geometry_or_screencast_with_current_override() {
+    use krometrail_core::{
+        BrowserOperationContext, BrowserOperationRequest, BrowserOperationResult,
+        PageOperationOutcome, PageSelection, SetViewportRequest, ViewportMetrics, ViewportOverride,
+    };
+    for (geometry_held, completion_wins) in [(true, false), (false, false), (false, true)] {
+        let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+        transport.hold_events_open();
+        if geometry_held {
+            transport.set_geometry(1024, 768, 1.0, 1);
+            transport.hold_method_call("Runtime.evaluate", 3);
+        } else {
+            transport.hold_method("Page.startScreencast");
+        }
+        let sink = Arc::new(GeometryFramesSink::default());
+        let session = attachment_session_with_sink(transport.clone(), sink.clone()).await;
+        if geometry_held {
+            transport
+                .wait_for_command_count("Runtime.evaluate", 3)
+                .await;
+        } else {
+            transport.wait_for_command("Page.startScreencast").await;
+        }
+        let id = session.status().await.unwrap().selected_target_id.unwrap();
+        // Touch-enabled metrics make the old no-override observation invalid if it resumes.
+        transport.set_geometry(1024, 768, 1.0, 1);
+        if geometry_held || completion_wins {
+            transport.hold_method("Emulation.setDeviceMetricsOverride");
+        }
+        let operation_session = Arc::clone(&session);
+        let operation = tokio::spawn(async move {
+            operation_session
+                .execute(
+                    BrowserOperationRequest::SetViewport(SetViewportRequest {
+                        target: PageSelection::Target(id),
+                        viewport: ViewportOverride::Override {
+                            metrics: ViewportMetrics::new(1024, 768, 1.0, false, true).unwrap(),
+                        },
+                    }),
+                    BrowserOperationContext::default(),
+                )
+                .await
+        });
+        if geometry_held {
+            transport
+                .wait_for_command("Emulation.setDeviceMetricsOverride")
+                .await;
+            transport.release_method("Runtime.evaluate");
+            // The superseded no-override attempt fails while viewport execution owns the queue.
+            wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Failed).await;
+            transport.release_method("Emulation.setDeviceMetricsOverride");
+        }
+        if completion_wins {
+            transport
+                .wait_for_command("Emulation.setDeviceMetricsOverride")
+                .await;
+            transport.release_method("Page.startScreencast");
+            wait_for_capture_state(&session, krometrail_core::CaptureStreamState::Capturing).await;
+            transport.release_method("Emulation.setDeviceMetricsOverride");
+        }
+        let result = tokio::time::timeout(Duration::from_secs(1), operation)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, BrowserOperationResult::SetViewport(result)
+            if matches!(result.operation.outcome, PageOperationOutcome::Succeeded(_))));
+        transport.release_method("Runtime.evaluate");
+        transport.release_method("Page.startScreencast");
+        assert_resized_capture_frame(&transport, &sink, &session, id).await;
+        assert_eq!(
+            start_params(&transport).len(),
+            if geometry_held || completion_wins {
+                1
+            } else {
+                2
+            }
+        );
+        // A queued failure from the old attempt must not disable the replacement binding:
+        // closing this page must immediately stop its stream, before session shutdown.
+        transport.push_response("Target.closeTarget", json!({"success":true}));
+        session
+            .execute(
+                BrowserOperationRequest::ClosePage(krometrail_core::ClosePageRequest {
+                    target: PageSelection::Target(id),
+                }),
+                BrowserOperationContext::default(),
+            )
+            .await
+            .unwrap();
+        assert!(session.capture_statuses().is_empty());
+        session.stop().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn resize_refresh_restarts_a_held_start_and_records_current_complete_geometry() {
+    let transport = Arc::new(support::scripted_cdp::ScriptedCdp::chrome());
+    transport.hold_events_open();
+    transport.hold_method("Page.startScreencast");
+    let sink = Arc::new(GeometryFramesSink::default());
+    let session = attachment_session_with_sink(transport.clone(), sink.clone()).await;
+    transport.wait_for_command("Page.startScreencast").await;
+    let id = session.status().await.unwrap().selected_target_id.unwrap();
+    transport.set_geometry(1024, 768, 1.0, 0);
+    transport.push_scoped_event("Page.frameResized", Some("session-a"), json!({}));
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        transport.wait_for_command_count("Page.startScreencast", 2),
+    )
+    .await
+    .unwrap();
+    transport.release_method("Page.startScreencast");
+    assert_resized_capture_frame(&transport, &sink, &session, id).await;
     session.stop().await.unwrap();
 }

@@ -251,7 +251,9 @@ selecting a page, or using an unknown-visibility page makes one bounded re-probe
 explicit activation also commits observed visibility. A later visible observation retries unavailable capture without
 changing target identity or attachment generation. Real attachment and mandatory
 domain-setup failures still fail the target. Optional capture startup runs under its
-own bound and is cancelled on suspension, closure, or shutdown. Startup failure
+own bound and is cancelled on suspension, closure, or shutdown. A geometry change
+during startup cancels and re-queues that attempt using the current acknowledged
+viewport override, without changing attachment identity. Startup failure
 retains a target-scoped capture status with a sanitized stage and cause, logs a
 warning, and degrades later tool responses through the capture-health path.
 

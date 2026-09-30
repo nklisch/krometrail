@@ -545,7 +545,7 @@ async fn apply_effects_with_deadline(
                                 // Viewport observation only emits sanitized domain/transport messages.
                                 task_capture.coordinator.startup_failed(
                                     task_context,
-                                    krometrail_core::CaptureFailureStage::InitialGeometry,
+                                    krometrail_core::CaptureFailureStage::Geometry,
                                     error.message,
                                 );
                                 return;
@@ -774,6 +774,15 @@ pub(super) async fn run_supervisor(
     while let Some(command) = commands.recv().await {
         match command {
             SupervisorCommand::Input(input) => {
+                if let SupervisorInput::CaptureStartFailed { context } = &input
+                    && shared
+                        .capture
+                        .as_ref()
+                        .is_none_or(|capture| !capture.coordinator.startup_has_failed(context))
+                {
+                    // A geometry change may already have replaced this failed startup attempt.
+                    continue;
+                }
                 // Keep the last committed state if a late transport event violates a lifecycle
                 // invariant; dropping it here would erase every target before reconnect can restore
                 // the exact browser keys.
@@ -881,13 +890,27 @@ pub(super) async fn run_supervisor(
                 if let (Some(connection), Some(capture)) =
                     (connection.as_ref(), shared.capture.as_ref())
                 {
-                    let _ = refresh_capture_geometry(
-                        &state,
-                        connection.transport.as_ref(),
-                        capture,
-                        transition,
-                    )
-                    .await;
+                    if capture
+                        .coordinator
+                        .startup_pending(transition.target_id(), transition.attachment_generation())
+                    {
+                        let _ = restart_capture_startup(
+                            &mut state,
+                            Arc::clone(&connection.transport),
+                            &shared,
+                            transition.target_id(),
+                            transition.attachment_generation(),
+                        )
+                        .await;
+                    } else {
+                        let _ = refresh_capture_geometry(
+                            &state,
+                            connection.transport.as_ref(),
+                            capture,
+                            transition,
+                        )
+                        .await;
+                    }
                 }
             }
             SupervisorCommand::Execute(request, context, sender) => {
@@ -993,6 +1016,64 @@ pub(super) async fn run_supervisor(
     }
     // Dropping the connection aborts event pumps. Process/profile Arcs remain owned by this task
     // and are cleaned by the explicit shutdown path or by their guards on cancellation.
+}
+
+/// Re-read the acknowledged override after a geometry change, keeping the attachment identity.
+pub(super) async fn restart_capture_startup(
+    state: &mut SupervisorState,
+    transport: Arc<dyn CdpTransport>,
+    shared: &Arc<SessionShared>,
+    target_id: krometrail_core::TargetId,
+    attachment_generation: u64,
+) -> Result<()> {
+    let Some(capture) = shared.capture.as_ref() else {
+        return Ok(());
+    };
+    let Some(context) =
+        state
+            .targets_by_key
+            .values()
+            .find_map(|target| match &target.capture_binding {
+                crate::targets::CaptureBinding::Active(context)
+                    if context.target_id == target_id
+                        && context.attachment_generation == attachment_generation =>
+                {
+                    Some(context.clone())
+                }
+                _ => None,
+            })
+    else {
+        return Ok(());
+    };
+    capture
+        .coordinator
+        .cancel_startup(target_id, attachment_generation)
+        .await;
+    // Completion may win the cancellation race. Its registered stream remains owned by
+    // capture; apply the current geometry through the normal transition path in that case.
+    if let Some(transition) = capture
+        .coordinator
+        .begin_geometry_transition(target_id, attachment_generation)
+    {
+        let _ = refresh_capture_geometry(state, transport.as_ref(), capture, transition).await;
+        return Ok(());
+    }
+    let support = *shared
+        .browser_event_support
+        .lock()
+        .expect("browser event support lock");
+    apply_effects(
+        state,
+        vec![SupervisorEffect::StartCapture { context }],
+        transport,
+        Arc::clone(&shared.subscribers),
+        shared.capture.clone(),
+        Arc::clone(&shared.browser_events),
+        support,
+        None,
+        false,
+    )
+    .await
 }
 
 pub(super) async fn refresh_capture_geometry(

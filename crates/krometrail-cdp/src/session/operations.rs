@@ -932,6 +932,11 @@ async fn execute_non_local_operation(
             let started_at = page_control.session_time()?;
             let interaction_id = page_control.next_interaction_id();
             let dispatched_at = page_control.session_time()?;
+            let startup_pending = shared.capture.as_ref().is_some_and(|capture| {
+                capture
+                    .coordinator
+                    .startup_pending(target_id, bound.attachment_generation)
+            });
             let geometry_transition = shared.capture.as_ref().and_then(|capture| {
                 capture
                     .coordinator
@@ -954,6 +959,7 @@ async fn execute_non_local_operation(
                     &target_key,
                     previous,
                     geometry_transition,
+                    startup_pending,
                 )
                 .await;
                 return viewport_failure_result(
@@ -983,6 +989,7 @@ async fn execute_non_local_operation(
                         &target_key,
                         previous,
                         geometry_transition,
+                        startup_pending,
                     )
                     .await;
                     return viewport_failure_result(
@@ -1008,6 +1015,7 @@ async fn execute_non_local_operation(
                             &target_key,
                             previous,
                             geometry_transition,
+                            startup_pending,
                         )
                         .await;
                         return viewport_failure_result(
@@ -1040,6 +1048,7 @@ async fn execute_non_local_operation(
                     &target_key,
                     previous,
                     geometry_transition,
+                    startup_pending,
                 )
                 .await;
                 return viewport_failure_result(
@@ -1058,6 +1067,16 @@ async fn execute_non_local_operation(
                 capture
                     .coordinator
                     .commit_geometry_transition(transition, capture_geometry);
+            }
+            if startup_pending {
+                restart_capture_startup(
+                    state,
+                    Arc::clone(&transport),
+                    shared,
+                    target_id,
+                    bound.attachment_generation,
+                )
+                .await?;
             }
             page_control.invalidate_target_snapshot(target_id);
             let observation = page_control
@@ -1264,6 +1283,7 @@ fn create_target_params(
     params
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn rollback_viewport_or_fail_target(
     state: &mut SupervisorState,
     shared: &Arc<SessionShared>,
@@ -1272,6 +1292,7 @@ async fn rollback_viewport_or_fail_target(
     target_key: &str,
     previous: Option<krometrail_core::ViewportMetrics>,
     geometry_transition: Option<crate::capture::CaptureGeometryTransition>,
+    startup_pending: bool,
 ) {
     let restored_geometry = async {
         crate::control::viewport::apply_viewport(transport.as_ref(), bound, previous).await?;
@@ -1289,6 +1310,16 @@ async fn rollback_viewport_or_fail_target(
             capture
                 .coordinator
                 .commit_geometry_transition(transition, geometry);
+        }
+        if startup_pending {
+            let _ = restart_capture_startup(
+                state,
+                transport,
+                shared,
+                bound.target_id,
+                bound.attachment_generation,
+            )
+            .await;
         }
         return;
     }

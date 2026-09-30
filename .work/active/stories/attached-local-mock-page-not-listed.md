@@ -391,3 +391,71 @@ touch host, the parked viewport rollback hypothesis, physical GPU monitorless
 behavior, macOS, Windows, and release-time qualification remain unverified.
 The default-touch story is the only non-blocking follow-up. Story stays active
 for owner review/release; no version, tag, push, release, or issue closure.
+
+### Async startup geometry correction (2026-09-30)
+
+Both checkpoint reviewers identified the same new race: startup froze the viewport
+supplied to its geometry observation, while viewport operations and geometry refresh
+commands could only update registered streams. A geometry change before registration
+could therefore invalidate that startup's override check or leave its eventual stream
+with stale geometry and a pending, unreplayed transition.
+
+The correction uses cancellation and re-queueing. A viewport operation remembers
+whether startup was pending and, after acknowledging the new viewport (or a successful
+rollback), cancels that attempt and schedules startup with the current acknowledged
+override. Resize/navigation refresh commands do the same while startup is pending.
+If completion wins cancellation, the registered stream receives the new geometry
+through the existing transition/refresh path. Attachment identity and ordinal fencing
+are unchanged. Superseded startup failure notifications are ignored once their failed
+status has been cleared by a replacement attempt, so an old queued failure cannot
+make the replacement binding unavailable.
+
+Reconnect visibility observations now skip pages whose viewport replay failed.
+The current capture failure stage is the neutral `geometry`, covering both initial
+startup and resume; earlier `initial_geometry` receipts above describe the previous
+checkpoint, not the current wire contract.
+
+Verification for this round:
+
+- Scripted transport/reducer tests: PASS. Held geometry followed by set_viewport
+  exercises a superseded no-override touch failure queued during viewport execution;
+  held screencast startup followed by set_viewport exercises cancellation/re-queue;
+  startup completing during viewport execution exercises the registered-stream path.
+  All three recover to a persisted 1024x768 frame with the correct scale, no geometry
+  warnings, unchanged selected identity, and immediate stream teardown on page close.
+  Held startup followed by a resize refresh likewise records current, complete
+  geometry. Failed viewport replay is asserted to issue no visibility evaluation.
+- `cargo fmt --all -- --check`: PASS.
+- `bash scripts/check-wire-enum-schemas.sh`: PASS.
+- `cargo check --workspace --all-targets --locked`: PASS.
+- `cargo test --workspace --all-targets --locked`: PASS, 1,411 passed and 17 ignored
+  across 79 test binaries. Existing opt-in qualifications remain opt-in.
+- `rustup run 1.98.0 cargo-clippy clippy --workspace --all-targets --locked --
+  -D warnings -A clippy::chunks_exact_to_as_chunks`: PASS.
+- Candidate build, CLI version/help/discovery doctor, and `bun run docs:build`: PASS.
+  All Rust commands retained the assigned cache target directory. Gate logs are
+  `~/.cache/dng-workstations/krometrail-race-{check,test,clippy,build,docs}.log`.
+- Final-candidate first attach in owned NCU 0.4.2 desktop
+  `desktop-1790762667095-3953145`: PASS. Private automated Chrome profile, loopback
+  debugging address and port 0; first attach/list found one page, fill returned
+  degraded success and the HTTP fixture independently confirmed `first attach verified`,
+  fixture-URL create returned degraded success, and the final list contained two pages.
+  browser_status and later responses exposed target-scoped failed capture at `geometry`
+  with “browser did not clear touch emulation”. WARN records contain target id, the
+  neutral stage, and the sanitized cause (2026-09-30T10:04:43Z). Detach and destruction
+  by the exact desktop id succeeded. Evidence under
+  `~/.cache/dng-workstations/attached-page-evidence/`: `race-candidate-host.log`,
+  `race-candidate-host-0.png`, and `data-race-candidate-0/diagnostics/krometrail.log`.
+  First-list correlation `779f6a68-baf2-487f-8ae5-fb2cffbd5e6b`; fill correlation
+  `75436c89-107e-430d-a082-54941b3c800b`. An earlier candidate check also passed and
+  destroyed its exact desktop `desktop-1790762407554-3953145`.
+
+Final binary SHA-256:
+`59b9e3195c8484589d0063aa191287681c454090287e14c79bf3ef27c215b69b`.
+
+No blocker or open implementation question. The VM journey was not repeated in this
+round. Real continuous capture and live geometry changes remain unqualified on the
+native-touch incident host; their geometry/control race is covered by scripted frame
+verification. The parked default-touch/viewport rollback investigation remains the
+non-blocking follow-up. Other previously recorded platform/release limitations still
+apply. Story remains active for owner review; no version, tag, push, release, or closure.
