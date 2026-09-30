@@ -205,3 +205,26 @@ fixing the visibility path when capture startup is the real failure;
 suppressing a failure without making the target recoverable; starting capture
 on a target whose visibility is unknown; masking a real attach or setup
 failure as success.
+
+## Delivery notes
+
+### Diagnosis (2026-09-30, before behavior changes)
+
+Candidate built from lane HEAD with stage-only instrumentation, using
+`CARGO_TARGET_DIR=~/.cache/dng-workstations/krometrail-target`. Fresh explicitly
+owned NCU 0.4.0 desktop `desktop-1790748320571-3953145`, Google Chrome, private
+profile, loopback port 0, synthetic HTTP fixture. Independent `/json/list`
+reported the page and NCU observation recorded its window. First attach returned
+ready/page_count 0; list returned []; create returned target_failed.
+
+Stage evidence at 2026-09-30T06:05:34Z: attach succeeded, mandatory domain setup
+succeeded, visibility probe succeeded, geometry failed. Screencast was not
+attempted. This establishes design path 2: CaptureStartFailed terminally fails
+an otherwise initialized controllable target. The exact viewport-decoding cause
+is not yet established. Instrumentation initially emitted an extra visibility
+false record for Attached inputs; that record is not a probe and is removed.
+Evidence is local at `~/.cache/dng-workstations/attached-page-evidence/`:
+`baseline.log`, `host-0.png`, and `data-baseline-0/diagnostics/krometrail.log`.
+Attach correlation ac21fda6-1c77-4d8c-8593-c4944331041a; create correlation
+149d4465-015d-4ca3-9846-ebb2a5bed6fd. Candidate MCP was 1.7.0. Exact desktop
+destruction succeeded; no external browser or installed binary was used.
