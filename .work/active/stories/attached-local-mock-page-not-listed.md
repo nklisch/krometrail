@@ -1,7 +1,7 @@
 ---
 id: attached-local-mock-page-not-listed
 kind: story
-stage: backlog
+stage: implementing
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
@@ -9,7 +9,7 @@ release_binding: null
 research_refs: []
 research_origin: null
 created: 2026-09-09
-updated: 2026-09-13
+updated: 2026-09-29
 ---
 
 # Attached browser reports no pages despite a visible local mock
@@ -114,3 +114,63 @@ day, on the same machine and versions, the very first attach of a different
 owned desktop returned one page after a single reattach, so the recovery is
 intermittent rather than deterministic. Task was completed through in-fixture
 click drivers and component tests; no toolkit fix attempted.
+
+## Recurrence on workstation VMs and the reference host (2026-09-29)
+
+GitHub issue nklisch/krometrail#16. With Krometrail 1.7.0, a newly launched
+Chrome 151.0.7922.137 (reference host) or Nobara Chromium 151.0.7922.173
+(fresh Nobara 44 VM) in an NCU owned desktop behaves the same way: the first
+`attach_browser` returns page_count 0, `list_pages` returns [], and
+`create_page` fails `target_failed`, while `/json/list` shows the page. On the
+reference host, a detach and reattach listed the page with lifecycle and
+visibility `hidden`. On the VM, the reattach also listed nothing. This blocks
+browser automation on the Dave and Nate Games workstation fleet.
+
+## Design
+
+Owner design (Opus, main session of the workstation run), for GPT-6.1 Sol to
+implement and Opus + GPT-6 Astra to review. The user asked for this fix as
+its own workstream on 2026-09-29.
+
+**Leading hypothesis, to confirm first.** `reconcile_one` issues `Attach` for
+each recordable page, `attach` probes visibility, and a failed initial
+visibility probe (`initial_visibility_probe_failed`) detaches and fails that
+target, so it never becomes listable. In an NCU owned desktop the Chrome
+window is on a headless KWin output. Right after launch, and on slower
+software-rendered VMs, the page's visibility or lifecycle query can fail or
+time out. That explains all three symptoms: zero pages at first attach,
+`create_page` failing at its own attach, and a reattach that sometimes
+succeeds (seeing `hidden`). Confirm or refute this from Krometrail's own
+diagnostics and correlation-adjacent log entries before changing behavior.
+Record the actual cause.
+
+**Required behavior.** A visible or hidden page in an attached browser is
+listed after attach. A page that cannot yet report visibility stays listed
+with visibility `unknown` or `hidden`, and it is retried or refreshed on
+later observation or activation instead of failing permanently.
+`create_page` returns the page it created. Recording and capture still
+start only when the existing rules allow it: this changes discovery and
+listing, not the capture boundary. Existing selection-recovery work
+(epic-a-grade-reliability-page-selection-recovery) is related but not
+absorbed; note any overlap rather than expanding into it.
+
+**Verification.** Reducer tests for a failed or slow initial visibility probe
+leaving a listable target, and for recovering it later. A real-browser check
+with the lane's candidate binary: launch Chrome with loopback remote
+debugging inside an NCU owned desktop created and destroyed by the lane
+(explicit ID), attach, list the page, `create_page`, and one interaction, all
+on first attach, repeated several times. The same journey on a fresh Nobara
+workstation VM through `dave-and-nate-games/workstations`
+`tests/vm/ncu_desktops.py --krometrail <guest path>` with the candidate. Then
+the repository's own test and qualification commands, and the release gates
+(security, tests, cruft, docs, patterns) at release time.
+
+**Release.** After review and acceptance, the owner releases through
+`bun scripts/bump-version.ts patch` and the tag-driven `release.yml`, with the
+user's standing agreement for this workstream, and closes #16 with the
+evidence.
+
+**Difficulty.** High on diagnosis, moderate on the change. Likely mistakes:
+suppressing the failure without making the target recoverable; starting
+capture on a target whose visibility is unknown; masking a real
+target-attach failure as success.
