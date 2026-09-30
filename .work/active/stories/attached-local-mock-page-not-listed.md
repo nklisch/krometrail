@@ -132,38 +132,68 @@ Owner design (Opus, main session of the workstation run), for GPT-6.1 Sol to
 implement and Opus + GPT-6 Astra to review. The user asked for this fix as
 its own workstream on 2026-09-29.
 
-**Leading hypothesis, to confirm first.** `reconcile_one` issues `Attach` for
-each recordable page, `attach` probes visibility, and a failed initial
-visibility probe (`initial_visibility_probe_failed`) detaches and fails that
-target, so it never becomes listable. In an NCU owned desktop the Chrome
-window is on a headless KWin output. Right after launch, and on slower
-software-rendered VMs, the page's visibility or lifecycle query can fail or
-time out. That explains all three symptoms: zero pages at first attach,
-`create_page` failing at its own attach, and a reattach that sometimes
-succeeds (seeing `hidden`). Confirm or refute this from Krometrail's own
-diagnostics and correlation-adjacent log entries before changing behavior.
-Record the actual cause.
+**Diagnose which stage fails first** (revised after the Astra design review
+of `ebef666b`). Two credible paths make a page unlistable, and the code alone
+cannot tell which one the incidents took:
 
-**Required behavior.** A visible or hidden page in an attached browser is
-listed after attach. A page that cannot yet report visibility stays listed
-with visibility `unknown` or `hidden`, and it is retried or refreshed on
-later observation or activation instead of failing permanently.
-`create_page` returns the page it created. Recording and capture still
-start only when the existing rules allow it: this changes discovery and
-listing, not the capture boundary. Existing selection-recovery work
-(epic-a-grade-reliability-page-selection-recovery) is related but not
-absorbed; note any overlap rather than expanding into it.
+1. `attach` → initial visibility probe → `InitialVisibilityProbeFailed`,
+   which detaches and terminally fails the target. Note that this input also
+   covers mandatory session-domain setup failing before the visibility query.
+2. A successful probe → capture geometry or screencast startup →
+   `CaptureStartFailed`, which detaches and terminally fails the target.
+   `create_page` waits for that whole effect queue before reporting an attach
+   failure. Hidden pages skip capture startup, which fits the reference
+   host's "reattach worked and saw `hidden`", and it conflicts with the
+   capture/control isolation contract in `docs/ARCHITECTURE.md`.
 
-**Verification.** Reducer tests for a failed or slow initial visibility probe
-leaving a listable target, and for recovering it later. A real-browser check
-with the lane's candidate binary: launch Chrome with loopback remote
-debugging inside an NCU owned desktop created and destroyed by the lane
-(explicit ID), attach, list the page, `create_page`, and one interaction, all
-on first attach, repeated several times. The same journey on a fresh Nobara
-workstation VM through `dave-and-nate-games/workstations`
-`tests/vm/ncu_desktops.py --krometrail <guest path>` with the candidate. Then
-the repository's own test and qualification commands, and the release gates
-(security, tests, cruft, docs, patterns) at release time.
+Reproduce first on the lane's candidate, with failures classified by stage
+(attach, domain setup, visibility, geometry, screencast). Record which stage
+fails, and fix that stage; do not assume path 1.
+
+**Required behavior.**
+
+- A target that attached and completed its mandatory domain setup is never
+  terminally failed only because its visibility could not be observed, or
+  because capture could not start. It stays listed and selectable, and it
+  answers control operations. Its visibility is `unknown` until actually
+  observed; `hidden` requires an observation. Its capture binding records
+  that capture is unavailable, instead of failing the target, as the
+  capture/control isolation contract requires.
+- A real attach failure or mandatory domain-setup failure still fails the
+  target. Split the reducer input so the two cases cannot be confused.
+- Readiness accepts an attached, initialized target whose visibility is
+  unknown. The visible-only capture gate stays: capture starts only after
+  observed visibility.
+- Recovery trigger: explicit activation (which already commits visibility),
+  plus one bounded visibility re-probe when `list_pages`, `select_page`, or
+  a page operation needs the target and its visibility is unknown. A capture
+  start that failed is retried when a later observation shows the target
+  visible. Reconnect uses the same policy instead of failing the
+  replacement connection on a visibility-probe failure. Preserve target
+  identity, attachment-generation fencing, and existing selection semantics.
+- `create_page` returns the created page once it has attached and completed
+  domain setup, even while its visibility or capture is pending.
+- Existing selection-recovery work (the page-selection-recovery epic) is
+  related but not absorbed; note any overlap.
+
+**Verification.**
+
+- Reducer tests, plus the existing scripted-CDP transport (failure injection
+  and held commands) covering: first attach, list, and `create_page` with a
+  slow or failing visibility probe; a failing capture start; later recovery
+  through re-probe and activation; no capture before observed visibility; a
+  real attach or domain-setup failure staying a failure (negative test); and
+  reconnect keeping identity with unknown visibility. Update the existing
+  test that rejects unknown visibility at readiness to the new contract.
+- A real-browser check with the lane's candidate binary: Chrome with
+  loopback remote debugging inside an NCU owned desktop that the lane creates
+  and destroys by explicit ID. Attach, list the page, run `create_page`, and
+  do one interaction, all on first attach, repeated several times.
+- The same journey on a fresh Nobara workstation VM through
+  `dave-and-nate-games/workstations` `tests/vm/ncu_desktops.py --krometrail
+  <guest path>`, using the candidate.
+- The repository's own test and qualification commands, and the release
+  gates at release time.
 
 **Release.** After review and acceptance, the owner releases through
 `bun scripts/bump-version.ts patch` and the tag-driven `release.yml`, with the
@@ -171,6 +201,7 @@ user's standing agreement for this workstream, and closes #16 with the
 evidence.
 
 **Difficulty.** High on diagnosis, moderate on the change. Likely mistakes:
-suppressing the failure without making the target recoverable; starting
-capture on a target whose visibility is unknown; masking a real
-target-attach failure as success.
+fixing the visibility path when capture startup is the real failure;
+suppressing a failure without making the target recoverable; starting capture
+on a target whose visibility is unknown; masking a real attach or setup
+failure as success.
