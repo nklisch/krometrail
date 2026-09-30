@@ -828,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "base64",
  "clap",
@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-cdp"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "base64",
  "cdpkit",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-core"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "schemars",
  "serde",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-ffmpeg"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "krometrail-core",
  "libc",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-mcp"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "base64",
  "futures-util",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "krometrail-store"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "crc32fast",
  "krometrail-core",
@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "temporal-evaluation"
-version = "1.7.0"
+version = "1.7.1"
 dependencies = [
  "schemars",
  "serde",
