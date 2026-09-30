@@ -1,11 +1,11 @@
 ---
 id: attached-local-mock-page-not-listed
 kind: story
-stage: implementing
+stage: done
 tags: [browser, agent-ux]
 parent: null
 depends_on: []
-release_binding: null
+release_binding: 1.7.1
 research_refs: []
 research_origin: null
 created: 2026-09-09
@@ -128,9 +128,11 @@ browser automation on the Dave and Nate Games workstation fleet.
 
 ## Design
 
-Owner design (Opus, main session of the workstation run), for GPT-6.1 Sol to
-implement and Opus + GPT-6 Astra to review. The user asked for this fix as
-its own workstream on 2026-09-29.
+Owner design (Opus, main session of the workstation run), reviewed by GPT-6
+Astra and implemented by GPT-6.1 Sol. The implementation was reviewed by Opus
+and GPT-6.1 Sol (the user moved remaining reviews from Astra to Sol on
+2026-09-30); both reviewers verified the two correction rounds. The user asked
+for this fix as its own workstream on 2026-09-29.
 
 **Diagnose which stage fails first** (revised after the Astra design review
 of `ebef666b`). Two credible paths make a page unlistable, and the code alone
