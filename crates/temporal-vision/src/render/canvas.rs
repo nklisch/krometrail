@@ -1,4 +1,7 @@
-use crate::{ErrorCode, PixelDimensions, Result, VisionError, normalize::linear16_to_srgb8};
+use crate::{
+    ErrorCode, OwnedFrame, PixelDimensions, PixelFormat, PixelRect, Result, VisionError,
+    normalize::linear16_to_srgb8,
+};
 
 pub(crate) const BLACK: [u8; 3] = [10, 12, 16];
 pub(crate) const PANEL: [u8; 3] = [26, 31, 39];
@@ -38,6 +41,59 @@ impl Canvas {
 
     pub(crate) fn pixels(&self) -> &[u8] {
         &self.pixels
+    }
+
+    /// Draw an original directly, without allocating a full-size conversion buffer.
+    pub(crate) fn draw_original<F>(
+        &mut self,
+        frame: &OwnedFrame<F>,
+        target: PixelRect,
+    ) -> Result<PixelRect> {
+        if frame.pixel_format() != PixelFormat::Rgba8SrgbStraight {
+            return Err(VisionError::new(
+                ErrorCode::IncompatibleFrame,
+                "storyboard presentation requires RGBA8 sRGB straight pixels",
+            ));
+        }
+        if !target.fits_within(self.dimensions) {
+            return Err(canvas_limit_error());
+        }
+        let source = frame.dimensions();
+        // Avoid magnifying small originals; contain-fit larger ones with the same
+        // integer center mapping used by the normalized-frame renderer.
+        let (width, height) =
+            if source.width() <= target.width() && source.height() <= target.height() {
+                (source.width(), source.height())
+            } else {
+                contain_fit(
+                    source.width(),
+                    source.height(),
+                    target.width(),
+                    target.height(),
+                )?
+            };
+        let rect = PixelRect::new(
+            target.x() + (target.width() - width) / 2,
+            target.y() + (target.height() - height) / 2,
+            width,
+            height,
+        )?;
+        for y in 0..height {
+            let source_y = center_map(y, source.height(), height)?;
+            for x in 0..width {
+                let source_x = center_map(x, source.width(), width)?;
+                let index = (source_y as usize * source.width() as usize + source_x as usize) * 4;
+                let pixel = &frame.pixels()[index..index + 4];
+                let alpha = u32::from(pixel[3]);
+                // The presentation is RGB8 with straight alpha composited on
+                // black in encoded sRGB space; opaque originals remain exact.
+                let color = std::array::from_fn(|channel| {
+                    ((u32::from(pixel[channel]) * alpha + 127) / 255) as u8
+                });
+                self.set_pixel(rect.x() + x, rect.y() + y, color)?;
+            }
+        }
+        Ok(rect)
     }
 
     pub(crate) fn fill_rect(

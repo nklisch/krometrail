@@ -994,6 +994,25 @@ mod tests {
         PixelFormat, ProcessingLimits, Rgb8, normalize_sequence,
     };
 
+    #[test]
+    fn presentation_refuses_empty_selection_before_loading() {
+        // Public construction/deserialization already rejects this shape. Exercise
+        // the presentation boundary independently with an internal invalid value.
+        let selection = StoryboardSelection::<u8> {
+            selected_frames: Box::new([]),
+            omitted_anchors: Box::new([]),
+            before_index: 0,
+            during_index: 0,
+            after_index: 0,
+            continuity_segment_count: 0,
+            visual_summary: StoryboardVisualSummary::default(),
+        };
+        let error = crate::render_storyboard_from_selection(&selection, 10, |_| {
+            panic!("empty selection must not load frames")
+        })
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::EmptySequence);
+    }
     type TestSequence = FrameSequence<u8, u8, u8, Box<[u8]>>;
 
     fn sequence() -> (TestSequence, NormalizedSequence<u8>) {
