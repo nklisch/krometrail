@@ -4,7 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{
     BinaryMask, ComparisonOutcome, DeclaredGap, ErrorCode, FrameRegion, FrameSequence, Marker,
-    PixelDimensions, Result, SelectionReason, StoryboardSelection, TimeRange, VisionError,
+    PixelDimensions, PresentationTile, Result, SelectionReason, StoryboardSelection, TimeRange,
+    VisionError,
     sequence::{NonEmptyText, validate_gaps, validate_markers},
 };
 
@@ -537,6 +538,8 @@ pub struct ArtifactManifest<ArtifactId, FrameId, MarkerId, GapId> {
     analyzed_frame_ids: Box<[FrameId]>,
     selected_frame_ids: Box<[FrameId]>,
     storyboard_selection: Option<Box<StoryboardSelection<FrameId>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presentation_tiles: Option<Box<[PresentationTile<FrameId>]>>,
     source_frame_count: u64,
     analyzed_frame_count: u64,
     omitted_frame_count: u64,
@@ -729,6 +732,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             analyzed_frame_ids,
             selected_frame_ids: selected_frame_ids.into_boxed_slice(),
             storyboard_selection,
+            presentation_tiles: None,
             source_frame_count,
             analyzed_frame_count,
             omitted_frame_count,
@@ -776,6 +780,7 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
             "selected frames must be an ordered subsequence of analyzed frames",
         )?;
         self.validate_storyboard_trace()?;
+        self.validate_presentation_tiles()?;
         let source_count = u64::try_from(self.source_frame_ids.len()).map_err(|_| {
             VisionError::new(
                 ErrorCode::InvalidManifest,
@@ -807,6 +812,55 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
                 ErrorCode::InvalidManifest,
                 "manifest region does not fit its source mask dimensions",
             ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn with_presentation_tiles(
+        mut self,
+        tiles: Vec<PresentationTile<F>>,
+    ) -> Result<Self> {
+        self.presentation_tiles = Some(tiles.into_boxed_slice());
+        self.validate_presentation_tiles()?;
+        Ok(self)
+    }
+
+    fn validate_presentation_tiles(&self) -> Result<()> {
+        let Some(tiles) = self.presentation_tiles.as_deref() else {
+            return Ok(());
+        };
+        if self.artifact_kind != ArtifactKind::Storyboard
+            || tiles.len() != self.selected_frame_ids.len()
+            || tiles.is_empty()
+        {
+            return Err(VisionError::new(
+                ErrorCode::InvalidManifest,
+                "presentation tiles require one rectangle per selected storyboard frame",
+            ));
+        }
+        for (index, (tile, id)) in tiles.iter().zip(self.selected_frame_ids.iter()).enumerate() {
+            let rect = tile.rect();
+            if tile.frame_id() != id || !rect.fits_within(self.output_dimensions) {
+                return Err(VisionError::at(
+                    ErrorCode::InvalidManifest,
+                    "presentation tile identity or bounds contradict the manifest",
+                    index,
+                ));
+            }
+            for prior in &tiles[..index] {
+                let prior = prior.rect();
+                if rect.x() < prior.right_exclusive()?
+                    && prior.x() < rect.right_exclusive()?
+                    && rect.y() < prior.bottom_exclusive()?
+                    && prior.y() < rect.bottom_exclusive()?
+                {
+                    return Err(VisionError::at(
+                        ErrorCode::InvalidManifest,
+                        "presentation tile rectangles must not overlap",
+                        index,
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1141,6 +1195,10 @@ impl<A, F: Clone + Eq, M: Clone + Eq, G: Clone + Eq> ArtifactManifest<A, F, M, G
     pub fn storyboard_selection(&self) -> Option<&StoryboardSelection<F>> {
         self.storyboard_selection.as_deref()
     }
+    /// Exact original-image rectangles when a storyboard uses a separate presentation.
+    pub fn presentation_tiles(&self) -> Option<&[PresentationTile<F>]> {
+        self.presentation_tiles.as_deref()
+    }
     pub const fn source_frame_count(&self) -> u64 {
         self.source_frame_count
     }
@@ -1207,6 +1265,7 @@ where
             analyzed_frame_ids: Box<[F]>,
             selected_frame_ids: Box<[F]>,
             storyboard_selection: Option<Box<StoryboardSelection<F>>>,
+            presentation_tiles: Option<Box<[PresentationTile<F>]>>,
             source_frame_count: u64,
             analyzed_frame_count: u64,
             omitted_frame_count: u64,
@@ -1230,6 +1289,7 @@ where
             analyzed_frame_ids: wire.analyzed_frame_ids,
             selected_frame_ids: wire.selected_frame_ids,
             storyboard_selection: wire.storyboard_selection,
+            presentation_tiles: wire.presentation_tiles,
             source_frame_count: wire.source_frame_count,
             analyzed_frame_count: wire.analyzed_frame_count,
             omitted_frame_count: wire.omitted_frame_count,

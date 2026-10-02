@@ -209,6 +209,17 @@ Each tile includes:
 
 The storyboard preserves source aspect ratio. It does not use decorative borders or backgrounds that can be mistaken for page content.
 
+The standalone crate also exposes `render_storyboard_from_selection` for
+callers that analyze downscaled copies and present separately loaded originals.
+It preserves the supplied selection and loads only its selected frames, one
+original at a time. Originals may have different dimensions and are
+contain-fitted into an unlabeled bounded grid. Returned tile rectangles name
+the exact image pixels in the montage, excluding padding, so callers can add
+labels or annotations without guessing offsets. This low-level presentation
+leaves the shared artifact's visible context requirements to the caller.
+Attaching it to a matching artifact manifest retains the selection trace and
+serializes each tile's frame id and rectangle as `presentation_tiles`.
+
 ## Temporal Difference Map
 
 A temporal difference map shows where pixels changed during an interval.

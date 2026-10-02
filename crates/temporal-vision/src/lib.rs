@@ -118,6 +118,7 @@ mod measure;
 mod motion_history;
 mod normalize;
 mod parallel;
+mod presentation;
 mod provenance;
 mod render;
 mod select;
@@ -152,6 +153,7 @@ pub use normalize::{
     IntegerScale, NormalizationParameters, NormalizedFrame, NormalizedSequence, ProcessingLimits,
     Rgb8, normalize_sequence,
 };
+pub use presentation::{PresentationTile, PresentedStoryboard, render_storyboard_from_selection};
 pub use provenance::{
     AlgorithmDescriptor, ArtifactKind, ArtifactManifest, EvidenceClass, FiniteNumber,
     GeneratorDescriptor, NormalizationKind, NormalizationStep, OutputHash, ParameterValue,
