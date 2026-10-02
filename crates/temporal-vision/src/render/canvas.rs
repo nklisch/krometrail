@@ -43,12 +43,27 @@ impl Canvas {
         &self.pixels
     }
 
-    /// Draw an original directly, without allocating a full-size conversion buffer.
+    /// Copy a fitted RGB8 tile at its packed offset, without scaling or centering.
+    pub(crate) fn copy_from(&mut self, source: &Self, x: u32, y: u32) -> Result<PixelRect> {
+        let rect = PixelRect::new(x, y, source.dimensions.width(), source.dimensions.height())?;
+        if !rect.fits_within(self.dimensions) {
+            return Err(canvas_limit_error());
+        }
+        let row_bytes = source.dimensions.width() as usize * 3;
+        for row in 0..source.dimensions.height() {
+            let src = row as usize * row_bytes;
+            let dst = ((y + row) as usize * self.dimensions.width() as usize + x as usize) * 3;
+            self.pixels[dst..dst + row_bytes].copy_from_slice(&source.pixels[src..src + row_bytes]);
+        }
+        Ok(rect)
+    }
+
+    /// Draw an original into its fitted rectangle without a full-size conversion buffer.
     pub(crate) fn draw_original<F>(
         &mut self,
         frame: &OwnedFrame<F>,
         target: PixelRect,
-    ) -> Result<PixelRect> {
+    ) -> Result<()> {
         if frame.pixel_format() != PixelFormat::Rgba8SrgbStraight {
             return Err(VisionError::new(
                 ErrorCode::IncompatibleFrame,
@@ -59,25 +74,7 @@ impl Canvas {
             return Err(canvas_limit_error());
         }
         let source = frame.dimensions();
-        // Avoid magnifying small originals; contain-fit larger ones with the same
-        // integer center mapping used by the normalized-frame renderer.
-        let (width, height) =
-            if source.width() <= target.width() && source.height() <= target.height() {
-                (source.width(), source.height())
-            } else {
-                contain_fit(
-                    source.width(),
-                    source.height(),
-                    target.width(),
-                    target.height(),
-                )?
-            };
-        let rect = PixelRect::new(
-            target.x() + (target.width() - width) / 2,
-            target.y() + (target.height() - height) / 2,
-            width,
-            height,
-        )?;
+        let (width, height) = (target.width(), target.height());
         for y in 0..height {
             let source_y = center_map(y, source.height(), height)?;
             for x in 0..width {
@@ -90,10 +87,10 @@ impl Canvas {
                 let color = std::array::from_fn(|channel| {
                     ((u32::from(pixel[channel]) * alpha + 127) / 255) as u8
                 });
-                self.set_pixel(rect.x() + x, rect.y() + y, color)?;
+                self.set_pixel(target.x() + x, target.y() + y, color)?;
             }
         }
-        Ok(rect)
+        Ok(())
     }
 
     pub(crate) fn fill_rect(
@@ -208,6 +205,21 @@ impl Canvas {
         }
         Ok((offset_x, offset_y, draw_width, draw_height))
     }
+}
+
+/// Contain-fit an original in a square bound, without enlarging small images.
+pub(crate) fn original_fit_dimensions(
+    source: PixelDimensions,
+    edge: u32,
+) -> Result<PixelDimensions> {
+    if edge == 0 {
+        return Err(canvas_limit_error());
+    }
+    if source.width() <= edge && source.height() <= edge {
+        return Ok(source);
+    }
+    let (width, height) = contain_fit(source.width(), source.height(), edge, edge)?;
+    PixelDimensions::new(width, height).map_err(|_| canvas_limit_error())
 }
 
 fn contain_fit(

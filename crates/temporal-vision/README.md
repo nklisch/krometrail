@@ -138,22 +138,27 @@ assert_eq!(presented.selection(), &selection);
 `render_storyboard_from_selection<F: Clone + Eq>` never reselects or
 normalizes. It keeps frame ids, source indices, timestamps, reasons, omitted
 anchors, orientation roles, and visual summaries exactly as supplied. The
-loader runs once per selected id in selection order. Each original is drawn
-directly into the canvas and released before the next load; no full-size
-conversion buffers or collection of originals is retained.
+loader runs once per selected id in selection order. Each original is fitted
+into a small RGB8 copy and released before the next load. Retained fitted pixels
+total at most the packed canvas size. Conversion happens at the fitted size;
+the renderer retains no collection of originals.
 
 The montage is an unlabeled row-major grid with at most three columns.
-Square cells fit within `max_edge` on both image dimensions; each original
-is centered and contain-fitted with integer nearest-neighbor center sampling,
-rounded to whole pixels, without enlargement. Mixed dimensions and aspect
-ratios are supported. Tile rectangles exclude cell padding and identify every
-selected frame exactly once. RGBA8 sRGB straight alpha is composited on black
-in encoded sRGB space. The caller supplies timeline labels and annotations.
+Each original is contain-fitted within `max_edge / max(columns, rows)` using
+integer nearest-neighbor center sampling, rounded to whole pixels, without
+enlargement. Columns take their widest fitted tile's width; rows take their
+tallest tile's height. Tiles start at their column and row offsets without
+centering padding, and both montage dimensions fit within `max_edge`. Mixed
+dimensions and aspect ratios are supported; smaller tiles leave only their
+own gaps within a column or row. Tile rectangles identify every selected
+frame exactly once. RGBA8 sRGB straight alpha is composited on black in
+encoded sRGB space. The caller supplies timeline labels and annotations.
 
 `max_edge` is the dimension ceiling; the default `RenderLimits` canvas and
-encoded-output byte caps (64 MiB each) still apply. Empty selections fail with
-`EmptySequence`, zero `max_edge` with `InvalidParameter`, incompatible loaded
-ids or pixel formats with `IncompatibleFrame`, and unfit grids or oversized
+encoded-output byte caps (64 MiB each) still apply. Growing packed extents are
+checked before allocating another fitted copy or the final canvas. Empty
+selections fail with `EmptySequence`, zero `max_edge` with `InvalidParameter`,
+incompatible loaded ids or pixel formats with `IncompatibleFrame`, and unfit grids or oversized
 canvases with `ResourceLimitExceeded`. Loader errors pass through unchanged.
 Currently RGBA8 sRGB straight is the only constructible `PixelFormat`.
 

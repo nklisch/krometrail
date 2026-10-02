@@ -134,7 +134,7 @@ fn renders_original_detail_loads_only_selected_in_order_and_keeps_provenance() {
 }
 
 #[test]
-fn mixed_sizes_exact_rectangles_and_padding_match_every_montage_pixel() {
+fn mixed_sizes_exact_rectangles_and_only_tile_gaps_match_every_montage_pixel() {
     let selected = selection();
     let presented = render_storyboard_from_selection(&selected, 36, |id| {
         let (width, height) = match id.0 {
@@ -152,9 +152,9 @@ fn mixed_sizes_exact_rectangles_and_padding_match_every_montage_pixel() {
     assert_eq!(presented.selection(), &selected); // Includes noncontiguous source indices and omissions.
     assert_eq!(
         presented.image().dimensions(),
-        PixelDimensions::new(36, 24).unwrap()
+        PixelDimensions::new(18, 18).unwrap()
     );
-    let expected = [(2, 4, 8, 4), (16, 2, 4, 8), (27, 3, 6, 6), (5, 13, 2, 10)];
+    let expected = [(0, 0, 8, 4), (8, 0, 4, 8), (12, 0, 6, 6), (0, 8, 2, 10)];
     for ((tile, selected), (x, y, w, h)) in presented
         .tiles()
         .iter()
@@ -165,8 +165,8 @@ fn mixed_sizes_exact_rectangles_and_padding_match_every_montage_pixel() {
         assert_eq!(tile.rect(), PixelRect::new(x, y, w, h).unwrap());
     }
     let pixels = decode(presented.image());
-    for y in 0..24 {
-        for x in 0..36 {
+    for y in 0..18 {
+        for x in 0..18 {
             let expected = presented
                 .tiles()
                 .iter()
@@ -178,7 +178,7 @@ fn mixed_sizes_exact_rectangles_and_padding_match_every_montage_pixel() {
                         && y < r.bottom_exclusive().unwrap()
                 })
                 .map_or([0, 0, 0], |tile| [tile.frame_id().0 as u8, 50, 100]);
-            assert_eq!(pixel_at(&pixels, 36, x, y), expected, "at {x}, {y}");
+            assert_eq!(pixel_at(&pixels, 18, x, y), expected, "at {x}, {y}");
         }
     }
 }
@@ -194,7 +194,7 @@ fn resizing_preserves_aspect_and_uses_original_pixel_centers_with_straight_alpha
     .unwrap();
     assert_eq!(
         presented.image().dimensions(),
-        PixelDimensions::new(18, 12).unwrap()
+        PixelDimensions::new(18, 6).unwrap()
     );
     let pixels = decode(presented.image());
     for tile in presented.tiles() {
@@ -224,8 +224,6 @@ fn refuses_invalid_limits_and_wrong_identity_and_preserves_loader_errors() {
     for (edge, code) in [
         (0, ErrorCode::InvalidParameter),
         (2, ErrorCode::ResourceLimitExceeded),
-        (10_000, ErrorCode::ResourceLimitExceeded),
-        (u32::MAX, ErrorCode::ResourceLimitExceeded),
     ] {
         let error = render_storyboard_from_selection(&selected, edge, |_| {
             panic!("invalid canvas must not load")
@@ -281,7 +279,12 @@ fn every_constructible_pixel_format_is_supported_and_unknown_formats_are_refused
         let pixels = decode(presented.image());
         for tile in presented.tiles() {
             assert_eq!(
-                pixel_at(&pixels, 36, tile.rect().x(), tile.rect().y()),
+                pixel_at(
+                    &pixels,
+                    presented.image().dimensions().width(),
+                    tile.rect().x(),
+                    tile.rect().y()
+                ),
                 [13, 27, 91]
             );
         }
@@ -289,23 +292,9 @@ fn every_constructible_pixel_format_is_supported_and_unknown_formats_are_refused
 }
 
 #[test]
-fn one_pixel_cells_fit_one_through_twelve_selected_frames() {
+fn one_pixel_tiles_fit_one_through_twelve_selected_frames() {
     for count in 1_usize..=12 {
-        let mut wire = serde_json::to_value(selection()).unwrap();
-        wire["selected_frames"] = json!(
-            (0..count)
-                .map(|id| json!({
-                    "frame_id": id, "frame_index": id, "timestamp": id,
-                    "reasons": ["temporal_coverage"]
-                }))
-                .collect::<Vec<_>>()
-        );
-        wire["before_index"] = json!(0);
-        wire["during_index"] = json!(0);
-        wire["after_index"] = json!(count - 1);
-        wire["omitted_anchors"] = json!([]);
-        wire["continuity_segment_count"] = json!(1);
-        let selection: StoryboardSelection<Id> = serde_json::from_value(wire).unwrap();
+        let selection = selection_with_count(count);
         let columns = count.min(3);
         let rows = count.div_ceil(columns);
         let edge = columns.max(rows) as u32;
@@ -327,6 +316,114 @@ fn one_pixel_cells_fit_one_through_twelve_selected_frames() {
             );
         }
     }
+}
+
+fn selection_with_count(count: usize) -> StoryboardSelection<Id> {
+    let mut wire = serde_json::to_value(selection()).unwrap();
+    wire["selected_frames"] = json!(
+        (0..count)
+            .map(|id| json!({
+                "frame_id": id, "frame_index": id, "timestamp": id,
+                "reasons": ["temporal_coverage"]
+            }))
+            .collect::<Vec<_>>()
+    );
+    wire["before_index"] = json!(0);
+    wire["during_index"] = json!(0);
+    wire["after_index"] = json!(count - 1);
+    wire["omitted_anchors"] = json!([]);
+    wire["continuity_segment_count"] = json!(1);
+    serde_json::from_value(wire).unwrap()
+}
+
+#[test]
+fn six_widescreen_originals_pack_without_black_rows() {
+    let selection = selection_with_count(6);
+    let mut loaded = Vec::new();
+    let presented = render_storyboard_from_selection(&selection, 1536, |id| {
+        loaded.push(id.clone());
+        Frame::new(
+            id.clone(),
+            Timestamp::from_nanos(u64::from(id.0)),
+            PixelDimensions::new(1920, 1080).unwrap(),
+            PixelFormat::Rgba8SrgbStraight,
+            vec![255_u8; 1920 * 1080 * 4].into_boxed_slice(),
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        presented.image().dimensions(),
+        PixelDimensions::new(1536, 576).unwrap()
+    );
+    assert_eq!(presented.selection(), &selection);
+    assert_eq!(loaded, (0..6).map(Id).collect::<Vec<_>>());
+    for (index, tile) in presented.tiles().iter().enumerate() {
+        assert_eq!(
+            tile.rect(),
+            PixelRect::new((index % 3) as u32 * 512, (index / 3) as u32 * 288, 512, 288).unwrap()
+        );
+    }
+    assert!(
+        decode(presented.image())
+            .iter()
+            .all(|channel| *channel == 255)
+    );
+}
+
+#[test]
+fn a_large_max_edge_packs_small_originals_without_enlargement() {
+    let presented = render_storyboard_from_selection(&selection(), u32::MAX, |id| {
+        Ok(frame(id.clone(), 8, 4, |_, _| [12, 34, 56, 255]))
+    })
+    .unwrap();
+    assert_eq!(
+        presented.image().dimensions(),
+        PixelDimensions::new(24, 8).unwrap()
+    );
+    assert!(
+        presented
+            .tiles()
+            .iter()
+            .all(|tile| tile.rect().width() == 8 && tile.rect().height() == 4)
+    );
+}
+
+#[test]
+fn growing_packed_canvas_refuses_the_byte_cap_before_loading_more_frames() {
+    let mut loaded = Vec::new();
+    let error = render_storyboard_from_selection(&selection(), 9000, |id| {
+        loaded.push(id.clone());
+        Frame::new(
+            id.clone(),
+            Timestamp::from_nanos(u64::from(id.0)),
+            PixelDimensions::new(3000, 3000).unwrap(),
+            PixelFormat::Rgba8SrgbStraight,
+            vec![255_u8; 3000 * 3000 * 4].into_boxed_slice(),
+        )
+    })
+    .unwrap_err();
+    // Three 3000px columns already require 81 MB, beyond the 64 MiB cap.
+    // The third fitted copy and final canvas are refused before allocation.
+    assert_eq!(error.code, ErrorCode::ResourceLimitExceeded);
+    assert_eq!(loaded, [Id(1), Id(4), Id(7)]);
+}
+
+#[test]
+fn rounded_thin_tiles_have_no_hidden_centering_padding() {
+    let presented = render_storyboard_from_selection(&selection_with_count(1), 45, |id| {
+        Ok(frame(id.clone(), 3, 100, |_, _| [55, 77, 99, 255]))
+    })
+    .unwrap();
+    assert_eq!(
+        presented.image().dimensions(),
+        PixelDimensions::new(1, 45).unwrap()
+    );
+    assert_eq!(
+        presented.tiles()[0].rect(),
+        PixelRect::new(0, 0, 1, 45).unwrap()
+    );
+    let pixels = decode(presented.image());
+    assert!(pixels.chunks_exact(3).all(|pixel| pixel == [55, 77, 99]));
 }
 
 fn present() -> PresentedStoryboard<Id> {

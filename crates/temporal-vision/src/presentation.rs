@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use crate::{
     ArtifactKind, ArtifactManifest, EncodedImage, ErrorCode, GeneratedArtifact, OutputHash,
     OwnedFrame, PixelDimensions, PixelRect, RenderLimits, Result, StoryboardSelection, VisionError,
-    render::canvas::{Canvas, canvas_limit_error},
+    render::canvas::{Canvas, canvas_limit_error, original_fit_dimensions},
 };
 
 /// One selected original's image rectangle in the encoded montage, excluding padding.
@@ -77,10 +77,13 @@ impl<F: Clone + Eq> PresentedStoryboard<F> {
 
 /// Render selected originals without reselecting or normalizing analysis pixels.
 ///
-/// Frames are loaded exactly once in selection order, drawn directly into a
-/// preallocated canvas, then dropped before the next load. The grid has up to
-/// three columns in row-major order. Images are centered in square cells,
-/// preserve aspect ratio (rounded to whole pixels), and are never enlarged.
+/// Frames are loaded exactly once in selection order, fitted into small RGB8
+/// copies, then dropped before the next load. The grid has up to three columns
+/// in row-major order. Each column takes its widest fitted image's width and
+/// each row its tallest image's height. Images start at their column/row offsets
+/// with no centering padding, preserve aspect ratio (rounded to whole pixels),
+/// and are never enlarged. Retained fitted pixels total at most the canvas size;
+/// the canvas byte cap is checked before allocating fitted copies or the canvas.
 /// Labels and annotations are left to the caller; rectangles name image pixels.
 /// RGBA8 sRGB straight alpha is composited on black in encoded sRGB space.
 ///
@@ -107,23 +110,14 @@ pub fn render_storyboard_from_selection<F: Clone + Eq>(
     let columns = count.min(3);
     let rows = count.div_ceil(columns);
     let grid_edge = u32::try_from(columns.max(rows)).map_err(|_| canvas_limit_error())?;
-    let cell_edge = max_edge / grid_edge;
-    if cell_edge == 0 {
+    let tile_edge = max_edge / grid_edge;
+    if tile_edge == 0 {
         return Err(canvas_limit_error());
     }
-    let width = u32::try_from(columns)
-        .map_err(|_| canvas_limit_error())?
-        .checked_mul(cell_edge)
-        .ok_or_else(canvas_limit_error)?;
-    let height = u32::try_from(rows)
-        .map_err(|_| canvas_limit_error())?
-        .checked_mul(cell_edge)
-        .ok_or_else(canvas_limit_error)?;
-    let dimensions = PixelDimensions::new(width, height).map_err(|_| canvas_limit_error())?;
     let limits = RenderLimits::default();
-    // max_edge supplies the dimension ceiling; retain the renderer's byte caps.
-    let mut canvas = Canvas::new(dimensions, [0, 0, 0], limits.max_canvas_bytes())?;
-    let mut tiles = Vec::with_capacity(count);
+    let mut widths = vec![0_u32; columns];
+    let mut heights = vec![0_u32; rows];
+    let mut fitted = Vec::with_capacity(count);
     for (index, selected) in selection.selected_frames().iter().enumerate() {
         let original = load(selected.frame_id())?;
         if original.id() != selected.frame_id() {
@@ -133,14 +127,28 @@ pub fn render_storyboard_from_selection<F: Clone + Eq>(
                 index,
             ));
         }
-        let target = PixelRect::new(
-            (index % columns) as u32 * cell_edge,
-            (index / columns) as u32 * cell_edge,
-            cell_edge,
-            cell_edge,
+        let dimensions = original_fit_dimensions(original.dimensions(), tile_edge)?;
+        widths[index % columns] = widths[index % columns].max(dimensions.width());
+        heights[index / columns] = heights[index / columns].max(dimensions.height());
+        // Extents only grow, so refuse before even allocating the next fitted
+        // copy when the eventual canvas already exceeds the cap.
+        packed_dimensions(&widths, &heights, limits.max_canvas_bytes())?;
+        let mut image = Canvas::new(dimensions, [0, 0, 0], limits.max_canvas_bytes())?;
+        image.draw_original(
+            &original,
+            PixelRect::new(0, 0, dimensions.width(), dimensions.height())?,
         )?;
-        let rect = canvas.draw_original(&original, target)?;
         drop(original);
+        fitted.push(image);
+    }
+    let dimensions = packed_dimensions(&widths, &heights, limits.max_canvas_bytes())?;
+    // max_edge supplies the dimension ceiling; retain the renderer's byte caps.
+    let mut canvas = Canvas::new(dimensions, [0, 0, 0], limits.max_canvas_bytes())?;
+    let mut tiles = Vec::with_capacity(count);
+    for (index, (selected, image)) in selection.selected_frames().iter().zip(fitted).enumerate() {
+        let x = widths[..index % columns].iter().sum();
+        let y = heights[..index / columns].iter().sum();
+        let rect = canvas.copy_from(&image, x, y)?;
         tiles.push(PresentationTile {
             frame_id: selected.frame_id().clone(),
             rect,
@@ -153,4 +161,22 @@ pub fn render_storyboard_from_selection<F: Clone + Eq>(
         selection: selection.clone(),
         tiles,
     })
+}
+
+fn packed_dimensions(widths: &[u32], heights: &[u32], max_bytes: usize) -> Result<PixelDimensions> {
+    let sum = |lengths: &[u32]| {
+        lengths.iter().try_fold(0_u32, |total, length| {
+            total.checked_add(*length).ok_or_else(canvas_limit_error)
+        })
+    };
+    let dimensions =
+        PixelDimensions::new(sum(widths)?, sum(heights)?).map_err(|_| canvas_limit_error())?;
+    let bytes = dimensions
+        .pixel_count()?
+        .checked_mul(3)
+        .ok_or_else(canvas_limit_error)?;
+    if bytes > max_bytes {
+        return Err(canvas_limit_error());
+    }
+    Ok(dimensions)
 }
